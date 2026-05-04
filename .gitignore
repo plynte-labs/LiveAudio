@@ -1,0 +1,77 @@
+# ============================================
+# Python
+# ============================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ============================================
+# Entornos virtuales
+# ============================================
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# ============================================
+# IDEs y Editores
+# ============================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ============================================
+# Datos y configuración local del usuario
+# ============================================
+# Configuración personal: rutas locales, preferencias de hardware, blacklist
+config.json
+
+# Sesiones generadas (transcripciones, VTT, JSONL). Crecen indefinidamente.
+sessions/
+
+# Legacy: archivos de referencia, imágenes y sesiones antiguas
+legacy/
+
+# Logs
+*.log
+
+# ============================================
+# Modelos de IA (pesados, descargados automáticamente)
+# ============================================
+# Si en el futuro se incluyen modelos locales en el proyecto:
+models/
+checkpoints/
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.onnx
+
+# Cache de descargas de torch/huggingface dentro del proyecto
+.cache/
+hub/

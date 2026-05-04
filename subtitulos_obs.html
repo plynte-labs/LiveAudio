@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Subs Live</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: transparent !important; 
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-end;
+            align-items: center;
+            height: 100vh;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            color: transparent; /* Oculta texto basura si algo falla */
+        }
+
+        #subtitle-container {
+            width: 90%;
+            text-align: center;
+            margin-bottom: 50px;
+        }
+
+        /* --- ESTILO BASE (Entrada y Salida unificadas) --- */
+        .sub-box {
+            display: inline-block;
+            opacity: 0;
+            transform: translateY(20px);
+            transition: opacity 0.4s ease-out, transform 0.4s ease-out;
+        }
+
+        .sub-box.visible {
+            opacity: 1 !important;
+            transform: translateY(0) !important;
+        }
+
+        /* Salida suave: fade-out + deslizar hacia abajo */
+        .sub-box.hiding {
+            opacity: 0 !important;
+            transform: translateY(12px) !important;
+            transition: opacity 0.5s ease-in, transform 0.5s ease-in;
+        }
+
+        /* --- ESTILO 1: DEFAULT --- */
+        .style-default {
+            color: #ffffff;
+            font-size: 38px;
+            font-weight: bold;
+            padding: 10px 20px;
+            background-color: rgba(0, 0, 0, 0.7);
+            border-radius: 10px;
+            text-shadow: 2px 2px 0 #000, -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000;
+        }
+
+        /* --- ESTILO 2: KARAOKE (Palabra por palabra) --- */
+        .style-karaoke {
+            font-size: 44px;
+            font-weight: 900;
+            color: #ffcc00; /* Amarillo brillante */
+            text-shadow: 3px 3px 0 #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000;
+            background-color: rgba(0, 0, 0, 0.7);
+            padding: 10px 20px;
+            border-radius: 10px;
+        }
+        
+        .style-karaoke .word {
+            display: inline-block;
+            margin-right: 12px;
+            opacity: 0;
+            transform: scale(0.5);
+            animation: popIn 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+        }
+
+        @keyframes popIn {
+            0% { opacity: 0; transform: scale(0.5); }
+            100% { opacity: 1; transform: scale(1); }
+        }
+
+        /* Karaoke salida: las palabras se desvanecen en cascada reversa */
+        .style-karaoke.hiding .word {
+            animation: popOut 0.3s ease-in forwards;
+        }
+
+        @keyframes popOut {
+            0% { opacity: 1; transform: scale(1); }
+            100% { opacity: 0; transform: scale(0.7) translateY(8px); }
+        }
+
+        /* --- ESTILO 3: NEON --- */
+        .style-neon {
+            color: #ffffff;
+            font-size: 40px;
+            font-weight: bold;
+            padding: 12px 24px;
+            background: rgba(0, 20, 20, 0.6);
+            border: 2px solid #00ffff;
+            border-radius: 15px;
+            box-shadow: 0 0 15px #00ffff, inset 0 0 10px #00ffff;
+            text-shadow: 0 0 8px #00ffff, 0 0 20px #00ffff;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="subtitle-container"></div>
+
+    <script>
+        const container = document.getElementById('subtitle-container');
+        let hideTimeout;
+        let cleanupTimeout;
+        let ws;
+
+        function connect() {
+            ws = new WebSocket('ws://127.0.0.1:8765');
+            
+            ws.onopen = () => console.log('Conectado al motor ASR');
+            
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    // Aseguramos que data sea un objeto con text y style
+                    if (data && data.text) {
+                        showSubtitle(data.text, data.style || 'default');
+                    }
+                } catch (e) {
+                    console.error("Error parseando WebSocket:", e);
+                }
+            };
+
+            ws.onclose = () => {
+                console.log('Desconectado. Reintentando...');
+                setTimeout(connect, 3000);
+            };
+        }
+
+        function showSubtitle(text, style) {
+            // Limpiar timers anteriores
+            clearTimeout(hideTimeout);
+            clearTimeout(cleanupTimeout);
+            
+            // Limpiar el contenedor anterior
+            container.innerHTML = '';
+            
+            const sub = document.createElement('div');
+            // Agregamos la clase base (para la animación general) y la clase del estilo específico
+            sub.className = `sub-box style-${style}`;
+            
+            if (style === 'karaoke') {
+                // Generar spans para cada palabra
+                const words = text.split(' ');
+                words.forEach((word, index) => {
+                    const span = document.createElement('span');
+                    span.className = 'word';
+                    span.innerText = word;
+                    // Escalonamos la aparición (100ms por palabra)
+                    span.style.animationDelay = `${index * 0.1}s`; 
+                    sub.appendChild(span);
+                    
+                    // Espacio entre palabras
+                    if (index < words.length - 1) {
+                        const space = document.createTextNode(' ');
+                        sub.appendChild(space);
+                    }
+                });
+                
+                // Forzar la visibilidad del contenedor principal inmediatamente
+                sub.classList.add('visible');
+                
+            } else {
+                // Para Default y Neon, es texto plano
+                sub.innerText = text;
+                
+                // Pequeño timeout para permitir que el DOM se actualice antes de animar
+                requestAnimationFrame(() => {
+                    setTimeout(() => sub.classList.add('visible'), 20);
+                });
+            }
+            
+            container.appendChild(sub);
+
+            // --- Animación de salida unificada ---
+            hideTimeout = setTimeout(() => {
+                sub.classList.add('hiding');
+                sub.classList.remove('visible');
+                
+                // Si es karaoke, escalonar la desaparición de las palabras
+                if (style === 'karaoke') {
+                    const words = sub.querySelectorAll('.word');
+                    words.forEach((word, index) => {
+                        word.style.animationDelay = `${index * 0.05}s`;
+                    });
+                }
+                
+                // Limpiar el nodo del DOM después de que termine la animación de salida
+                cleanupTimeout = setTimeout(() => {
+                    container.innerHTML = '';
+                }, 600); // Debe ser >= duración de la transición de salida
+                
+            }, 5000);
+        }
+
+        connect();
+    </script>
+</body>
+</html>
