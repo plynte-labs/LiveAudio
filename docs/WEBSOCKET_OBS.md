@@ -16,7 +16,7 @@ LiveAudio expone un **servidor WebSocket local** que envía los subtítulos tran
                                                      v
 +-------------+        ws://127.0.0.1:8765   +----------------+
 |  Cliente    |<-----------------------------|  Servidor WS   |
-|   (OBS)     |        JSON {text, style}    |  (network.py)  |
+|   (OBS)     |        JSON subtitle payload  |  (network.py)  |
 +-------------+                              +----------------+
 ```
 
@@ -38,23 +38,63 @@ LiveAudio expone un **servidor WebSocket local** que envía los subtítulos tran
 
 ### Payload enviado
 
-Cada vez que Whisper produce una transcripción válida, se envía un objeto JSON:
+Cuando Whisper produce una transcripción válida y la política de backlog permite mostrarla en OBS, se envía un objeto JSON:
 
 ```json
 {
+  "id": "1760000000000-12",
   "text": "Hola a todos, bienvenidos al stream",
-  "style": "default"
+  "style": "default",
+  "created_at": 1760000000.0,
+  "processed_at": 1760000001.3,
+  "queue_delay": 0.2,
+  "total_delay": 1.3,
+  "latency": 1.1,
+  "is_replay": false,
+  "catchup_interval_sec": 0.0
 }
 ```
 
 | Campo | Tipo | Descripción |
 |---|---|---|
+| `id` | `string` | Identificador estable de la frase dentro de la sesión. |
 | `text` | `string` | Texto transcrito limpio (después del filtrado por blacklist). |
 | `style` | `string` | Estilo visual seleccionado: `default`, `karaoke` o `neon`. |
+| `created_at` | `number` | Timestamp de creación del segmento de audio. |
+| `processed_at` | `number` | Timestamp al terminar la transcripción. |
+| `queue_delay` | `number` | Tiempo que el audio esperó antes de entrar al ASR. |
+| `total_delay` | `number` | Atraso total desde audio hasta subtítulo listo. |
+| `latency` | `number` | Tiempo usado por Whisper para transcribir. |
+| `is_replay` | `boolean` | Indica si el subtítulo es backlog/catch-up. |
+| `catchup_interval_sec` | `number` | Pacing recomendado para backlog en modo automático. |
+
+El HTML de OBS solo necesita `text` y `style`; los demás campos son metadata para diagnóstico y control de backlog.
 
 ---
 
-## 3. Seguridad
+## 3. Política de backlog para OBS
+
+LiveAudio separa la persistencia completa de la salida visual en OBS. Toda transcripción válida se guarda en disco, pero no todo backlog tiene que mostrarse en vivo.
+
+| Modo UI | Valor config | Comportamiento |
+|---|---|---|
+| Auto | `auto` | Envía subtítulos frescos, emite backlog corto con pacing y omite de OBS lo que supere el atraso máximo. |
+| Solo en vivo | `live_only` | Guarda todo, pero solo muestra subtítulos dentro de `subtitle_max_live_delay_sec`. |
+| Enviar todo | `send_all` | Manda todo a OBS aunque llegue tarde. |
+
+Opciones de `config.json`:
+
+```json
+{
+  "subtitle_backlog_policy": "auto",
+  "subtitle_max_live_delay_sec": 10.0,
+  "subtitle_catchup_interval_sec": 1.5
+}
+```
+
+---
+
+## 4. Seguridad
 
 - **Solo conexiones locales:** el servidor rechaza cualquier conexión que no provenga de `127.0.0.1`, `::1` o `localhost`.
 - **Sin autenticación:** al estar limitado a localhost, no se requiere token ni login.
@@ -62,7 +102,7 @@ Cada vez que Whisper produce una transcripción válida, se envía un objeto JSO
 
 ---
 
-## 4. Configurar OBS Studio
+## 5. Configurar OBS Studio
 
 ### Paso 1: Añadir fuente Navegador
 
@@ -93,7 +133,7 @@ Cada vez que Whisper produce una transcripción válida, se envía un objeto JSO
 
 ---
 
-## 5. Estilos visuales disponibles
+## 6. Estilos visuales disponibles
 
 Puedes cambiar el estilo desde la interfaz de LiveAudio (selector **"Estilo Visual en OBS"**).
 
@@ -114,7 +154,7 @@ Puedes cambiar el estilo desde la interfaz de LiveAudio (selector **"Estilo Visu
 
 ---
 
-## 6. Personalizar el HTML (avanzado)
+## 7. Personalizar el HTML (avanzado)
 
 Si quieres modificar colores, fuentes o animaciones, edita directamente `subtitulos_obs.html`.
 
@@ -153,7 +193,7 @@ Si necesitas usar otro puerto (por ejemplo, si `8765` está ocupado):
 
 ---
 
-## 7. Depuración
+## 8. Depuración
 
 ### Verificar que el servidor está activo
 
@@ -194,7 +234,7 @@ Ejecútalo mientras LiveAudio está activo y deberías ver los JSON con las tran
 
 ---
 
-## 8. Notas técnicas
+## 9. Notas técnicas
 
 - **Broadcast sin backpressure:** `websockets>=16` usa `broadcast()` que envía a todos los clientes de forma optimizada, sin bloquear si un cliente es lento.
 - **Reconexión automática:** el HTML intenta reconectar cada 3 segundos si se pierde la conexión.

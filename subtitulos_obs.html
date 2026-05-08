@@ -20,6 +20,7 @@
 
         #subtitle-container {
             width: 90%;
+            max-width: 1800px;
             text-align: center;
             margin-bottom: 50px;
         }
@@ -53,6 +54,8 @@
             background-color: rgba(0, 0, 0, 0.7);
             border-radius: 10px;
             text-shadow: 2px 2px 0 #000, -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000;
+            overflow-wrap: anywhere;
+            max-width: 100%;
         }
 
         /* --- ESTILO 2: KARAOKE (Palabra por palabra) --- */
@@ -64,6 +67,8 @@
             background-color: rgba(0, 0, 0, 0.7);
             padding: 10px 20px;
             border-radius: 10px;
+            overflow-wrap: anywhere;
+            max-width: 100%;
         }
         
         .style-karaoke .word {
@@ -102,6 +107,21 @@
             text-shadow: 0 0 8px #00ffff, 0 0 20px #00ffff;
             text-transform: uppercase;
             letter-spacing: 2px;
+            overflow-wrap: anywhere;
+            max-width: 100%;
+        }
+
+        @media (max-height: 220px) {
+            #subtitle-container {
+                margin-bottom: 18px;
+            }
+
+            .style-default,
+            .style-karaoke,
+            .style-neon {
+                font-size: clamp(24px, 4vw, 34px);
+                padding: 8px 16px;
+            }
         }
     </style>
 </head>
@@ -114,6 +134,8 @@
         let hideTimeout;
         let cleanupTimeout;
         let ws;
+        const VALID_STYLES = new Set(['default', 'karaoke', 'neon']);
+        const MAX_SUBTITLE_CHARS = 600;
 
         function connect() {
             ws = new WebSocket('ws://127.0.0.1:8765');
@@ -139,6 +161,9 @@
         }
 
         function showSubtitle(text, style) {
+            const safeStyle = VALID_STYLES.has(style) ? style : 'default';
+            const safeText = String(text || '').replace(/[\r\n\t]+/g, ' ').trim().slice(0, MAX_SUBTITLE_CHARS);
+
             // Limpiar timers anteriores
             clearTimeout(hideTimeout);
             clearTimeout(cleanupTimeout);
@@ -148,15 +173,15 @@
             
             const sub = document.createElement('div');
             // Agregamos la clase base (para la animación general) y la clase del estilo específico
-            sub.className = `sub-box style-${style}`;
+            sub.className = `sub-box style-${safeStyle}`;
             
-            if (style === 'karaoke') {
+            if (safeStyle === 'karaoke') {
                 // Generar spans para cada palabra
-                const words = text.split(' ');
+                const words = safeText.split(' ');
                 words.forEach((word, index) => {
                     const span = document.createElement('span');
                     span.className = 'word';
-                    span.innerText = word;
+                    span.textContent = word;
                     // Escalonamos la aparición (100ms por palabra)
                     span.style.animationDelay = `${index * 0.1}s`; 
                     sub.appendChild(span);
@@ -173,7 +198,7 @@
                 
             } else {
                 // Para Default y Neon, es texto plano
-                sub.innerText = text;
+                sub.textContent = safeText;
                 
                 // Pequeño timeout para permitir que el DOM se actualice antes de animar
                 requestAnimationFrame(() => {
@@ -189,7 +214,7 @@
                 sub.classList.remove('visible');
                 
                 // Si es karaoke, escalonar la desaparición de las palabras
-                if (style === 'karaoke') {
+                if (safeStyle === 'karaoke') {
                     const words = sub.querySelectorAll('.word');
                     words.forEach((word, index) => {
                         word.style.animationDelay = `${index * 0.05}s`;

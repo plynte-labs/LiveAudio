@@ -110,12 +110,20 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
                 pass
         print(msg)
 
+    def _status(key, text, state="idle"):
+        if log_queue:
+            try:
+                log_queue.put_nowait({"type": "status", "key": key, "text": text, "state": state})
+            except Exception:
+                pass
+
     silence_sec = config.get("silence_timeout", 0.8)
     max_sec = config.get("max_chunk_duration", 5.0)
 
     SILENCE_CHUNKS_TO_END = int((SAMPLE_RATE / CHUNK_SIZE) * silence_sec)
     MAX_CHUNKS_LIMIT = int((SAMPLE_RATE / CHUNK_SIZE) * max_sec)
 
+    _status("vad", "VAD: cargando", "active")
     _log("[Productor] Cargando modelo Silero VAD en CPU...")
     # El VAD es extremadamente ligero, lo corremos en CPU para reservar la VRAM de la GPU
     hub_dir = torch.hub.get_dir()
@@ -130,6 +138,7 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
         onnx=False,
         trust_repo=True
     )
+    _status("vad", "VAD: listo", "ok")
     
     # Resolver dispositivo de audio
     device_index, extra_settings = _resolve_device_settings(config)
@@ -180,6 +189,17 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
         speech_buffer = []
         silence_counter = 0
         is_speaking = False
+        last_reported_state = "idle"
+        utterance_sequence = 0
+
+        def enqueue_phrase(full_audio):
+            nonlocal utterance_sequence
+            utterance_sequence += 1
+            audio_queue.put({
+                "audio": full_audio,
+                "created_at": time.time(),
+                "sequence": utterance_sequence,
+            })
         
         while worker_running.is_set():
             # Esperar a que haya datos (con timeout para poder chequear worker_running)
@@ -200,16 +220,21 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
                 if speech_prob > VAD_THRESHOLD:
                     # Se detectó voz
                     is_speaking = True
+                    if last_reported_state != "speech":
+                        _status("vad", "VAD: voz detectada", "active")
+                        last_reported_state = "speech"
                     silence_counter = 0
                     speech_buffer.append(audio_chunk)
 
                     # Guillotina: cortar si superamos el máximo
                     if len(speech_buffer) >= MAX_CHUNKS_LIMIT:
                         full_audio = np.concatenate(speech_buffer)
-                        audio_queue.put(full_audio)
+                        enqueue_phrase(full_audio)
                         speech_buffer = []
                         is_speaking = False
                         silence_counter = 0
+                        _status("vad", "VAD: enviando frase", "ok")
+                        last_reported_state = "idle"
                     
                 elif is_speaking:
                     # No hay voz, pero estábamos grabando una frase
@@ -221,12 +246,14 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
                         full_audio = np.concatenate(speech_buffer)
                         
                         # Empaquetamos y enviamos a través de IPC
-                        audio_queue.put(full_audio)
+                        enqueue_phrase(full_audio)
                         
                         # Reiniciamos el estado para la siguiente frase
                         speech_buffer = []
                         is_speaking = False
                         silence_counter = 0
+                        _status("vad", "VAD: frase enviada", "ok")
+                        last_reported_state = "idle"
 
     # Construir kwargs para InputStream
     stream_kwargs = {
@@ -240,12 +267,15 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
     if device_index is not None:
         stream_kwargs["device"] = device_index
         device_name = config.get("audio_device", {}).get("name", f"#{device_index}")
+        _status("audio", "Audio: dispositivo listo", "ok")
         _log(f"[Productor] Dispositivo seleccionado: {device_name}")
     else:
+        _status("audio", "Audio: dispositivo por defecto", "ok")
         _log("[Productor] Usando dispositivo de audio por defecto del sistema.")
     
     if extra_settings is not None:
         stream_kwargs["extra_settings"] = extra_settings
+        _status("audio", "Audio: loopback WASAPI", "ok")
         _log("[Productor] Modo WASAPI Loopback activado (captura audio del sistema).")
 
     _log("[Productor] Iniciando sistema de tolerancia a fallos de audio...")
@@ -263,6 +293,7 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
             with sd.InputStream(**stream_kwargs) as stream:
                 
                 _log("[Productor] 🎤 Audio conectado y escuchando.")
+                _status("audio", "Audio: escuchando", "ok")
                 
                 while True:
                     sd.sleep(500)
@@ -280,6 +311,7 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
         except sd.PortAudioError as e:
             _log(f"\n[Productor] ⚠️ ALERTA: Hardware de audio perdido. Detalles: {e}")
             _log("[Productor] 🔄 Buscando dispositivo... reintentando en 3 segundos.")
+            _status("audio", "Audio: reconectando", "warn")
             
             # Limpiar el ring buffer y el estado del worker al reconectar
             ring_buffer.clear()
@@ -294,6 +326,7 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
             
         except Exception as e:
             _log(f"\n[Productor] ❌ Error inesperado: {e}")
+            _status("audio", "Audio: error", "error")
             time.sleep(3)
 
 

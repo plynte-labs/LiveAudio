@@ -12,6 +12,7 @@ LiveAudio es un motor de reconocimiento de voz automático (ASR) en tiempo real,
 - **Detección de voz (VAD)** con Silero VAD para cortar silencios automáticamente.
 - **Captura flexible:** micrófono físico o audio del sistema (WASAPI Loopback en Windows).
 - **WebSocket integrado** para enviar subtítulos a OBS o cualquier cliente HTML.
+- **Control de backlog para OBS:** evita ráfagas de subtítulos viejos tras freezes, sin perder la transcripción guardada.
 - **Filtrado de alucinaciones** mediante blacklist personalizable.
 - **Gestión de sesiones:** guarda transcripciones en `.jsonl` y subtítulos en `.vtt`.
 - **Hot-swap inteligente:** cambia de dispositivo o modelo sin reiniciar el programa.
@@ -117,6 +118,9 @@ Al iniciar por primera vez, se crea un archivo `config.json` con los siguientes 
     "blacklist": "amara.org, subtitulos por, suscribete, dale like, gracias por ver, aplausos, victoria, gracias, memos, flupco, cuanos, kibon, skip, quita, plechitin, pae",
     "continuous_session": true,
     "subtitle_style": "default",
+    "subtitle_backlog_policy": "auto",
+    "subtitle_max_live_delay_sec": 10.0,
+    "subtitle_catchup_interval_sec": 1.5,
     "silence_timeout": 0.4,
     "max_chunk_duration": 15.0,
     "audio_device": null
@@ -135,8 +139,9 @@ Puedes modificar estos valores desde la interfaz gráfica o editando directament
    - Selecciona tu **dispositivo de audio** (micrófono o loopback del sistema).
    - Elige **CPU** o **CUDA** según tu hardware.
    - Selecciona el **tamaño del modelo** (`tiny`, `base`, `small`, `turbo`).
-   - Ajusta los **sliders de latencia** (silencio y guillotina).
-   - Configura la **blacklist** de palabras a filtrar.
+    - Ajusta los **sliders de latencia** (silencio y guillotina).
+    - Configura **Atraso en OBS** para decidir que hacer con subtítulos acumulados tras un freeze.
+    - Configura la **blacklist** de palabras a filtrar.
 4. Pulsa **INICIAR SISTEMA**.
 5. Abre `subtitulos_obs.html` como **Browser Source** en OBS (ver [docs/WEBSOCKET_OBS.md](docs/WEBSOCKET_OBS.md)).
 
@@ -153,6 +158,26 @@ skip, quita, plechitin, pae
 ```
 
 Puedes editarla desde la interfaz. Separa las palabras o frases con comas.
+
+---
+
+## Política de atraso en OBS
+
+LiveAudio siempre guarda las transcripciones válidas en la sesión (`transcript.jsonl` y `subtitles.vtt`). La opción **Atraso en OBS** solo controla qué se muestra en vivo en OBS cuando el ASR se atrasó por GPU/CPU ocupada, VRAM llena o un freeze temporal.
+
+| Modo | Comportamiento |
+|---|---|
+| `Auto` | Envía subtítulos frescos. Si hay backlog corto, lo emite con pacing. Si supera `subtitle_max_live_delay_sec`, lo guarda pero no lo muestra en OBS. |
+| `Solo en vivo` | Guarda todo, pero solo muestra en OBS subtítulos dentro del atraso máximo configurado. |
+| `Enviar todo` | Envía todo a OBS aunque llegue tarde. Útil si prefieres fidelidad visual completa sobre evitar ráfagas. |
+
+Opciones relacionadas:
+
+| Config | Descripción |
+|---|---|
+| `subtitle_backlog_policy` | `auto`, `live_only` o `send_all`. |
+| `subtitle_max_live_delay_sec` | Atraso máximo para considerar un subtítulo apto para OBS live. |
+| `subtitle_catchup_interval_sec` | Separación entre subtítulos de catch-up en modo `auto`. |
 
 ---
 

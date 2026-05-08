@@ -56,3 +56,29 @@ Se reorganizaron los archivos para que coincidieran con lo descrito en la docume
     *   **Por qué:** Reduce la deuda técnica y evita crasheos si esas funciones se llegaran a invocar por error.
 *   **Cambio:** Se modificó el filtro de advertencias (`warnings.filterwarnings`) para silenciar solo `UserWarning`.
     *   **Por qué:** Silenciar absolutamente todas las advertencias escondía errores críticos o deprecaciones de seguridad. Ahora la consola sigue limpia pero alertará de problemas graves.
+
+## 7. Auditoría UI/UX, Seguridad y Privacidad (2026-05-05)
+
+*   **Cambio:** Se creó `docs/AUDITORIA_UI_SEGURIDAD.md` con hallazgos por severidad, cambios aplicados, riesgos residuales y plan de pruebas manuales.
+    *   **Por qué:** Las transcripciones, logs y sesiones son datos sensibles; la auditoría deja explícitos los límites de privacidad y las validaciones necesarias.
+*   **Cambio:** Se agregó en `main.py` una vista principal con estados visibles para Audio, VAD, ASR, WebSocket, OBS/clientes y sesión, además de un preview separado para el último subtítulo.
+    *   **Por qué:** El flujo en vivo debe indicar qué parte del pipeline está activa o fallando sin depender de logs técnicos.
+*   **Cambio:** Se movieron los logs técnicos a un modo avanzado y se limitó su crecimiento visible.
+    *   **Por qué:** Reduce ruido visual, consumo durante sesiones largas y exposición accidental de contenido sensible.
+*   **Cambio:** Se agregaron eventos de estado desde `core/audio.py`, `core/engine.py` y `core/network.py` sin cambiar las colas principales de audio/transcripción.
+    *   **Por qué:** Mejora observabilidad sin romper ASR local, captura, VAD ni WebSocket/OBS.
+*   **Cambio:** Se añadió validación defensiva de `config.json` en `utils/config.py` y whitelist de estilos en `core/engine.py` y `subtitulos_obs.html`.
+    *   **Por qué:** Evita valores corruptos o extremos y reduce riesgos de render/configuración insegura.
+
+## 8. Nueva Funcionalidad: Política Configurable de Backlog OBS (2026-05-07)
+
+*   **Cambio:** Se agregaron los modos `auto`, `live_only` y `send_all` para decidir qué hacer con subtítulos atrasados tras freezes de GPU/CPU o saturación del ASR.
+    *   **Por qué:** Evita que OBS reciba de golpe muchos subtítulos viejos después de varios minutos de atraso, sin perder la transcripción completa guardada en disco.
+*   **Cambio:** Se añadieron `subtitle_backlog_policy`, `subtitle_max_live_delay_sec` y `subtitle_catchup_interval_sec` a la configuración validada.
+    *   **Por qué:** Permite ajustar el comportamiento según el tipo de stream: priorizar live limpio, enviar todo, o usar una política automática.
+*   **Cambio:** `core/audio.py` ahora adjunta metadata de frase (`created_at`, `sequence`) y `core/engine.py` genera `id`, `queue_delay`, `total_delay`, `latency`, modelo y dispositivo en `transcript.jsonl`.
+    *   **Por qué:** Mejora observabilidad e idempotencia futura para distinguir frases, atrasos, replay y subtítulos live.
+*   **Cambio:** `core/network.py` aplica pacing de catch-up sin bloquear subtítulos live nuevos detrás del backlog.
+    *   **Por qué:** El pacing no debe crear más cola ni empeorar la latencia en vivo.
+*   **Cambio:** La UI distingue entre transcripción guardada y subtítulo realmente enviado a OBS.
+    *   **Por qué:** Evita diagnósticos falsos cuando una política omite visualmente un subtítulo atrasado pero lo conserva en sesión.

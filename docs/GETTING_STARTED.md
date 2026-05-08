@@ -117,7 +117,17 @@ En el panel izquierdo:
 - **Guillotina (max audio):** duración máxima de un segmento antes de forzar el corte.
   - Valor recomendado: **5s - 15s**
 
-### 5.5. Blacklist (filtro anti-alucinaciones)
+### 5.5. Configurar atraso en OBS
+
+El control **Atraso en OBS** decide qué se muestra en vivo si Whisper se atrasa por GPU/CPU ocupada o VRAM llena. La transcripción completa siempre se guarda en disco.
+
+| Modo | Uso recomendado |
+|---|---|
+| **Auto** | Recomendado para streaming: evita spam visual de backlog muy viejo. |
+| **Solo en vivo** | Prioriza que OBS solo muestre subtítulos frescos. |
+| **Enviar todo** | Muestra todo en OBS aunque llegue tarde. |
+
+### 5.6. Blacklist (filtro anti-alucinaciones)
 
 En el cuadro de texto puedes editar las palabras que Whisper suele inventar cuando no hay voz clara.
 
