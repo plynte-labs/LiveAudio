@@ -93,3 +93,18 @@ Se reorganizaron los archivos para que coincidieran con lo descrito en la docume
     *   **Por qué:** Hace la configuración más navegable para usuarios promedio y mantiene controles avanzados disponibles.
 *   **Cambio:** Si se aplican cambios duros con el motor activo, la UI advierte que habrá hot-swap y posible corte breve.
     *   **Por qué:** Convierte el lag esperado en un evento explícito y controlado.
+
+## 10. Setup SDD Conductor + Engram Workflow (2026-05-08)
+
+*   **Cambio:** Se inicializó el contexto Conductor en `conductor/` con `product.md`, `product-guidelines.md`, `tech-stack.md`, `workflow.md`, `index.md`, `tracks.md` y guía de estilo Python.
+    *   **Por qué:** Provee una base estructurada para planificar, implementar y revisar tracks futuros con trazabilidad.
+*   **Cambio:** Se instalaron skills Conductor (`conductor-setup`, `conductor-newTrack`, `conductor-implement`, `conductor-status`, `conductor-review`, `conductor-revert`) y se documentó su uso en `docs/SDD_SKILLS_USAGE.md`.
+    *   **Por qué:** Habilita flujo SDD (Spec-Driven Development) local sin depender de herramientas externas.
+*   **Cambio:** Se crearon `docs/SDD_ENGRAM_WORKFLOW.md`, `docs/NUEVO_PROYECTO_SDD_ENGRAM.md` y `docs/ENGRAM_LOCAL_COMANDOS.md` con flujo operativo, status brownfield y comandos Engram sanitizados.
+    *   **Por qué:** Documenta cómo usar memoria persistente Engram solo para este proyecto, evitando contaminación cruzada.
+*   **Cambio:** Se agregaron overrides en todas las skills Conductor: política de commit con aprobación explícita, mapeo de herramientas OpenCode (`question`, `apply_patch`, `bash`), resolución de archivos Universal File Resolution Protocol, y regla de privacidad Engram.
+    *   **Por qué:** Las skills genéricas auto-commitean y usan herramientas no disponibles; los overrides alinean el flujo con las reglas de LiveAudio.
+*   **Cambio:** Se creó `AGENTS.md` con reglas memory-first, preferencias del usuario, flujo SDD y equipo especializado.
+    *   **Por qué:** Centraliza las instrucciones operativas para cualquier agente que trabaje en este repositorio.
+*   **Cambio:** Se registraron tracks completados en `conductor/tracks.md`: backlog OBS (`e6575b2`), equipo especializado (`1644b11`), perfiles/apply flow (`26598e8`).
+    *   **Por qué:** Mantiene historial trazable entre commits y decisiones de producto.
