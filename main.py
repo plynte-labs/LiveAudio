@@ -1,10 +1,11 @@
 import os
 import queue
 import datetime
+import copy
 import multiprocessing as mp
 import customtkinter as ctk
 import torch
-from tkinter import filedialog
+from tkinter import filedialog, messagebox
 
 torch_lib_path = os.path.join(os.path.dirname(torch.__file__), "lib")
 os.environ["PATH"] = f"{torch_lib_path};{os.environ.get('PATH', '')}"
@@ -27,6 +28,61 @@ BACKLOG_POLICY_LABELS = {
     "Enviar todo": "send_all",
 }
 BACKLOG_POLICY_BY_VALUE = {value: label for label, value in BACKLOG_POLICY_LABELS.items()}
+PROFILE_PRESETS = {
+    "fast": {
+        "label": "Rápido",
+        "description": "Menos demora y frases cortas; baja un poco la precisión.",
+        "values": {
+            "device": "cpu",
+            "model_size": "base (Rápido)",
+            "silence_timeout": 0.4,
+            "max_chunk_duration": 3.0,
+            "subtitle_backlog_policy": "live_only",
+            "subtitle_max_live_delay_sec": 5.0,
+            "subtitle_catchup_interval_sec": 0.8,
+        },
+    },
+    "balanced": {
+        "label": "Balanceado",
+        "description": "Recomendado para la mayoría de sesiones.",
+        "values": {
+            "device": "cuda",
+            "model_size": "small (Balance CPU)",
+            "silence_timeout": 0.8,
+            "max_chunk_duration": 5.0,
+            "subtitle_backlog_policy": "auto",
+            "subtitle_max_live_delay_sec": 10.0,
+            "subtitle_catchup_interval_sec": 1.5,
+        },
+    },
+    "quality": {
+        "label": "Calidad",
+        "description": "Más precisión; puede usar más VRAM y tardar más.",
+        "values": {
+            "device": "cuda",
+            "model_size": "turbo (Máxima precisión GPU)",
+            "silence_timeout": 1.0,
+            "max_chunk_duration": 8.0,
+            "subtitle_backlog_policy": "auto",
+            "subtitle_max_live_delay_sec": 15.0,
+            "subtitle_catchup_interval_sec": 2.0,
+        },
+    },
+    "stable_streaming": {
+        "label": "Streaming estable",
+        "description": "Reduce carga de GPU para jugar o transmitir en PC ocupada.",
+        "values": {
+            "device": "cpu",
+            "model_size": "small (Balance CPU)",
+            "silence_timeout": 0.6,
+            "max_chunk_duration": 4.0,
+            "subtitle_backlog_policy": "live_only",
+            "subtitle_max_live_delay_sec": 6.0,
+            "subtitle_catchup_interval_sec": 1.0,
+        },
+    },
+}
+PROFILE_LABEL_TO_ID = {profile["label"]: profile_id for profile_id, profile in PROFILE_PRESETS.items()}
 
 
 class LiveASRApp(ctk.CTk):
@@ -39,6 +95,9 @@ class LiveASRApp(ctk.CTk):
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
         self.config_data = load_config()
+        self.draft_config = copy.deepcopy(self.config_data)
+        self._ui_ready = False
+        self._applying_settings = False
         self.is_running = False
         
         # --- DEFENSA 2: Memoria Compartida ---
@@ -116,12 +175,33 @@ class LiveASRApp(ctk.CTk):
         
         ctk.CTkLabel(frame_izq, text="Ajustes", font=ctk.CTkFont(size=20, weight="bold")).pack(pady=20, padx=20)
 
+        tabs = ctk.CTkTabview(frame_izq)
+        tabs.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        tab_profiles = tabs.add("Perfiles")
+        tab_audio = tabs.add("Audio/VAD")
+        tab_model = tabs.add("Rendimiento")
+        tab_obs = tabs.add("OBS")
+        tab_advanced = tabs.add("Avanzado")
+
+        # === SECCIÓN: Perfiles ===
+        ctk.CTkLabel(tab_profiles, text="Perfil de configuración:", font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=10, pady=(10, 0))
+        current_profile_id = self.config_data.get("selected_profile_id", "custom")
+        current_profile_label = PROFILE_PRESETS.get(current_profile_id, {}).get("label", "Personalizado")
+        profile_values = [profile["label"] for profile in PROFILE_PRESETS.values()] + ["Personalizado"]
+        self.var_profile = ctk.StringVar(value=current_profile_label)
+        self.opt_profile = ctk.CTkOptionMenu(tab_profiles, values=profile_values, variable=self.var_profile, command=self.on_profile_select)
+        self.opt_profile.pack(fill="x", padx=10, pady=(0, 6))
+        self.lbl_profile_desc = ctk.CTkLabel(tab_profiles, text="", justify="left", wraplength=240, text_color="#AEB8BC")
+        self.lbl_profile_desc.pack(fill="x", padx=10, pady=(0, 8))
+        self.lbl_pending = ctk.CTkLabel(tab_profiles, text="Configuración activa", text_color="#8BC34A")
+        self.lbl_pending.pack(fill="x", padx=10, pady=(0, 12))
+
         # === SECCIÓN: Dispositivo de Audio ===
-        ctk.CTkLabel(frame_izq, text="Dispositivo de Audio:", font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=20, pady=(10, 0))
+        ctk.CTkLabel(tab_audio, text="Dispositivo de Audio:", font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=10, pady=(10, 0))
         
         # Frame para el selector + botón refresh
-        frame_device = ctk.CTkFrame(frame_izq, fg_color="transparent")
-        frame_device.pack(fill="x", padx=20, pady=(0, 5))
+        frame_device = ctk.CTkFrame(tab_audio, fg_color="transparent")
+        frame_device.pack(fill="x", padx=10, pady=(0, 5))
         frame_device.grid_columnconfigure(0, weight=1)
         
         self._audio_devices = []
@@ -154,17 +234,17 @@ class LiveASRApp(ctk.CTk):
         btn_refresh.grid(row=0, column=1, padx=(5, 0))
 
         # === SECCIÓN: Hardware ===
-        ctk.CTkLabel(frame_izq, text="Hardware:", font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=20, pady=(15, 0))
+        ctk.CTkLabel(tab_model, text="Hardware:", font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=10, pady=(10, 0))
         self.var_hw = ctk.StringVar(value=self.config_data["device"])
-        self.opt_hw = ctk.CTkSegmentedButton(frame_izq, values=["cpu", "cuda"], variable=self.var_hw, command=self.on_setting_change)
-        self.opt_hw.pack(fill="x", padx=20, pady=(0, 15))
+        self.opt_hw = ctk.CTkSegmentedButton(tab_model, values=["cpu", "cuda"], variable=self.var_hw, command=self.on_setting_change)
+        self.opt_hw.pack(fill="x", padx=10, pady=(0, 15))
 
         # CPU Threads
         total_cores = mp.cpu_count()
-        ctk.CTkLabel(frame_izq, text=f"Hilos CPU (Max {total_cores}):").pack(anchor="w", padx=20)
-        self.slider_threads = ctk.CTkSlider(frame_izq, from_=1, to=total_cores, number_of_steps=total_cores-1, command=self.on_setting_change)
+        ctk.CTkLabel(tab_model, text=f"Hilos CPU (Max {total_cores}):").pack(anchor="w", padx=10)
+        self.slider_threads = ctk.CTkSlider(tab_model, from_=1, to=total_cores, number_of_steps=total_cores-1, command=self.on_setting_change)
         self.slider_threads.set(self.config_data["cpu_threads"])
-        self.slider_threads.pack(fill="x", padx=20, pady=(0, 15))
+        self.slider_threads.pack(fill="x", padx=10, pady=(0, 15))
 
         # Modelo Selector (Nombres Descriptivos)
         modelos_desc = [
@@ -176,81 +256,85 @@ class LiveASRApp(ctk.CTk):
         # Asegurar que el modelo guardado exista en la lista visual
         current_model = next((m for m in modelos_desc if m.startswith(self.config_data["model_size"].split()[0])), modelos_desc[2])
         
-        ctk.CTkLabel(frame_izq, text="Tamaño del Modelo:").pack(anchor="w", padx=20)
+        ctk.CTkLabel(tab_model, text="Tamaño del Modelo:").pack(anchor="w", padx=10)
         self.var_model = ctk.StringVar(value=current_model)
-        self.opt_model = ctk.CTkOptionMenu(frame_izq, values=modelos_desc, variable=self.var_model, command=self.on_setting_change)
-        self.opt_model.pack(fill="x", padx=20, pady=(0, 15))
+        self.opt_model = ctk.CTkOptionMenu(tab_model, values=modelos_desc, variable=self.var_model, command=self.on_setting_change)
+        self.opt_model.pack(fill="x", padx=10, pady=(0, 15))
 
         # --- Sliders de Latencia ---
-        ctk.CTkLabel(frame_izq, text="Control de Latencia (Ritmo):", font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=20, pady=(10, 0))
+        ctk.CTkLabel(tab_audio, text="Control de Latencia (Ritmo):", font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=10, pady=(10, 0))
         
         # Slider Silencio
-        self.lbl_silence = ctk.CTkLabel(frame_izq, text=f"Detección de Silencio: {self.config_data['silence_timeout']}s")
-        self.lbl_silence.pack(anchor="w", padx=20)
-        self.slider_silence = ctk.CTkSlider(frame_izq, from_=0.3, to=2.0, command=self.on_setting_change)
+        self.lbl_silence = ctk.CTkLabel(tab_audio, text=f"Detección de Silencio: {self.config_data['silence_timeout']}s")
+        self.lbl_silence.pack(anchor="w", padx=10)
+        self.slider_silence = ctk.CTkSlider(tab_audio, from_=0.3, to=2.0, command=self.on_setting_change)
         self.slider_silence.set(self.config_data["silence_timeout"])
-        self.slider_silence.pack(fill="x", padx=20, pady=(0, 10))
+        self.slider_silence.pack(fill="x", padx=10, pady=(0, 10))
 
         # Slider Guillotina
-        self.lbl_max_dur = ctk.CTkLabel(frame_izq, text=f"Duración máxima de frase: {self.config_data['max_chunk_duration']}s")
-        self.lbl_max_dur.pack(anchor="w", padx=20)
-        self.slider_max_dur = ctk.CTkSlider(frame_izq, from_=2.0, to=15.0, command=self.on_setting_change)
+        self.lbl_max_dur = ctk.CTkLabel(tab_audio, text=f"Duración máxima de frase: {self.config_data['max_chunk_duration']}s")
+        self.lbl_max_dur.pack(anchor="w", padx=10)
+        self.slider_max_dur = ctk.CTkSlider(tab_audio, from_=2.0, to=15.0, command=self.on_setting_change)
         self.slider_max_dur.set(self.config_data["max_chunk_duration"])
-        self.slider_max_dur.pack(fill="x", padx=20, pady=(0, 15))
+        self.slider_max_dur.pack(fill="x", padx=10, pady=(0, 15))
 
         # Toggle de Sesión
         self.var_session = ctk.BooleanVar(value=self.config_data["continuous_session"])
-        self.check_session = ctk.CTkSwitch(frame_izq, text="Mantener la misma sesión al reiniciar motor", variable=self.var_session, command=self.on_setting_change)
-        self.check_session.pack(anchor="w", padx=20, pady=(0, 15))
+        self.check_session = ctk.CTkSwitch(tab_advanced, text="Mantener la misma sesión al reiniciar motor", variable=self.var_session, command=self.on_setting_change)
+        self.check_session.pack(anchor="w", padx=10, pady=(10, 15))
 
         # Estilos visuales
-        ctk.CTkLabel(frame_izq, text="Estilo Visual en OBS:").pack(anchor="w", padx=20)
+        ctk.CTkLabel(tab_obs, text="Estilo Visual en OBS:").pack(anchor="w", padx=10, pady=(10, 0))
         self.var_style = ctk.StringVar(value=self.config_data.get("subtitle_style", "default"))
         self.opt_style = ctk.CTkOptionMenu(
-            frame_izq, 
+            tab_obs,
             values=["default", "karaoke", "neon"], 
             variable=self.var_style, 
             command=self.on_setting_change
         )
-        self.opt_style.pack(fill="x", padx=20, pady=(0, 15))
+        self.opt_style.pack(fill="x", padx=10, pady=(0, 15))
 
-        ctk.CTkLabel(frame_izq, text="Atraso en OBS:").pack(anchor="w", padx=20)
+        ctk.CTkLabel(tab_obs, text="Atraso en OBS:").pack(anchor="w", padx=10)
         current_backlog_policy = BACKLOG_POLICY_BY_VALUE.get(self.config_data.get("subtitle_backlog_policy", "auto"), "Auto (recomendado)")
         self.var_backlog_policy = ctk.StringVar(value=current_backlog_policy)
         self.opt_backlog_policy = ctk.CTkOptionMenu(
-            frame_izq,
+            tab_obs,
             values=list(BACKLOG_POLICY_LABELS.keys()),
             variable=self.var_backlog_policy,
             command=self.on_setting_change,
         )
-        self.opt_backlog_policy.pack(fill="x", padx=20, pady=(0, 8))
+        self.opt_backlog_policy.pack(fill="x", padx=10, pady=(0, 8))
 
-        self.lbl_max_live_delay = ctk.CTkLabel(frame_izq, text=f"Max atraso live: {self.config_data['subtitle_max_live_delay_sec']}s")
-        self.lbl_max_live_delay.pack(anchor="w", padx=20)
-        self.slider_max_live_delay = ctk.CTkSlider(frame_izq, from_=1.0, to=120.0, command=self.on_setting_change)
+        self.lbl_max_live_delay = ctk.CTkLabel(tab_obs, text=f"Max atraso live: {self.config_data['subtitle_max_live_delay_sec']}s")
+        self.lbl_max_live_delay.pack(anchor="w", padx=10)
+        self.slider_max_live_delay = ctk.CTkSlider(tab_obs, from_=1.0, to=120.0, command=self.on_setting_change)
         self.slider_max_live_delay.set(self.config_data["subtitle_max_live_delay_sec"])
-        self.slider_max_live_delay.pack(fill="x", padx=20, pady=(0, 8))
+        self.slider_max_live_delay.pack(fill="x", padx=10, pady=(0, 8))
 
-        self.lbl_catchup_interval = ctk.CTkLabel(frame_izq, text=f"Pacing catch-up: {self.config_data['subtitle_catchup_interval_sec']}s")
-        self.lbl_catchup_interval.pack(anchor="w", padx=20)
-        self.slider_catchup_interval = ctk.CTkSlider(frame_izq, from_=0.0, to=10.0, command=self.on_setting_change)
+        self.lbl_catchup_interval = ctk.CTkLabel(tab_obs, text=f"Pacing catch-up: {self.config_data['subtitle_catchup_interval_sec']}s")
+        self.lbl_catchup_interval.pack(anchor="w", padx=10)
+        self.slider_catchup_interval = ctk.CTkSlider(tab_obs, from_=0.0, to=10.0, command=self.on_setting_change)
         self.slider_catchup_interval.set(self.config_data["subtitle_catchup_interval_sec"])
-        self.slider_catchup_interval.pack(fill="x", padx=20, pady=(0, 15))
+        self.slider_catchup_interval.pack(fill="x", padx=10, pady=(0, 15))
 
         # Blacklist
-        ctk.CTkLabel(frame_izq, text="Filtro Anti-Alucinaciones:").pack(anchor="w", padx=20)
-        self.text_blacklist = ctk.CTkTextbox(frame_izq, height=80)
+        ctk.CTkLabel(tab_advanced, text="Filtro Anti-Alucinaciones:").pack(anchor="w", padx=10)
+        self.text_blacklist = ctk.CTkTextbox(tab_advanced, height=120)
         self.text_blacklist.insert("0.0", self.config_data["blacklist"])
-        self.text_blacklist.pack(fill="x", padx=20, pady=(0, 15))
+        self.text_blacklist.pack(fill="x", padx=10, pady=(0, 15))
         # <FocusOut> guarda solo cuando sales del cuadro de texto, ahorrando RAM/Disco
         self.text_blacklist.bind("<FocusOut>", lambda e: self.on_setting_change()) 
 
         # Botón Principal — en un frame fijo debajo del scroll
         frame_bottom = ctk.CTkFrame(self.screen_main, fg_color="transparent", height=80)
         frame_bottom.grid(row=1, column=0, sticky="ew")
-        
-        self.btn_power = ctk.CTkButton(frame_bottom, text="INICIAR SISTEMA", height=50, font=ctk.CTkFont(size=16, weight="bold"), command=self.toggle_system)
-        self.btn_power.pack(fill="x", padx=20, pady=15)
+
+        self.btn_apply = ctk.CTkButton(frame_bottom, text="APLICAR CAMBIOS", height=34, fg_color="#7A4B00", hover_color="#9A6100", command=self.apply_pending_settings)
+        self.btn_apply.pack(fill="x", padx=20, pady=(10, 4))
+        self.btn_discard = ctk.CTkButton(frame_bottom, text="Descartar cambios", height=28, fg_color="transparent", border_width=1, command=self.discard_pending_settings)
+        self.btn_discard.pack(fill="x", padx=20, pady=(0, 6))
+        self.btn_power = ctk.CTkButton(frame_bottom, text="INICIAR SISTEMA", height=46, font=ctk.CTkFont(size=16, weight="bold"), command=self.toggle_system)
+        self.btn_power.pack(fill="x", padx=20, pady=(0, 10))
 
         # Panel Derecho (estado principal, preview y debug avanzado)
         frame_der = ctk.CTkFrame(self.screen_main)
@@ -323,6 +407,8 @@ class LiveASRApp(ctk.CTk):
         self.consola.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
         
         # Validar el slider al inicio
+        self._ui_ready = True
+        self.refresh_profile_status()
         self.update_ui_state()
         self.set_status("audio", "Audio: listo", "idle")
         self.set_status("vad", "VAD: inactivo", "idle")
@@ -349,28 +435,107 @@ class LiveASRApp(ctk.CTk):
         self.opt_device.configure(values=self._device_display_list)
         self.print_log(f"[Sistema] 🔍 {len(self._audio_devices)} dispositivos de audio detectados.")
 
+    def _read_ui_config(self):
+        draft = copy.deepcopy(self.config_data)
+        draft["audio_device"] = copy.deepcopy(self.draft_config.get("audio_device", self.config_data.get("audio_device")))
+        draft["silence_timeout"] = round(self.slider_silence.get(), 1)
+        draft["max_chunk_duration"] = round(self.slider_max_dur.get(), 1)
+        draft["subtitle_max_live_delay_sec"] = round(self.slider_max_live_delay.get(), 1)
+        draft["subtitle_catchup_interval_sec"] = round(self.slider_catchup_interval.get(), 1)
+        draft["device"] = self.var_hw.get()
+        draft["model_size"] = self.var_model.get()
+        draft["cpu_threads"] = int(self.slider_threads.get())
+        draft["continuous_session"] = self.var_session.get()
+        draft["blacklist"] = self.text_blacklist.get("0.0", "end").strip()
+        draft["subtitle_style"] = self.var_style.get()
+        draft["subtitle_backlog_policy"] = BACKLOG_POLICY_LABELS.get(self.var_backlog_policy.get(), "auto")
+        return draft
+
+    def _load_ui_from_config(self, config):
+        self._ui_ready = False
+        self.draft_config = copy.deepcopy(config)
+        current_device_display = self._device_display_list[0]
+        saved_device = config.get("audio_device")
+        if saved_device and isinstance(saved_device, dict):
+            saved_name = saved_device.get("display", "")
+            if saved_name in self._device_display_list:
+                current_device_display = saved_name
+        self.var_device.set(current_device_display)
+        self.var_hw.set(config["device"])
+        self.slider_threads.set(config["cpu_threads"])
+        self.var_model.set(next((m for m in self.opt_model.cget("values") if m.startswith(config["model_size"].split()[0])), "small (Balance CPU)"))
+        self.slider_silence.set(config["silence_timeout"])
+        self.slider_max_dur.set(config["max_chunk_duration"])
+        self.var_session.set(config["continuous_session"])
+        self.var_style.set(config.get("subtitle_style", "default"))
+        self.var_backlog_policy.set(BACKLOG_POLICY_BY_VALUE.get(config.get("subtitle_backlog_policy", "auto"), "Auto (recomendado)"))
+        self.slider_max_live_delay.set(config["subtitle_max_live_delay_sec"])
+        self.slider_catchup_interval.set(config["subtitle_catchup_interval_sec"])
+        self.text_blacklist.delete("0.0", "end")
+        self.text_blacklist.insert("0.0", config.get("blacklist", ""))
+        self._ui_ready = True
+        self.on_setting_change()
+
+    def _profile_id_for_current_values(self, config):
+        for profile_id, profile in PROFILE_PRESETS.items():
+            if all(config.get(key) == value for key, value in profile["values"].items()):
+                return profile_id
+        return "custom"
+
+    def refresh_profile_status(self):
+        if not self._ui_ready:
+            return
+        draft = self._read_ui_config()
+        profile_id = self._profile_id_for_current_values(draft)
+        if profile_id != "custom":
+            self.var_profile.set(PROFILE_PRESETS[profile_id]["label"])
+            self.lbl_profile_desc.configure(text=PROFILE_PRESETS[profile_id]["description"])
+        elif self.var_profile.get() != "Personalizado":
+            self.lbl_profile_desc.configure(text="Perfil modificado: se aplicará como Personalizado.")
+        else:
+            self.lbl_profile_desc.configure(text="Ajustes manuales avanzados.")
+
+        has_pending = any(draft.get(key) != self.config_data.get(key) for key in draft.keys())
+        if has_pending:
+            self.lbl_pending.configure(text="Cambios pendientes: pulsa Aplicar cambios", text_color="#FFC107")
+            self.btn_apply.configure(state="normal")
+            self.btn_discard.configure(state="normal")
+        else:
+            self.lbl_pending.configure(text="Configuración activa", text_color="#8BC34A")
+            self.btn_apply.configure(state="disabled")
+            self.btn_discard.configure(state="disabled")
+
+    def on_profile_select(self, selected):
+        if not self._ui_ready or selected == "Personalizado":
+            return
+        current_draft = self._read_ui_config()
+        has_pending = any(current_draft.get(key) != self.config_data.get(key) for key in current_draft.keys())
+        if has_pending and not messagebox.askyesno("Cambios pendientes", "Cambiar de perfil descartará los cambios pendientes. ¿Continuar?"):
+            self.refresh_profile_status()
+            return
+
+        profile_id = PROFILE_LABEL_TO_ID.get(selected)
+        if not profile_id:
+            return
+        draft = copy.deepcopy(self.config_data)
+        draft.update(PROFILE_PRESETS[profile_id]["values"])
+        draft["selected_profile_id"] = profile_id
+        draft["profile_mode"] = "preset"
+        self._load_ui_from_config(draft)
+
     def on_device_change(self, *args):
         """Callback cuando se cambia el dispositivo de audio."""
         selected = self.var_device.get()
         
         if selected == self._device_display_list[0]:
             # "Por defecto del sistema"
-            self.config_data["audio_device"] = None
+            self.draft_config["audio_device"] = None
         else:
             # Buscar el dispositivo por su display name
             device = next((d for d in self._audio_devices if d["display"] == selected), None)
             if device:
-                self.config_data["audio_device"] = device
-        
-        save_config(self.config_data)
-        
-        # Actualizar memoria compartida
-        self.shared_config["audio_device"] = self.config_data["audio_device"]
-        
-        # Si está corriendo, reiniciar el productor de audio
-        if self.is_running:
-            self.print_log(f"\n[Sistema] 🔄 Cambiando dispositivo de audio...")
-            self.hot_swap_engine()
+                self.draft_config["audio_device"] = device
+        self.refresh_profile_status()
 
     # --- LÓGICA DE CONTROL ---
     def update_ui_state(self):
@@ -381,56 +546,102 @@ class LiveASRApp(ctk.CTk):
             self.slider_threads.configure(state="normal", button_color=["#3B8ED0", "#1F6AA5"])
 
     def on_setting_change(self, *args):
+        if not self._ui_ready:
+            return
         self.update_ui_state() 
 
         self.lbl_silence.configure(text=f"Detección de Silencio: {self.slider_silence.get():.1f}s")
         self.lbl_max_dur.configure(text=f"Duración máxima de frase: {self.slider_max_dur.get():.1f}s")
         self.lbl_max_live_delay.configure(text=f"Max atraso live: {self.slider_max_live_delay.get():.1f}s")
         self.lbl_catchup_interval.configure(text=f"Pacing catch-up: {self.slider_catchup_interval.get():.1f}s")
-        
+        self.refresh_profile_status()
 
-        self.config_data["silence_timeout"] = round(self.slider_silence.get(), 1)
-        self.config_data["max_chunk_duration"] = round(self.slider_max_dur.get(), 1)
-        self.config_data["subtitle_max_live_delay_sec"] = round(self.slider_max_live_delay.get(), 1)
-        self.config_data["subtitle_catchup_interval_sec"] = round(self.slider_catchup_interval.get(), 1)
-        
-        # Guardar en local
-        self.config_data["device"] = self.var_hw.get()
-        self.config_data["model_size"] = self.var_model.get()
-        self.config_data["cpu_threads"] = int(self.slider_threads.get())
-        self.config_data["continuous_session"] = self.var_session.get()
-        self.config_data["blacklist"] = self.text_blacklist.get("0.0", "end").strip()
-        self.config_data["subtitle_style"] = self.var_style.get()
-        self.config_data["subtitle_backlog_policy"] = BACKLOG_POLICY_LABELS.get(self.var_backlog_policy.get(), "auto")
-        save_config(self.config_data)
+    def _pending_restart_flags(self, draft):
+        needs_asr_restart = any(self.config_data.get(key) != draft.get(key) for key in ["device", "model_size", "cpu_threads"])
+        needs_audio_restart = any(self.config_data.get(key) != draft.get(key) for key in ["audio_device", "silence_timeout", "max_chunk_duration"])
+        return needs_asr_restart, needs_audio_restart
 
-        # Detectar si el cambio requiere reiniciar la tarjeta gráfica
-        needs_hard_restart = (
-            self.shared_config["device"] != self.config_data["device"] or
-            self.shared_config["model_size"] != self.config_data["model_size"] or
-            self.shared_config["cpu_threads"] != self.config_data["cpu_threads"] 
-        )
+    def _validate_draft_config(self, draft):
+        if draft.get("device") == "cuda" and not torch.cuda.is_available():
+            raise RuntimeError("CUDA no está disponible. Cambia a CPU o libera/configura la GPU antes de aplicar este perfil.")
 
-        needs_audio_restart = (
-            self.shared_config["silence_timeout"] != self.config_data["silence_timeout"] or
-            self.shared_config["max_chunk_duration"] != self.config_data["max_chunk_duration"]
-        )
+        audio_device = draft.get("audio_device")
+        if audio_device is not None:
+            selected_display = audio_device.get("display") if isinstance(audio_device, dict) else None
+            if selected_display not in self._device_display_list:
+                raise RuntimeError("El dispositivo de audio seleccionado ya no está disponible. Refresca la lista o usa el dispositivo por defecto.")
 
-        # Actualizar la memoria compartida (Aplica estilos y blacklist al instante sin reiniciar)
-        for k, v in self.config_data.items():
-            self.shared_config[k] = v
+    def apply_pending_settings(self):
+        if self._applying_settings:
+            return
+        draft = self._read_ui_config()
+        profile_id = self._profile_id_for_current_values(draft)
+        if profile_id == "custom" and self.var_profile.get() != "Personalizado":
+            response = messagebox.askyesnocancel(
+                "Perfil modificado",
+                "Modificaste un perfil integrado.\n\nSí: aplicar como Personalizado.\nNo: descartar cambios.\nCancelar: seguir editando.",
+            )
+            if response is None:
+                return
+            if response is False:
+                self.discard_pending_settings()
+                return
+            draft["selected_profile_id"] = "custom"
+            draft["profile_mode"] = "custom"
+        else:
+            draft["selected_profile_id"] = profile_id
+            draft["profile_mode"] = "preset" if profile_id != "custom" else "custom"
 
-        # --- DEFENSA 3: Hot-Swap Inteligente ---
-        if self.is_running and (needs_hard_restart or needs_audio_restart):
-            self.print_log("\n[Sistema] 🔄 Cambio de hardware detectado. Reiniciando Motor...")
-            
-            # Si NO queremos mantener la sesión, creamos una nueva ruta
-            if not self.shared_config["continuous_session"]:
-                timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
-                self.current_session_dir = os.path.join(self.shared_config["output_dir"], f"session_{timestamp}")
-                self.update_session_label()
-                
-            self.hot_swap_engine()
+        needs_asr_restart, needs_audio_restart = self._pending_restart_flags(draft)
+        if self.is_running and (needs_asr_restart or needs_audio_restart):
+            if not messagebox.askyesno(
+                "Aplicar cambios en vivo",
+                "Algunos cambios requieren hot-swap del motor. Puede haber un corte breve y perderse la frase actual. ¿Aplicar ahora?",
+            ):
+                return
+
+        self._applying_settings = True
+        self.btn_apply.configure(state="disabled")
+        try:
+            previous_config = copy.deepcopy(self.config_data)
+            self._validate_draft_config(draft)
+            self.config_data = copy.deepcopy(draft)
+            for k, v in self.config_data.items():
+                self.shared_config[k] = v
+
+            if self.is_running and (needs_asr_restart or needs_audio_restart):
+                self.print_log("\n[Sistema] Aplicando cambios con hot-swap en vivo...")
+                self.set_status("asr", "ASR: aplicando cambios", "warn")
+                self.set_status("vad", "VAD: aplicando cambios", "warn")
+                if not self.shared_config["continuous_session"]:
+                    timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
+                    self.current_session_dir = os.path.join(self.shared_config["output_dir"], f"session_{timestamp}")
+                    self.update_session_label()
+                if not self.hot_swap_engine():
+                    raise RuntimeError("El hot-swap no pudo arrancar los procesos de audio/ASR.")
+
+            save_config(self.config_data)
+            self.draft_config = copy.deepcopy(self.config_data)
+            self.var_profile.set(PROFILE_PRESETS.get(self.config_data.get("selected_profile_id"), {}).get("label", "Personalizado"))
+            self.refresh_profile_status()
+            self.print_log("[Sistema] Configuración aplicada y guardada.")
+        except Exception as e:
+            self.config_data = previous_config
+            for k, v in self.config_data.items():
+                self.shared_config[k] = v
+            if self.is_running and (needs_asr_restart or needs_audio_restart):
+                self.hot_swap_engine()
+            messagebox.showerror("Error al aplicar", f"No se pudieron aplicar los cambios:\n{e}")
+            self.print_log(f"[Sistema] Error al aplicar cambios: {e}")
+        finally:
+            self._applying_settings = False
+            self.refresh_profile_status()
+
+    def discard_pending_settings(self):
+        self.draft_config = copy.deepcopy(self.config_data)
+        self._load_ui_from_config(self.config_data)
+        self.var_profile.set(PROFILE_PRESETS.get(self.config_data.get("selected_profile_id"), {}).get("label", "Personalizado"))
+        self.refresh_profile_status()
 
     def print_log(self, msg):
         if not isinstance(msg, str):
@@ -560,8 +771,22 @@ class LiveASRApp(ctk.CTk):
         self.p_ia = mp.Process(target=asr_consumer, args=(self.audio_queue, self.text_queue, self.log_queue, self.shared_config, self.current_session_dir), daemon=True)
         self.p_audio.start()
         self.p_ia.start()
+        self.after(3000, self.refresh_profile_status)
+        return self.p_audio.is_alive() and self.p_ia.is_alive()
 
     def toggle_system(self):
+        if not self.is_running and self._ui_ready:
+            draft = self._read_ui_config()
+            has_pending = any(draft.get(key) != self.config_data.get(key) for key in draft.keys())
+            if has_pending:
+                response = messagebox.askyesnocancel("Cambios pendientes", "Hay cambios pendientes antes de iniciar.\n\nSí: aplicar e iniciar.\nNo: iniciar sin aplicar.\nCancelar: volver.")
+                if response is None:
+                    return
+                if response is True:
+                    self.apply_pending_settings()
+                    draft = self._read_ui_config()
+                    if any(draft.get(key) != self.config_data.get(key) for key in draft.keys()):
+                        return
         if not self.is_running:
             self.is_running = True
             self.btn_power.configure(text="DETENER SISTEMA", fg_color="darkred", hover_color="red")
@@ -626,6 +851,18 @@ class LiveASRApp(ctk.CTk):
 
     def on_closing(self):
         """Maneja el evento de cerrar la ventana (X) para evitar procesos zombies"""
+        if self._ui_ready:
+            draft = self._read_ui_config()
+            has_pending = any(draft.get(key) != self.config_data.get(key) for key in draft.keys())
+            if has_pending:
+                response = messagebox.askyesnocancel("Cambios pendientes", "Hay cambios pendientes.\n\nSí: aplicar y cerrar.\nNo: descartar y cerrar.\nCancelar: volver.")
+                if response is None:
+                    return
+                if response is True:
+                    self.apply_pending_settings()
+                    draft = self._read_ui_config()
+                    if any(draft.get(key) != self.config_data.get(key) for key in draft.keys()):
+                        return
         self.is_running = False
         
         # Señal de apagado limpio al servidor WebSocket

@@ -82,3 +82,14 @@ Se reorganizaron los archivos para que coincidieran con lo descrito en la docume
     *   **Por qué:** El pacing no debe crear más cola ni empeorar la latencia en vivo.
 *   **Cambio:** La UI distingue entre transcripción guardada y subtítulo realmente enviado a OBS.
     *   **Por qué:** Evita diagnósticos falsos cuando una política omite visualmente un subtítulo atrasado pero lo conserva en sesión.
+
+## 9. Nueva Funcionalidad: Perfiles y Aplicar Cambios (2026-05-08)
+
+*   **Cambio:** Se agregaron perfiles integrados `Rápido`, `Balanceado`, `Calidad` y `Streaming estable`.
+    *   **Por qué:** Reducen la complejidad para usuarios que no quieren ajustar manualmente latencia, modelo, device y política OBS.
+*   **Cambio:** Los sliders y selectores sensibles ahora generan cambios pendientes hasta pulsar `Aplicar cambios`.
+    *   **Por qué:** Evita reinicios/hot-swap mientras el usuario arrastra controles y reduce sensación de lag.
+*   **Cambio:** El panel de ajustes se organizó en pestañas: Perfiles, Audio/VAD, Rendimiento, OBS y Avanzado.
+    *   **Por qué:** Hace la configuración más navegable para usuarios promedio y mantiene controles avanzados disponibles.
+*   **Cambio:** Si se aplican cambios duros con el motor activo, la UI advierte que habrá hot-swap y posible corte breve.
+    *   **Por qué:** Convierte el lag esperado en un evento explícito y controlado.

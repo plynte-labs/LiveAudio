@@ -114,16 +114,18 @@ Al iniciar por primera vez, se crea un archivo `config.json` con los siguientes 
     "output_dir": "<ruta_absoluta>/sessions",
     "device": "cuda",
     "cpu_threads": 8,
-    "model_size": "turbo (Maxima precision GPU)",
+    "model_size": "small (Balance CPU)",
     "blacklist": "amara.org, subtitulos por, suscribete, dale like, gracias por ver, aplausos, victoria, gracias, memos, flupco, cuanos, kibon, skip, quita, plechitin, pae",
     "continuous_session": true,
     "subtitle_style": "default",
     "subtitle_backlog_policy": "auto",
     "subtitle_max_live_delay_sec": 10.0,
     "subtitle_catchup_interval_sec": 1.5,
-    "silence_timeout": 0.4,
-    "max_chunk_duration": 15.0,
-    "audio_device": null
+    "silence_timeout": 0.8,
+    "max_chunk_duration": 5.0,
+    "audio_device": null,
+    "selected_profile_id": "balanced",
+    "profile_mode": "preset"
 }
 ```
 
@@ -136,14 +138,29 @@ Puedes modificar estos valores desde la interfaz gráfica o editando directament
 1. Ejecuta `main.py`.
 2. En la pantalla de bienvenida, elige la carpeta donde se guardarán las sesiones.
 3. En el panel de ajustes:
+   - Elige un **perfil** (`Rápido`, `Balanceado`, `Calidad` o `Streaming estable`) si quieres empezar sin tocar cada slider.
    - Selecciona tu **dispositivo de audio** (micrófono o loopback del sistema).
    - Elige **CPU** o **CUDA** según tu hardware.
    - Selecciona el **tamaño del modelo** (`tiny`, `base`, `small`, `turbo`).
-    - Ajusta los **sliders de latencia** (silencio y guillotina).
-    - Configura **Atraso en OBS** para decidir que hacer con subtítulos acumulados tras un freeze.
-    - Configura la **blacklist** de palabras a filtrar.
+   - Ajusta los **sliders de latencia** y **Atraso en OBS** si necesitas tuning avanzado.
+   - Pulsa **Aplicar cambios** para activar y guardar los ajustes; mover sliders ya no reinicia el motor por sí solo.
 4. Pulsa **INICIAR SISTEMA**.
 5. Abre `subtitulos_obs.html` como **Browser Source** en OBS (ver [docs/WEBSOCKET_OBS.md](docs/WEBSOCKET_OBS.md)).
+
+---
+
+## Perfiles de configuración
+
+Los perfiles son presets integrados para evitar configurar manualmente cada control sensible.
+
+| Perfil | Uso recomendado |
+|---|---|
+| `Rápido` | Menor demora y frases cortas; baja un poco la precisión. |
+| `Balanceado` | Recomendado para la mayoría de sesiones. |
+| `Calidad` | Más precisión; puede usar más VRAM y tardar más. |
+| `Streaming estable` | Reduce carga de GPU para jugar o transmitir en una PC ocupada. |
+
+Si modificas un perfil integrado, LiveAudio lo tratará como `Personalizado`. Los cambios quedan pendientes hasta pulsar **Aplicar cambios**. Si el motor está activo y el ajuste requiere hot-swap, puede haber un corte breve y la frase actual podría cortarse.
 
 ---
 

@@ -28,6 +28,8 @@ DEFAULT_CONFIG = {
     "silence_timeout": 0.8,
     "max_chunk_duration": 5.0,
     "audio_device": None,  # None = dispositivo por defecto del OS
+    "selected_profile_id": "balanced",
+    "profile_mode": "preset",
 }
 
 
@@ -115,6 +117,14 @@ def _normalize_config(config):
     audio_device = config.get("audio_device")
     if audio_device is not None and not isinstance(audio_device, dict):
         config["audio_device"] = None
+        updated = True
+
+    if not isinstance(config.get("selected_profile_id"), str):
+        config["selected_profile_id"] = DEFAULT_CONFIG["selected_profile_id"]
+        updated = True
+
+    if config.get("profile_mode") not in {"preset", "custom"}:
+        config["profile_mode"] = DEFAULT_CONFIG["profile_mode"]
         updated = True
 
     return config, updated

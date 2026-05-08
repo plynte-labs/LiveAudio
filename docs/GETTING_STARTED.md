@@ -100,7 +100,20 @@ En el panel izquierdo:
 - **Micrófono:** selecciona un dispositivo con icono 🎤.
 - **Audio del sistema (Loopback):** selecciona un dispositivo con icono 🔊 (solo Windows con WASAPI).
 
-### 5.3. Elegir hardware y modelo
+### 5.3. Elegir perfil
+
+En la pestaña **Perfiles**, puedes empezar con un preset sin entender cada slider:
+
+| Perfil | Uso recomendado |
+|---|---|
+| **Rápido** | Menor demora y frases cortas. |
+| **Balanceado** | Recomendado para la mayoría. |
+| **Calidad** | Más precisión, más consumo de VRAM/latencia. |
+| **Streaming estable** | Para jugar o transmitir con la PC ocupada. |
+
+Los cambios no se activan hasta pulsar **Aplicar cambios**. Si modificas un preset, LiveAudio lo aplicará como configuración **Personalizada**.
+
+### 5.4. Elegir hardware y modelo
 
 | Escenario | Hardware | Modelo recomendado |
 |---|---|---|
@@ -110,14 +123,14 @@ En el panel izquierdo:
 
 > **Tip:** Si usas GPU pero no tienes mucha VRAM, prueba con `small` en lugar de `turbo`.
 
-### 5.4. Ajustar latencia
+### 5.5. Ajustar latencia
 
 - **Detección de silencio:** tiempo de espera después de que dejas de hablar para cortar el segmento.
   - Valor recomendado: **0.4s - 0.8s**
 - **Guillotina (max audio):** duración máxima de un segmento antes de forzar el corte.
   - Valor recomendado: **5s - 15s**
 
-### 5.5. Configurar atraso en OBS
+### 5.6. Configurar atraso en OBS
 
 El control **Atraso en OBS** decide qué se muestra en vivo si Whisper se atrasa por GPU/CPU ocupada o VRAM llena. La transcripción completa siempre se guarda en disco.
 
@@ -127,7 +140,7 @@ El control **Atraso en OBS** decide qué se muestra en vivo si Whisper se atrasa
 | **Solo en vivo** | Prioriza que OBS solo muestre subtítulos frescos. |
 | **Enviar todo** | Muestra todo en OBS aunque llegue tarde. |
 
-### 5.6. Blacklist (filtro anti-alucinaciones)
+### 5.7. Blacklist (filtro anti-alucinaciones)
 
 En el cuadro de texto puedes editar las palabras que Whisper suele inventar cuando no hay voz clara.
 
