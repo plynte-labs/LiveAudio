@@ -1,0 +1,6 @@
+interface:
+  display_name: "LiveAudio UI/UX Security Architect"
+  short_description: "UI/UX and security audit skill for LiveAudio ASR, OBS, WebSocket, and CustomTkinter workflows."
+  brand_color: "#0EA5E9"
+policy:
+  allow_implicit_invocation: false
