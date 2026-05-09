@@ -85,6 +85,15 @@ E:\Miniconda\envs\flux_env\python.exe main.py
 
 Al iniciar por primera vez, se creará automáticamente un archivo `config.json` con valores predeterminados.
 
+### Detección automática de GPU
+
+LiveAudio detecta automáticamente si tenés GPU NVIDIA al iniciar:
+
+- **GPU disponible** → usa `cuda` por defecto.
+- **Sin GPU** → cambia automáticamente a `cpu`.
+
+No necesitás configurar nada manualmente. Si querés forzar un dispositivo distinto, podés cambiarlo en la pestaña **Modelo y Hardware**.
+
 ---
 
 ## 5. Configuración inicial recomendada
@@ -191,13 +200,17 @@ Tu entorno virtual no está activado. Asegúrate de hacer `conda activate liveau
 
 ### Error: `CUDA out of memory`
 
-El modelo es demasiado grande para tu VRAM. Cambia a `small` o `base`, o usa CPU.
+LiveAudio monitorea la VRAM antes de cada transcripción. Si detecta menos de 500MB libres, libera la caché de CUDA automáticamente y muestra el estado **"GPU saturada - VRAM baja"**. Si aún así falla:
+
+1. Cambiá a un modelo más chico (`tiny` o `base`).
+2. Cambiá el dispositivo a `cpu` en la pestaña **Modelo y Hardware**.
+3. Cerrá otros programas que usen la GPU (OBS con encoder NVENC, juegos, etc.).
 
 ### No aparecen subtítulos en OBS
 
 1. Verifica que LiveAudio esté iniciado (botón verde "DETENER SISTEMA").
-2. Comprueba que el puerto `8765` no esté bloqueado por otro programa.
-3. Abre `subtitulos_obs.html` en tu navegador (Chrome/Edge) y revisa la consola (F12) por errores de conexión.
+2. Comprueba que el puerto WebSocket no esté bloqueado. El default es `8765`; si lo cambiaste en `config.json`, asegurate de que la URL del Browser Source en OBS incluya `?port=XXXX` (ej: `subtitulos_obs.html?port=9876`).
+3. Abrí `subtitulos_obs.html` en tu navegador (Chrome/Edge) y revisá la consola (F12) por errores de conexión.
 
 ### El audio se corta o hay silencios largos
 

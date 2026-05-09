@@ -32,7 +32,7 @@ LiveAudio expone un **servidor WebSocket local** que envía los subtítulos tran
 |---|---|
 | **Protocolo** | WebSocket (`ws://`) |
 | **Host** | `127.0.0.1` (localhost únicamente) |
-| **Puerto** | `8765` |
+| **Puerto** | `8765` (configurable vía `ws_port` en `config.json`) |
 | **Endpoint** | `/` (raíz) |
 | **Formato de mensaje** | JSON |
 
@@ -180,16 +180,22 @@ hideTimeout = setTimeout(() => {
 
 ### Cambiar puerto del WebSocket
 
-Si necesitas usar otro puerto (por ejemplo, si `8765` está ocupado):
+El puerto se configura desde `config.json` — no hace falta editar código:
 
-1. En `core/network.py`, cambia el puerto:
-   ```python
-   async with serve(_handle_client, "127.0.0.1", 9876) as server:
+1. Abre `config.json` y cambia `ws_port`:
+   ```json
+   {
+     "ws_port": 9876
+   }
    ```
-2. En `subtitulos_obs.html`, actualiza la URL:
-   ```javascript
-   ws = new WebSocket('ws://127.0.0.1:9876');
+2. Reinicia LiveAudio. El servidor se iniciará en el nuevo puerto.
+3. Actualiza la URL de tu Browser Source en OBS agregando el parámetro `?port=`:
    ```
+   file:///ruta/a/subtitulos_obs.html?port=9876
+   ```
+   Si no especificas `?port=`, el HTML usa el default `8765`.
+
+> **Tip:** La app muestra el puerto actual en el log al iniciar: `WS: localhost:9876`.
 
 ---
 
@@ -209,7 +215,7 @@ significa que la conexión WebSocket fue exitosa.
 
 | Mensaje en consola | Causa | Solución |
 |---|---|---|
-| `Desconectado. Reintentando...` | LiveAudio no está iniciado o el puerto está ocupado. | Inicia LiveAudio y verifica que no haya otra instancia corriendo. |
+| `Desconectado. Reintentando...` | LiveAudio no está iniciado, el puerto está ocupado, o el `?port=` en la URL de OBS no coincide. | Inicia LiveAudio, verifica el puerto en el log (`WS: localhost:XXXX`), y asegúrate de que la URL de OBS incluya `?port=XXXX` si usás un puerto custom. |
 | `Error parseando WebSocket` | Se recibió un mensaje que no es JSON válido. | Revisa `core/network.py`; probablemente se envió algo que no es un dict. |
 | No aparece nada en consola | El HTML no está conectado al WS correcto. | Verifica la URL del WebSocket en el script. |
 
