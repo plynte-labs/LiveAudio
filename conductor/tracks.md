@@ -18,5 +18,6 @@ This file tracks major LiveAudio tracks. Each track should have its own detailed
 
 ---
 
-- [~] **Track: Critical Bug Fixes — Resilience & Stability**
+- [x] **Track: Critical Bug Fixes — Resilience & Stability**
   *Link: [./tracks/critical-bugfixes_20260509/](./tracks/critical-bugfixes_20260509/)*
+  *Status: completed. Commit: `05bf60b`.*
