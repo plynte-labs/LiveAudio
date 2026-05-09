@@ -138,7 +138,11 @@
         const MAX_SUBTITLE_CHARS = 600;
 
         function connect() {
-            ws = new WebSocket('ws://127.0.0.1:8765');
+            // Read port from query parameter (?port=XXXX), default to 8765
+            const params = new URLSearchParams(window.location.search);
+            const wsPort = params.get('port') || '8765';
+            const wsUrl = `ws://127.0.0.1:${wsPort}`;
+            ws = new WebSocket(wsUrl);
             
             ws.onopen = () => console.log('Conectado al motor ASR');
             
@@ -162,7 +166,9 @@
 
         function showSubtitle(text, style) {
             const safeStyle = VALID_STYLES.has(style) ? style : 'default';
-            const safeText = String(text || '').replace(/[\r\n\t]+/g, ' ').trim().slice(0, MAX_SUBTITLE_CHARS);
+            let safeText = String(text || '').replace(/[\r\n\t]+/g, ' ').trim().slice(0, MAX_SUBTITLE_CHARS);
+            // Strip dangerous Unicode: bidi overrides, control chars
+            safeText = safeText.replace(/[\u202E\u202D\u200E\u200F\u0000\u001b]/g, '');
 
             // Limpiar timers anteriores
             clearTimeout(hideTimeout);

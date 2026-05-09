@@ -90,11 +90,11 @@ async def _poll_queue(text_queue, server, log_queue):
         await asyncio.sleep(0.05)
 
 
-def run_ws_server(text_queue, log_queue=None):
+def run_ws_server(text_queue, log_queue=None, port=8765):
     """Punto de entrada para el multiprocesamiento."""
-    _emit_log(log_queue, "[WebSocket] Iniciando servidor en ws://127.0.0.1:8765")
+    _emit_log(log_queue, f"[WebSocket] Iniciando servidor en ws://127.0.0.1:{port}")
     _emit(log_queue, {"type": "status", "key": "ws", "text": "WS: iniciando", "state": "active"})
-    print("[WebSocket] Iniciando servidor en ws://127.0.0.1:8765")
+    print(f"[WebSocket] Iniciando servidor en ws://127.0.0.1:{port}")
 
     async def main():
         clients = set()
@@ -102,8 +102,8 @@ def run_ws_server(text_queue, log_queue=None):
         async def handle_client(websocket):
             await _handle_client(websocket, clients, log_queue)
 
-        async with serve(handle_client, "127.0.0.1", 8765) as server:
-            _emit(log_queue, {"type": "status", "key": "ws", "text": "WS: localhost:8765", "state": "ok"})
+        async with serve(handle_client, "127.0.0.1", port) as server:
+            _emit(log_queue, {"type": "status", "key": "ws", "text": f"WS: localhost:{port}", "state": "ok"})
             # Ejecutar el polling de la cola en paralelo con el servidor
             await _poll_queue(text_queue, server, log_queue)
 

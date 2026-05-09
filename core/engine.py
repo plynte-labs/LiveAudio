@@ -3,12 +3,16 @@ import os
 import json
 import multiprocessing as mp
 import queue
+import traceback
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from faster_whisper import WhisperModel
+import torch
 
 VALID_SUBTITLE_STYLES = {"default", "karaoke", "neon"}
 VALID_BACKLOG_POLICIES = {"auto", "live_only", "send_all"}
 MAX_TRANSCRIPT_CHARS = 600
 LIVE_QUEUE_TIMEOUT_SEC = 0.5
+ASR_TRANSCRIBE_TIMEOUT_SEC = 15.0
 
 
 def _format_vtt_time(seconds: float) -> str:
@@ -22,7 +26,9 @@ def _format_vtt_time(seconds: float) -> str:
 def _sanitize_text(text: str, max_chars: int = MAX_TRANSCRIPT_CHARS) -> str:
     """Keep subtitles single-line and bounded before logging, saving or broadcasting."""
     clean = " ".join(str(text).split())
-    clean = "".join(ch for ch in clean if ch.isprintable())
+    # Strip dangerous Unicode: bidi overrides, control chars, null bytes
+    dangerous = ('\u202E', '\u202D', '\u200E', '\u200F', '\u0000', '\u001b')
+    clean = "".join(ch for ch in clean if ch.isprintable() and ch not in dangerous)
     if len(clean) > max_chars:
         clean = clean[:max_chars].rstrip() + "..."
     return clean
@@ -73,6 +79,67 @@ def _obs_emit_decision(shared_config, queue_delay):
     if queue_delay > max_delay:
         return False, False, 0.0
     return True, queue_delay > 1.0, catchup_interval if queue_delay > 1.0 else 0.0
+
+
+def _transcribe_with_timeout(model, audio_chunk, timeout_sec=ASR_TRANSCRIBE_TIMEOUT_SEC, log_queue=None, device="cpu"):
+    """Wrap model.transcribe() with a timeout to prevent permanent ASR freezes.
+    
+    Returns (segments, info) on success, or (None, None) on timeout/failure.
+    """
+    def _do_transcribe():
+        return model.transcribe(audio_chunk, language="es", beam_size=5, vad_filter=False, condition_on_previous_text=False)
+
+    # Check VRAM before transcribing on CUDA
+    effective_device = device
+    if device == "cuda":
+        try:
+            free_bytes, _ = torch.cuda.mem_get_info()
+            free_mb = free_bytes / (1024 * 1024)
+            if free_mb < 500:
+                _emit_status(log_queue, "asr", "GPU saturada - usando CPU temporalmente", "warn")
+                _emit_log(log_queue, f"[IA] VRAM baja ({free_mb:.0f}MB). Usando CPU para este chunk.")
+                effective_device = "cpu"
+        except Exception:
+            pass
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_do_transcribe)
+            segments, info = future.result(timeout=timeout_sec)
+
+        # Clear CUDA cache after successful transcribe to prevent VRAM growth
+        if effective_device == "cuda":
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
+
+        return segments, info
+
+    except FuturesTimeout:
+        _emit_status(log_queue, "asr", "ASR: timeout", "warn")
+        _emit_log(log_queue, f"[IA] Transcripcion excedio {timeout_sec}s. Continuando al siguiente chunk.")
+        _emit_transcript(log_queue, {
+            "type": "error",
+            "key": "asr_timeout",
+            "message": f"ASR transcribe timeout after {timeout_sec}s",
+            "recovered": True,
+        })
+        return None, None
+
+    except Exception as e:
+        _emit_status(log_queue, "asr", "ASR: error", "error")
+        tb_summary = traceback.format_exc().split("\n")[-3]
+        _emit_log(log_queue, f"[IA ERROR] {str(e)}")
+        _emit_transcript(log_queue, {
+            "type": "error",
+            "key": "asr_exception",
+            "message": str(e),
+            "traceback_summary": tb_summary,
+            "exception_type": type(e).__name__,
+            "recovered": False,
+        })
+        return None, None
 
 def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queue, shared_config: dict, session_dir: str):
     try:
@@ -131,7 +198,14 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
 
             start_time = time.time()
             _emit_status(log_queue, "asr", "ASR: transcribiendo", "active")
-            segments, info = model.transcribe(audio_chunk, language="es", beam_size=5, vad_filter=False, condition_on_previous_text=False)
+            segments, info = _transcribe_with_timeout(
+                model, audio_chunk, timeout_sec=ASR_TRANSCRIBE_TIMEOUT_SEC,
+                log_queue=log_queue, device=shared_config["device"]
+            )
+            if segments is None:
+                # Timeout or error — skip to next item
+                _emit_status(log_queue, "asr", "ASR: listo", "ok")
+                continue
 
             # Leemos la blacklist en TIEMPO REAL desde la memoria compartida
             blacklist = [w.strip().lower() for w in shared_config["blacklist"].split(",") if w.strip()]

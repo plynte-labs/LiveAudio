@@ -28,6 +28,28 @@ BACKLOG_POLICY_LABELS = {
     "Enviar todo": "send_all",
 }
 BACKLOG_POLICY_BY_VALUE = {value: label for label, value in BACKLOG_POLICY_LABELS.items()}
+
+
+def _validate_output_dir(path):
+    """Validate that output_dir is writable. Returns (is_valid, error_message)."""
+    if not path:
+        return False, "La carpeta de salida no esta configurada."
+    if not os.path.exists(path):
+        return False, f"La carpeta no existe: {path}"
+    if not os.path.isdir(path):
+        return False, f"La ruta no es una carpeta: {path}"
+    try:
+        test_file = os.path.join(path, ".liveaudio_write_test")
+        with open(test_file, "w") as f:
+            f.write("test")
+        os.remove(test_file)
+    except PermissionError:
+        return False, f"No se puede escribir en: {path}. Verifica permisos."
+    except OSError as e:
+        return False, f"Error al escribir en {path}: {e}"
+    return True, ""
+
+
 PROFILE_PRESETS = {
     "fast": {
         "label": "Rápido",
@@ -562,8 +584,14 @@ class LiveASRApp(ctk.CTk):
         return needs_asr_restart, needs_audio_restart
 
     def _validate_draft_config(self, draft):
-        if draft.get("device") == "cuda" and not torch.cuda.is_available():
-            raise RuntimeError("CUDA no está disponible. Cambia a CPU o libera/configura la GPU antes de aplicar este perfil.")
+        if draft.get("device") == "cuda":
+            if not torch.cuda.is_available():
+                raise RuntimeError("CUDA no esta disponible. Cambia a CPU o libera/configura la GPU antes de aplicar este perfil.")
+            # Run a small CUDA test to verify the GPU is actually usable
+            try:
+                torch.zeros(1).cuda()
+            except Exception as e:
+                raise RuntimeError(f"CUDA no responde: {e}. Cambia a CPU antes de aplicar.")
 
         audio_device = draft.get("audio_device")
         if audio_device is not None:
@@ -603,6 +631,12 @@ class LiveASRApp(ctk.CTk):
         self._applying_settings = True
         self.btn_apply.configure(state="disabled")
         try:
+            # Validate output_dir writability before applying
+            output_dir = draft.get("output_dir", "")
+            is_valid, error_msg = _validate_output_dir(output_dir)
+            if not is_valid:
+                raise ValueError(error_msg)
+
             previous_config = copy.deepcopy(self.config_data)
             self._validate_draft_config(draft)
             self.config_data = copy.deepcopy(draft)
@@ -812,7 +846,8 @@ class LiveASRApp(ctk.CTk):
             # Recrear cola de texto para evitar pipes corruptos entre sesiones
             self.text_queue = mp.Queue(maxsize=QUEUE_MAXSIZE)
             
-            self.p_ws = mp.Process(target=run_ws_server, args=(self.text_queue, self.log_queue), daemon=True)
+            ws_port = self.shared_config.get("ws_port", 8765)
+            self.p_ws = mp.Process(target=run_ws_server, args=(self.text_queue, self.log_queue, ws_port), daemon=True)
             self.p_ws.start()
             
             self.hot_swap_engine()

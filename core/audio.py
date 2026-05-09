@@ -126,19 +126,22 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
     _status("vad", "VAD: cargando", "active")
     _log("[Productor] Cargando modelo Silero VAD en CPU...")
     # El VAD es extremadamente ligero, lo corremos en CPU para reservar la VRAM de la GPU
-    hub_dir = torch.hub.get_dir()
-
-    ruta_local_vad = os.path.join(hub_dir, 'snakers4_silero-vad_master')
-
-    model, utils = torch.hub.load(
-        repo_or_dir=ruta_local_vad,
-        model='silero_vad',
-        source='local',
-        force_reload=False,
-        onnx=False,
-        trust_repo=True
-    )
-    _status("vad", "VAD: listo", "ok")
+    try:
+        hub_dir = torch.hub.get_dir()
+        ruta_local_vad = os.path.join(hub_dir, 'snakers4_silero-vad_master')
+        model, utils = torch.hub.load(
+            repo_or_dir=ruta_local_vad,
+            model='silero_vad',
+            source='local',
+            force_reload=False,
+            onnx=False,
+            trust_repo=True
+        )
+        _status("vad", "VAD: listo", "ok")
+    except Exception as e:
+        _log(f"[Productor] ERROR cargando modelo VAD: {e}. Verifica conexion a internet o descarga manualmente Silero VAD.")
+        _status("vad", "VAD: error de carga", "error")
+        raise
     
     # Resolver dispositivo de audio
     device_index, extra_settings = _resolve_device_settings(config)
@@ -152,6 +155,9 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
     # Control de vida del worker
     worker_running = threading.Event()
     worker_running.set()
+    
+    # Señal de shutdown graceful
+    shutdown_event = threading.Event()
     
     # Timestamp del último callback (para el watchdog)
     last_callback_time = time.time()
@@ -195,11 +201,18 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
         def enqueue_phrase(full_audio):
             nonlocal utterance_sequence
             utterance_sequence += 1
-            audio_queue.put({
-                "audio": full_audio,
-                "created_at": time.time(),
-                "sequence": utterance_sequence,
-            })
+            try:
+                audio_queue.put_nowait({
+                    "audio": full_audio,
+                    "created_at": time.time(),
+                    "sequence": utterance_sequence,
+                })
+            except queue.Full:
+                # Queue is full — drop oldest phrase from speech_buffer to prevent blocking
+                if speech_buffer:
+                    speech_buffer.pop(0)  # Drop oldest chunk
+                _status("vad", "VAD: cola llena", "warn")
+                _log("[Productor] ⚠️ Cola de audio saturada. Descartando audio antiguo.")
         
         while worker_running.is_set():
             # Esperar a que haya datos (con timeout para poder chequear worker_running)
@@ -285,7 +298,7 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
     vad_thread = threading.Thread(target=vad_worker, name="VAD-Worker", daemon=True)
     vad_thread.start()
 
-    while True:
+    while not shutdown_event.is_set():
         try:
             with callback_time_lock:
                 last_callback_time = time.time()
@@ -295,7 +308,7 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
                 _log("[Productor] 🎤 Audio conectado y escuchando.")
                 _status("audio", "Audio: escuchando", "ok")
                 
-                while True:
+                while not shutdown_event.is_set():
                     sd.sleep(500)
                     
                     # 1. Si pasaron más de 2 segundos sin que el callback se ejecute = Dispositivo desconectado
@@ -307,7 +320,10 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
                     # 2. Si el sistema reporta que el stream murió
                     if not stream.active:
                         raise sd.PortAudioError("El stream de audio se reporta inactivo.")
-                    
+                
+                # Shutdown signal received — close stream gracefully
+                stream.close()
+                
         except sd.PortAudioError as e:
             _log(f"\n[Productor] ⚠️ ALERTA: Hardware de audio perdido. Detalles: {e}")
             _log("[Productor] 🔄 Buscando dispositivo... reintentando en 3 segundos.")
@@ -328,6 +344,18 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
             _log(f"\n[Productor] ❌ Error inesperado: {e}")
             _status("audio", "Audio: error", "error")
             time.sleep(3)
+    
+    # Graceful shutdown — signal worker to stop and wait for it
+    _log("[Productor] Apagando sistema de audio...")
+    _status("audio", "Audio: apagando", "idle")
+    
+    worker_running.clear()
+    ring_event.set()  # Wake up worker so it can check worker_running
+    
+    if vad_thread.is_alive():
+        vad_thread.join(timeout=2.0)
+    
+    _log("[Productor] Audio apagado correctamente.")
 
 
 if __name__ == '__main__':
