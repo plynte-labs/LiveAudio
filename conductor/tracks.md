@@ -15,9 +15,3 @@ This file tracks major LiveAudio tracks. Each track should have its own detailed
 - [x] **Track: Settings profiles and apply flow**
   *Link: N/A - completed before Conductor track artifacts existed.*
   *Status: completed before Conductor initialization. Commit: `26598e8`.*
-
----
-
-- [x] **Track: Test Foundation — Red-First TDD**
-  *Link: [./tracks/test-foundation_20260509/](./tracks/test-foundation_20260509/)*
-  *Status: completed. Commit: `6ea0a9e`.*
