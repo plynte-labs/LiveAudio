@@ -120,10 +120,16 @@
 - [x] Task: Conductor - User Manual Verification 'GPU Auto-Detection' (Protocol in workflow.md)
 
 ## Phase 10: Collective Review & Sign-Off
-- [x] Task: Run `python -m unittest discover -s tests` — 169 tests pass
+- [x] Task: Run `python -m unittest discover -s tests` — 172 tests pass
 - [x] Task: Verify each REQ has ≥3 test cases
 - [x] Task: Auditor review — all 9 REQs implemented, all 14 AC met
-- [x] Task: Code review — no regressions, clean diffs
+- [x] Task: Dream Team collective review — 4 agents summoned
+    - [x] Architecture: 8 findings (0 critical, 2 medium, 6 low)
+    - [x] Performance: 11 findings (1 critical blocker B1, 3 high, 5 medium, 3 low)
+    - [x] QA: 11 findings (1 critical blocker B2, 2 high, 3 medium, 5 low)
+    - [x] Research: 12 findings (1 high blocker B2, 4 medium, 7 low)
+- [x] Task: Resolve blockers B1 (VRAM fallback) + B2 (GPU auto-detect)
+- [x] Task: Re-run tests — 172 pass
 - [x] Task: Conductor - User Manual Verification 'Collective Review & Sign-Off' (Protocol in workflow.md)
 
 ## Phase 11: Presentation & Merge
