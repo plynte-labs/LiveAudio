@@ -53,8 +53,8 @@ class TestVRAMMonitoring(unittest.TestCase):
 
     @patch("core.engine.torch.cuda.mem_get_info")
     @patch("core.engine.torch.cuda.is_available")
-    def test_vram_low_triggers_fallback(self, mock_cuda, mock_mem):
-        """Low VRAM (<500MB) should trigger CPU fallback."""
+    def test_vram_low_triggers_cache_clear(self, mock_cuda, mock_mem):
+        """Low VRAM (<500MB) should trigger cache clear before transcribe."""
         mock_cuda.return_value = True
         mock_mem.return_value = (200 * 1024 * 1024, 4 * 1024 * 1024 * 1024)  # 200MB free
         free_bytes, _ = mock_mem()
@@ -104,6 +104,52 @@ class TestVRAMCheckFunction(unittest.TestCase):
         is_enough, free_mb = check_vram_available(500)
         self.assertFalse(is_enough)
         self.assertLess(free_mb, 500)
+
+
+class TestGPUAutoDetectConfig(unittest.TestCase):
+    """Tests for GPU auto-detection in config loading."""
+
+    @patch("utils.config.torch.cuda.is_available")
+    @patch("utils.config.os.path.exists")
+    @patch("utils.config.save_config")
+    def test_auto_detect_cpu_when_cuda_unavailable(self, mock_save, mock_exists, mock_cuda):
+        """load_config should default to cpu when CUDA is unavailable."""
+        mock_cuda.return_value = False
+        mock_exists.return_value = False
+
+        from utils.config import load_config, DEFAULT_CONFIG
+        config = load_config()
+
+        self.assertEqual(config["device"], "cpu")
+
+    @patch("utils.config.torch.cuda.is_available")
+    @patch("utils.config.os.path.exists")
+    @patch("utils.config.save_config")
+    def test_keeps_cuda_when_available(self, mock_save, mock_exists, mock_cuda):
+        """load_config should keep cuda when CUDA is available."""
+        mock_cuda.return_value = True
+        mock_exists.return_value = False
+
+        from utils.config import load_config, DEFAULT_CONFIG
+        config = load_config()
+
+        self.assertEqual(config["device"], "cuda")
+
+    @patch("utils.config.torch.cuda.is_available")
+    @patch("utils.config.os.path.exists")
+    @patch("utils.config.save_config")
+    @patch("utils.config.json.load")
+    def test_forces_cpu_when_cuda_unavailable_existing_config(self, mock_json_load, mock_save, mock_exists, mock_cuda):
+        """load_config should force cpu if existing config has cuda but GPU unavailable."""
+        mock_cuda.return_value = False
+        mock_exists.return_value = True
+        mock_json_load.return_value = {"device": "cuda", "output_dir": "/tmp/test"}
+
+        from utils.config import load_config
+        config = load_config()
+
+        self.assertEqual(config["device"], "cpu")
+        mock_save.assert_called_once()  # Config should be saved with updated device
 
 
 if __name__ == "__main__":

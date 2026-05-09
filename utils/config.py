@@ -2,6 +2,11 @@ import os
 import json
 import multiprocessing as mp
 
+try:
+    import torch
+except ImportError:
+    torch = None
+
 CONFIG_FILE = "config.json"
 VALID_DEVICES = {"cpu", "cuda"}
 VALID_MODELS = {
@@ -138,18 +143,28 @@ def _normalize_config(config):
 
 def load_config():
     """
-    Carga la configuración desde config.json.
-    Si faltan keys nuevas, las rellena con los defaults (migración automática).
+    Carga la configuracion desde config.json.
+    Si faltan keys nuevas, las rellena con los defaults (migracion automatica).
     Valida que output_dir sea una ruta normalizada.
+    Auto-detecta GPU: si CUDA no esta disponible, fuerza device a "cpu".
     """
     if not os.path.exists(CONFIG_FILE):
         save_config(DEFAULT_CONFIG)
-        return DEFAULT_CONFIG.copy()
-    
-    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-        config = json.load(f)
+        config = DEFAULT_CONFIG.copy()
+    else:
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            config = json.load(f)
     
     config, updated = _normalize_config(config)
+    
+    # GPU auto-detection: si CUDA no esta disponible, forzar CPU
+    if torch is not None:
+        try:
+            if config.get("device") == "cuda" and not torch.cuda.is_available():
+                config["device"] = "cpu"
+                updated = True
+        except Exception:
+            pass
     
     if updated:
         save_config(config)

@@ -85,20 +85,23 @@ def _transcribe_with_timeout(model, audio_chunk, timeout_sec=ASR_TRANSCRIBE_TIME
     """Wrap model.transcribe() with a timeout to prevent permanent ASR freezes.
     
     Returns (segments, info) on success, or (None, None) on timeout/failure.
+    
+    Note: The model's device is fixed at construction time. When VRAM is low on CUDA,
+    we attempt to free cache before transcribing. If OOM occurs, the exception handler
+    catches it and continues to the next chunk.
     """
     def _do_transcribe():
         return model.transcribe(audio_chunk, language="es", beam_size=5, vad_filter=False, condition_on_previous_text=False)
 
-    # Check VRAM before transcribing on CUDA
-    effective_device = device
+    # Check VRAM before transcribing on CUDA — free cache if low
     if device == "cuda":
         try:
             free_bytes, _ = torch.cuda.mem_get_info()
             free_mb = free_bytes / (1024 * 1024)
             if free_mb < 500:
-                _emit_status(log_queue, "asr", "GPU saturada - usando CPU temporalmente", "warn")
-                _emit_log(log_queue, f"[IA] VRAM baja ({free_mb:.0f}MB). Usando CPU para este chunk.")
-                effective_device = "cpu"
+                _emit_status(log_queue, "asr", "GPU saturada - VRAM baja", "warn")
+                _emit_log(log_queue, f"[IA] VRAM baja ({free_mb:.0f}MB). Liberando cache antes de transcribir.")
+                torch.cuda.empty_cache()
         except Exception:
             pass
 
@@ -107,8 +110,8 @@ def _transcribe_with_timeout(model, audio_chunk, timeout_sec=ASR_TRANSCRIBE_TIME
             future = executor.submit(_do_transcribe)
             segments, info = future.result(timeout=timeout_sec)
 
-        # Clear CUDA cache after successful transcribe to prevent VRAM growth
-        if effective_device == "cuda":
+        # Clear CUDA cache periodically to prevent VRAM growth
+        if device == "cuda":
             try:
                 torch.cuda.empty_cache()
             except Exception:
@@ -130,14 +133,14 @@ def _transcribe_with_timeout(model, audio_chunk, timeout_sec=ASR_TRANSCRIBE_TIME
     except Exception as e:
         _emit_status(log_queue, "asr", "ASR: error", "error")
         tb_summary = traceback.format_exc().split("\n")[-3]
-        _emit_log(log_queue, f"[IA ERROR] {str(e)}")
+        _emit_log(log_queue, f"[IA ERROR] {type(e).__name__}")
         _emit_transcript(log_queue, {
             "type": "error",
             "key": "asr_exception",
-            "message": str(e),
+            "message": type(e).__name__,
             "traceback_summary": tb_summary,
             "exception_type": type(e).__name__,
-            "recovered": False,
+            "recovered": True,
         })
         return None, None
 
