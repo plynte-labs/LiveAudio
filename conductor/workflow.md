@@ -33,12 +33,12 @@
 
 ### Phase 1: Documentation Delegation & Track Scaffolding
 1. Auditor invokes `conductor-newTrack` or manually scaffolds `conductor/tracks/<track-id>/` with `spec.md`, `tasks.md`, `plan.md`.
-2. Auditor delegates documentation tickets to agents based on scope.
-3. Agents draft specs, test plans, idempotency/resilience strategies, and branch plans.
-4. Auditor supervises, identifies gaps, requests revisions.
-5. Agents update until documentation passes auditor review.
-6. Auditor writes confirmed requirements to `conductor/tracks/<track-id>/spec.md`.
-7. **Engram save**: Auditor saves spec decisions and test plan outlines.
+2. Track ID format: `<descriptive-shortname>` (e.g., `obs-backlog`, `auth-login`, `vad-tuning`).
+3. Auditor delegates documentation tickets to agents based on scope.
+4. Agents draft specs, test plans, idempotency/resilience strategies, and branch plans.
+5. Auditor supervises, identifies gaps, requests revisions.
+6. Agents update until documentation passes auditor review.
+7. Auditor writes confirmed requirements to `conductor/tracks/<track-id>/spec.md`.
 
 ### Phase 2: Implementation Delegation
 1. Auditor creates feature branch `feature/<track-shortname>` (shortname maps to track-id).
@@ -46,27 +46,27 @@
 3. Auditor assigns implementation tickets to agents; each task in `tasks.md` must reference a spec requirement ID (e.g., `REQ-1`, `REQ-2`).
 4. Agents implement, write tests, and commit per ticket (only after auditor approval).
 5. Auditor tracks branch progress, ensures no unapproved commits.
-6. **Engram save**: Auditor saves implementation discoveries and config changes.
+6. Branch parallelism: allowed only if auditor explicitly approves and branches do not touch overlapping modules.
 
 ### Phase 3: Collective Review & Sign-Off
 1. After implementation, auditor summons all 4 agents to review the work together.
 2. Agents review code, tests, docs, and branch state. Each agent posts structured sign-off:
    `[Agent Name] SIGN-OFF: PASS | FAIL | PASS-with-notes`
    With 1-3 bullet points of what was reviewed.
-3. **Required review areas per agent**:
+3. **Agent timeout policy**: If an agent does not respond during collective review, auditor reassigns their review area to another agent with overlapping expertise. Document the reassignment and reason.
+4. **Required review areas per agent**:
    - Architecture: WebSocket binding (127.0.0.1 default), config validation, session paths, multiprocessing lifecycle, transcript/audio privacy.
    - Performance: queue backpressure, ASR freeze recovery, OBS burst prevention, VRAM/CPU pressure, VAD throughput, long-session stability.
    - QA: user-facing behavior, regression risk, docs completeness, manual test plan, term consistency, default safety.
    - Research: API compatibility, dependency behavior, traceability (requirements → tests → docs), changelog impact.
-4. If new issues are found: agents document, update docs, and all review the branch together.
-5. Auditor validates that resilience, idempotency, and quality gates are met.
-6. **Explicit gates before proceeding**:
+5. If new issues are found: agents document, update docs, and all review the branch together.
+6. Auditor validates that resilience, idempotency, and quality gates are met.
+7. **Explicit gates before proceeding**:
    - Resilience/idempotency tests exist in `tests/` with `test_resilience_*.py` / `test_idempotent_*.py` naming.
-   - All 4 agents signed off.
+   - All 4 agents signed off (or reassigned per timeout policy).
    - User-facing docs updated (`README.md`, `docs/GETTING_STARTED.md`, `HISTORIAL_CAMBIOS.md`).
    - Changelog updated if user-facing behavior changed.
-7. If issues remain unresolved, auditor escalates to user with options.
-8. **Engram save**: Auditor saves review findings and sign-off status.
+8. If issues remain unresolved, auditor escalates to user with options.
 
 ### Phase 4: Presentation & Feedback
 1. Auditor presents completed work, test results, and updated docs to user.
@@ -75,13 +75,11 @@
    - Spec complete and matches implementation.
    - All tests pass (`python -m compileall main.py core utils` + resilience/idempotency tests).
    - Docs updated for user-facing behavior.
-   - All 4 agents signed off.
-   - Engram session summary saved.
+   - All 4 agents signed off (or reassigned per timeout policy).
    - `conductor/tracks.md` status ready for `[x]`.
    - Changelog updated.
 4. If approved, auditor merges branch, updates track to `[x] Completed`, deletes feature branch, and closes track.
 5. If rejected, auditor delegates fixes, updates branch, and repeats Phase 3.
-6. **Engram save**: Auditor saves completed track summary.
 
 ## Specialized Review Owners
 
@@ -93,7 +91,7 @@
 ## Quality Gates
 
 - Code compiles with `python -m compileall main.py core utils` after Python changes.
-- Resilience tests cover: device disconnects, GPU freezes, queue backpressure, OBS reconnection, ASR slower than speech input (60s+), CUDA model load failure, OBS burst after freeze, slow disk during session persistence.
+- Resilience strategy: agents design tests that verify failure detection and recovery logic. Long-session resilience (30min–2h) is validated by the Product Owner providing real session logs; agents analyze logs to identify failure points, root causes, and recovery gaps. Automated tests cover immediate failure modes: device disconnects, GPU freezes, queue backpressure, OBS reconnection, CUDA model load failure.
 - Idempotency tests verify: duplicate messages, retry loops, config re-applications produce identical state, partial-failure mid-apply, WebSocket reconnection idempotency.
 - Documentation is updated for user-facing behavior.
 - Config changes include safe defaults and validation.
@@ -107,7 +105,7 @@
 - Agents commit only to assigned branch after auditor approval.
 - Commit messages follow conventional format: `feat:`, `fix:`, `test:`, `docs:`.
 - Branch lifecycle: auditor tags branch at each phase gate; after merge, auditor deletes feature branch within 24h or next session.
-- If two tracks touch overlapping files, auditor serializes them — no parallel branches on same module.
+- Branch parallelism: allowed only if auditor explicitly approves and branches do not touch overlapping modules.
 - Do not rewrite history or revert user changes unless explicitly requested.
 - Merge to `master` only after collective review passes and user approves.
 - Rollback: if merge introduces regression, auditor uses `conductor-revert` skill to revert logical units of work.
@@ -116,8 +114,18 @@
 
 - Run automated validation available for the changed area.
 - Provide manual verification steps for streamer/OBS workflows when automation is insufficient.
-- Save a concise Engram session summary before closing the work.
+- Save a concise Engram session summary only at session end (not per phase) to avoid noise.
 - Auditor confirms all agents have signed off before proceeding.
+
+## Track Status Lifecycle
+
+Tracks in `conductor/tracks.md` use these statuses:
+- `[ ]` — Planned, not started.
+- `[~]` — In Progress (implementation or review active).
+- `[x]` — Completed, merged, and closed.
+- `[-]` — Cancelled or deferred.
+
+Status must be updated by the auditor at each phase transition. Closed tracks retain commit SHA for traceability.
 
 ## Acceptance Criteria Template
 
@@ -142,4 +150,12 @@ Before Phase 4 presentation, verify:
 - Session resume after crash
 - Settings profile apply/discard
 - Config validation rejects unsafe values
-- Long-session stability (>2h simulated)
+
+## Resilience Log Analysis Protocol
+
+For long-session resilience (30min–2h), automated simulation is inefficient. Instead:
+1. Product Owner runs a real session and provides the session log/transcript.
+2. Agents analyze the log to identify: failure points, root causes, recovery gaps, memory growth patterns, and queue pressure events.
+3. Agents document findings with file references and timestamps.
+4. Auditor consolidates findings and delegates fixes if needed.
+5. Fixes are validated against the same log patterns before merge.
