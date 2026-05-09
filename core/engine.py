@@ -107,8 +107,11 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
             _emit_log(log_queue, f"[IA] Continuando sesion en: {session_dir}")
             with open(vtt_path, "r", encoding="utf-8") as f:
                 for line in f:
-                    if line.strip().isdigit():
-                        cue_counter = max(cue_counter, int(line.strip()))
+                    stripped = line.strip()
+                    if stripped.startswith("#cue:") and stripped[5:].isdigit():
+                        cue_counter = int(stripped[5:])
+                    elif stripped.isdigit():
+                        cue_counter = max(cue_counter, int(stripped))
 
         while True:
             audio_item = audio_queue.get()
@@ -165,7 +168,7 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
                     cue_counter += 1
                     vtt_start = _format_vtt_time(queue_delay)
                     vtt_end = _format_vtt_time(queue_delay + latency)
-                    f.write(f"{cue_counter}\n{vtt_start} --> {vtt_end}\n{texto_final}\n\n")
+                    f.write(f"{cue_counter}\n{vtt_start} --> {vtt_end}\n{texto_final}\n\n#cue:{cue_counter}\n")
 
                 # Empaquetamos enviando el estilo actualizado en TIEMPO REAL
                 style = shared_config.get("subtitle_style", "default")

@@ -30,6 +30,7 @@ DEFAULT_CONFIG = {
     "audio_device": None,  # None = dispositivo por defecto del OS
     "selected_profile_id": "balanced",
     "profile_mode": "preset",
+    "ws_port": 8765,
 }
 
 
