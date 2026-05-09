@@ -15,3 +15,8 @@ This file tracks major LiveAudio tracks. Each track should have its own detailed
 - [x] **Track: Settings profiles and apply flow**
   *Link: N/A - completed before Conductor track artifacts existed.*
   *Status: completed before Conductor initialization. Commit: `26598e8`.*
+
+---
+
+- [ ] **Track: Critical Bug Fixes — Resilience & Stability**
+  *Link: [./tracks/critical-bugfixes_20260509/](./tracks/critical-bugfixes_20260509/)*
