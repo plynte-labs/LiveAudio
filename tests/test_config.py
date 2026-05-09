@@ -1,0 +1,307 @@
+"""Tests for utils/config.py validation functions (REQ-2)."""
+
+import unittest
+import os
+import json
+import tempfile
+import shutil
+from unittest.mock import patch
+
+from utils.config import (
+    _clamp_number,
+    _normalize_config,
+    load_config,
+    save_config,
+    DEFAULT_CONFIG,
+    VALID_DEVICES,
+    VALID_MODELS,
+    VALID_SUBTITLE_STYLES,
+    VALID_BACKLOG_POLICIES,
+)
+
+
+class TestClampNumber(unittest.TestCase):
+    """Tests for _clamp_number() function."""
+
+    def test_accepts_value_within_range(self):
+        """Value within range should be returned unchanged."""
+        value, changed = _clamp_number(1.0, 0.5, 0.3, 2.0, float)
+        self.assertEqual(value, 1.0)
+        self.assertFalse(changed)
+
+    def test_rejects_value_below_min(self):
+        """Value below min should be clamped to min and report changed."""
+        value, changed = _clamp_number(0.1, 0.5, 0.3, 2.0, float)
+        self.assertEqual(value, 0.3)
+        self.assertTrue(changed)
+
+    def test_rejects_value_above_max(self):
+        """Value above max should be clamped to max and report changed."""
+        value, changed = _clamp_number(5.0, 0.5, 0.3, 2.0, float)
+        self.assertEqual(value, 2.0)
+        self.assertTrue(changed)
+
+    def test_handles_none_value(self):
+        """None value should return default and report changed."""
+        value, changed = _clamp_number(None, 0.5, 0.3, 2.0, float)
+        self.assertEqual(value, 0.5)
+        self.assertTrue(changed)
+
+    def test_handles_non_numeric_string(self):
+        """Non-numeric string should return default and report changed."""
+        value, changed = _clamp_number("abc", 0.5, 0.3, 2.0, float)
+        self.assertEqual(value, 0.5)
+        self.assertTrue(changed)
+
+    def test_handles_empty_string(self):
+        """Empty string should return default and report changed."""
+        value, changed = _clamp_number("", 0.5, 0.3, 2.0, float)
+        self.assertEqual(value, 0.5)
+        self.assertTrue(changed)
+
+    def test_casts_to_int_when_specified(self):
+        """Should cast to int when cast=int is specified."""
+        value, changed = _clamp_number(3.7, 2, 1, 10, int)
+        self.assertEqual(value, 3)
+        self.assertFalse(changed)
+
+    def test_rejects_negative_duration(self):
+        """Negative durations should be clamped to minimum."""
+        value, changed = _clamp_number(-1.0, 0.8, 0.3, 2.0, float)
+        self.assertEqual(value, 0.3)
+        self.assertTrue(changed)
+
+
+class TestNormalizeConfig(unittest.TestCase):
+    """Tests for _normalize_config() function."""
+
+    def test_adds_missing_keys_with_defaults(self):
+        """Missing keys should be filled with defaults."""
+        config = {}
+        result, updated = _normalize_config(config)
+        for key in DEFAULT_CONFIG:
+            self.assertIn(key, result)
+
+    def test_normalizes_invalid_device(self):
+        """Invalid device should be reset to default."""
+        config = DEFAULT_CONFIG.copy()
+        config["device"] = "quantum_computer"
+        result, updated = _normalize_config(config)
+        self.assertEqual(result["device"], "cuda")
+        self.assertTrue(updated)
+
+    def test_normalizes_invalid_model(self):
+        """Invalid model should be reset to default."""
+        config = DEFAULT_CONFIG.copy()
+        config["model_size"] = "gigantic (Impossible)"
+        result, updated = _normalize_config(config)
+        self.assertEqual(result["model_size"], DEFAULT_CONFIG["model_size"])
+        self.assertTrue(updated)
+
+    def test_normalizes_invalid_subtitle_style(self):
+        """Invalid subtitle style should be reset to default."""
+        config = DEFAULT_CONFIG.copy()
+        config["subtitle_style"] = "disco"
+        result, updated = _normalize_config(config)
+        self.assertEqual(result["subtitle_style"], "default")
+        self.assertTrue(updated)
+
+    def test_normalizes_invalid_backlog_policy(self):
+        """Invalid backlog policy should be reset to default."""
+        config = DEFAULT_CONFIG.copy()
+        config["subtitle_backlog_policy"] = "spam_everything"
+        result, updated = _normalize_config(config)
+        self.assertEqual(result["subtitle_backlog_policy"], "auto")
+        self.assertTrue(updated)
+
+    def test_clamps_silence_timeout(self):
+        """Silence timeout outside range should be clamped."""
+        config = DEFAULT_CONFIG.copy()
+        config["silence_timeout"] = 5.0
+        result, updated = _normalize_config(config)
+        self.assertLessEqual(result["silence_timeout"], 2.0)
+        self.assertTrue(updated)
+
+    def test_clamps_max_chunk_duration(self):
+        """Max chunk duration outside range should be clamped."""
+        config = DEFAULT_CONFIG.copy()
+        config["max_chunk_duration"] = 1.0
+        result, updated = _normalize_config(config)
+        self.assertGreaterEqual(result["max_chunk_duration"], 2.0)
+        self.assertTrue(updated)
+
+    def test_normalizes_output_dir(self):
+        """Output dir should be normalized to absolute path."""
+        config = DEFAULT_CONFIG.copy()
+        config["output_dir"] = "sessions"
+        result, updated = _normalize_config(config)
+        self.assertTrue(os.path.isabs(result["output_dir"]))
+
+    def test_handles_none_output_dir(self):
+        """None output_dir should be reset to default."""
+        config = DEFAULT_CONFIG.copy()
+        config["output_dir"] = None
+        result, updated = _normalize_config(config)
+        self.assertEqual(result["output_dir"], DEFAULT_CONFIG["output_dir"])
+        self.assertTrue(updated)
+
+    def test_handles_empty_output_dir(self):
+        """Empty output_dir should be reset to default."""
+        config = DEFAULT_CONFIG.copy()
+        config["output_dir"] = ""
+        result, updated = _normalize_config(config)
+        self.assertEqual(result["output_dir"], DEFAULT_CONFIG["output_dir"])
+        self.assertTrue(updated)
+
+    def test_rejects_negative_duration(self):
+        """Negative duration values should be rejected (clamped to min)."""
+        config = DEFAULT_CONFIG.copy()
+        config["silence_timeout"] = -0.5
+        result, updated = _normalize_config(config)
+        self.assertGreaterEqual(result["silence_timeout"], 0.3)
+        self.assertTrue(updated)
+
+    def test_rejects_invalid_port(self):
+        """Port values outside 1-65535 should be rejected."""
+        # Note: port validation is not yet implemented in config.py
+        # This test will fail until port validation is added
+        config = DEFAULT_CONFIG.copy()
+        # Add a port field (currently not in DEFAULT_CONFIG)
+        config["ws_port"] = 99999
+        result, updated = _normalize_config(config)
+        # After fix: port should be clamped or rejected
+        self.assertIn("ws_port", result)
+        self.assertGreaterEqual(result["ws_port"], 1)
+        self.assertLessEqual(result["ws_port"], 65535)
+
+    def test_rejects_empty_blacklist(self):
+        """Empty blacklist should be reset to default."""
+        config = DEFAULT_CONFIG.copy()
+        config["blacklist"] = ""
+        result, updated = _normalize_config(config)
+        # After fix: empty blacklist should be rejected
+        self.assertNotEqual(result["blacklist"], "")
+
+    def test_handles_non_string_blacklist(self):
+        """Non-string blacklist should be reset to default."""
+        config = DEFAULT_CONFIG.copy()
+        config["blacklist"] = 12345
+        result, updated = _normalize_config(config)
+        self.assertEqual(result["blacklist"], DEFAULT_CONFIG["blacklist"])
+        self.assertTrue(updated)
+
+    def test_normalizes_audio_device_invalid_type(self):
+        """Non-dict audio_device should be reset to None."""
+        config = DEFAULT_CONFIG.copy()
+        config["audio_device"] = "not_a_dict"
+        result, updated = _normalize_config(config)
+        self.assertIsNone(result["audio_device"])
+        self.assertTrue(updated)
+
+    def test_normalizes_profile_mode_invalid(self):
+        """Invalid profile_mode should be reset to default."""
+        config = DEFAULT_CONFIG.copy()
+        config["profile_mode"] = "custom_made"
+        result, updated = _normalize_config(config)
+        self.assertEqual(result["profile_mode"], "preset")
+        self.assertTrue(updated)
+
+
+class TestConfigValidation(unittest.TestCase):
+    """Tests for config validation of unsafe values."""
+
+    def test_rejects_negative_silence_timeout(self):
+        """Negative silence_timeout should be clamped to minimum."""
+        config = DEFAULT_CONFIG.copy()
+        config["silence_timeout"] = -1.0
+        result, updated = _normalize_config(config)
+        self.assertGreaterEqual(result["silence_timeout"], 0.3)
+
+    def test_rejects_excessive_silence_timeout(self):
+        """Excessive silence_timeout should be clamped to maximum."""
+        config = DEFAULT_CONFIG.copy()
+        config["silence_timeout"] = 100.0
+        result, updated = _normalize_config(config)
+        self.assertLessEqual(result["silence_timeout"], 2.0)
+
+    def test_rejects_negative_max_chunk_duration(self):
+        """Negative max_chunk_duration should be clamped to minimum."""
+        config = DEFAULT_CONFIG.copy()
+        config["max_chunk_duration"] = -5.0
+        result, updated = _normalize_config(config)
+        self.assertGreaterEqual(result["max_chunk_duration"], 2.0)
+
+    def test_rejects_excessive_max_chunk_duration(self):
+        """Excessive max_chunk_duration should be clamped to maximum."""
+        config = DEFAULT_CONFIG.copy()
+        config["max_chunk_duration"] = 100.0
+        result, updated = _normalize_config(config)
+        self.assertLessEqual(result["max_chunk_duration"], 15.0)
+
+    def test_rejects_zero_cpu_threads(self):
+        """Zero cpu_threads should be clamped to minimum of 1."""
+        config = DEFAULT_CONFIG.copy()
+        config["cpu_threads"] = 0
+        result, updated = _normalize_config(config)
+        self.assertGreaterEqual(result["cpu_threads"], 1)
+
+    def test_rejects_negative_subtitle_delay(self):
+        """Negative subtitle_max_live_delay_sec should be clamped to minimum."""
+        config = DEFAULT_CONFIG.copy()
+        config["subtitle_max_live_delay_sec"] = -5.0
+        result, updated = _normalize_config(config)
+        self.assertGreaterEqual(result["subtitle_max_live_delay_sec"], 1.0)
+
+    def test_rejects_negative_catchup_interval(self):
+        """Negative subtitle_catchup_interval_sec should be clamped to minimum."""
+        config = DEFAULT_CONFIG.copy()
+        config["subtitle_catchup_interval_sec"] = -1.0
+        result, updated = _normalize_config(config)
+        self.assertGreaterEqual(result["subtitle_catchup_interval_sec"], 0.0)
+
+
+class TestLoadSaveConfig(unittest.TestCase):
+    """Tests for load_config() and save_config() functions."""
+
+    def setUp(self):
+        """Create a temporary directory for config files."""
+        self.test_dir = tempfile.mkdtemp()
+        self.original_cwd = os.getcwd()
+        os.chdir(self.test_dir)
+
+    def tearDown(self):
+        """Clean up temporary directory."""
+        os.chdir(self.original_cwd)
+        shutil.rmtree(self.test_dir)
+
+    def test_load_config_creates_default_if_missing(self):
+        """load_config should create config.json with defaults if missing."""
+        config = load_config()
+        self.assertTrue(os.path.exists("config.json"))
+        for key in DEFAULT_CONFIG:
+            self.assertIn(key, config)
+
+    def test_load_config_reads_existing(self):
+        """load_config should read existing config.json."""
+        test_config = {"device": "cpu", "model_size": "tiny (Más rápido, baja precisión)"}
+        save_config(test_config)
+        config = load_config()
+        self.assertEqual(config["device"], "cpu")
+
+    def test_load_config_fills_missing_keys(self):
+        """load_config should fill missing keys with defaults."""
+        save_config({"device": "cpu"})
+        config = load_config()
+        self.assertIn("model_size", config)
+        self.assertIn("blacklist", config)
+
+    def test_save_config_writes_valid_json(self):
+        """save_config should write valid JSON."""
+        save_config(DEFAULT_CONFIG)
+        with open("config.json", "r", encoding="utf-8") as f:
+            loaded = json.load(f)
+        self.assertEqual(loaded["device"], DEFAULT_CONFIG["device"])
+
+
+if __name__ == "__main__":
+    unittest.main()

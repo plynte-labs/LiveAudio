@@ -94,7 +94,7 @@ def _normalize_config(config):
         config["continuous_session"] = bool(config.get("continuous_session"))
         updated = True
 
-    if not isinstance(config.get("blacklist"), str):
+    if not isinstance(config.get("blacklist"), str) or not config.get("blacklist", "").strip():
         config["blacklist"] = DEFAULT_CONFIG["blacklist"]
         updated = True
 
@@ -126,6 +126,12 @@ def _normalize_config(config):
     if config.get("profile_mode") not in {"preset", "custom"}:
         config["profile_mode"] = DEFAULT_CONFIG["profile_mode"]
         updated = True
+
+    ws_port = config.get("ws_port")
+    if ws_port is not None:
+        port_val, port_changed = _clamp_number(ws_port, 8765, 1, 65535, int)
+        config["ws_port"] = port_val
+        updated = updated or port_changed
 
     return config, updated
 

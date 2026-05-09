@@ -11,6 +11,14 @@ MAX_TRANSCRIPT_CHARS = 600
 LIVE_QUEUE_TIMEOUT_SEC = 0.5
 
 
+def _format_vtt_time(seconds: float) -> str:
+    """Convert seconds to WebVTT timestamp format HH:MM:SS.mmm."""
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = seconds % 60
+    return f"{hours:02d}:{minutes:02d}:{secs:06.3f}"
+
+
 def _sanitize_text(text: str, max_chars: int = MAX_TRANSCRIPT_CHARS) -> str:
     """Keep subtitles single-line and bounded before logging, saving or broadcasting."""
     clean = " ".join(str(text).split())
@@ -89,6 +97,7 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
         vtt_path = os.path.join(session_dir, "subtitles.vtt")
         jsonl_path = os.path.join(session_dir, "transcript.jsonl")
         
+        cue_counter = 0
         if not os.path.exists(vtt_path):
             with open(vtt_path, "w", encoding="utf-8") as f: f.write("WEBVTT\n\n")
             _emit_status(log_queue, "session", "Sesion: guardando", "ok")
@@ -96,6 +105,10 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
         else:
             _emit_status(log_queue, "session", "Sesion: guardando", "ok")
             _emit_log(log_queue, f"[IA] Continuando sesion en: {session_dir}")
+            with open(vtt_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    if line.strip().isdigit():
+                        cue_counter = max(cue_counter, int(line.strip()))
 
         while True:
             audio_item = audio_queue.get()
@@ -149,7 +162,10 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
                     f.write(json.dumps(transcript_record, ensure_ascii=False) + "\n")
                 
                 with open(vtt_path, "a", encoding="utf-8") as f:
-                    f.write(f"{texto_final}\n\n")
+                    cue_counter += 1
+                    vtt_start = _format_vtt_time(queue_delay)
+                    vtt_end = _format_vtt_time(queue_delay + latency)
+                    f.write(f"{cue_counter}\n{vtt_start} --> {vtt_end}\n{texto_final}\n\n")
 
                 # Empaquetamos enviando el estilo actualizado en TIEMPO REAL
                 style = shared_config.get("subtitle_style", "default")
