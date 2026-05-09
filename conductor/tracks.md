@@ -18,5 +18,6 @@ This file tracks major LiveAudio tracks. Each track should have its own detailed
 
 ---
 
-- [ ] **Track: Test Foundation — Red-First TDD**
+- [x] **Track: Test Foundation — Red-First TDD**
   *Link: [./tracks/test-foundation_20260509/](./tracks/test-foundation_20260509/)*
+  *Status: completed. Commit: `6ea0a9e`.*
