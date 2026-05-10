@@ -137,6 +137,66 @@
         const VALID_STYLES = new Set(['default', 'karaoke', 'neon']);
         const MAX_SUBTITLE_CHARS = 600;
 
+        // --- Backpressure: Debounce + Max Queue ---
+        const MAX_PENDING_QUEUE = 5;
+        const DEBOUNCE_MS = 150; // Minimum time between subtitle renders
+        let pendingQueue = [];
+        let lastShowTime = 0;
+        let isShowing = false;
+        let debounceTimer = null;
+
+        function enqueueSubtitle(text, style) {
+            // If queue is full, discard oldest (backpressure)
+            if (pendingQueue.length >= MAX_PENDING_QUEUE) {
+                pendingQueue.shift(); // Discard oldest
+            }
+            pendingQueue.push({ text, style });
+            
+            // If not currently showing, try to show immediately
+            if (!isShowing) {
+                processQueue();
+            }
+        }
+
+        function processQueue() {
+            if (pendingQueue.length === 0) {
+                isShowing = false;
+                return;
+            }
+
+            isShowing = true;
+            const now = Date.now();
+            const timeSinceLastShow = now - lastShowTime;
+
+            try {
+                if (timeSinceLastShow < DEBOUNCE_MS) {
+                    // Debounce: wait before showing next subtitle
+                    if (debounceTimer) clearTimeout(debounceTimer);
+                    debounceTimer = setTimeout(() => {
+                        const item = pendingQueue.shift();
+                        showSubtitle(item.text, item.style);
+                        lastShowTime = Date.now();
+                    }, DEBOUNCE_MS - timeSinceLastShow);
+                } else {
+                    // Show immediately
+                    const item = pendingQueue.shift();
+                    showSubtitle(item.text, item.style);
+                    lastShowTime = Date.now();
+                }
+            } catch (e) {
+                console.error("Error showing subtitle:", e);
+                isShowing = false;
+                // Try next after delay
+                setTimeout(processQueue, 100);
+            }
+        }
+
+        // Called when subtitle animation completes
+        function onSubtitleComplete() {
+            isShowing = false;
+            processQueue(); // Process next in queue
+        }
+
         function connect() {
             // Read port from query parameter (?port=XXXX), default to 8765
             const params = new URLSearchParams(window.location.search);
@@ -151,7 +211,7 @@
                     const data = JSON.parse(event.data);
                     // Aseguramos que data sea un objeto con text y style
                     if (data && data.text) {
-                        showSubtitle(data.text, data.style || 'default');
+                        enqueueSubtitle(data.text, data.style || 'default');
                     }
                 } catch (e) {
                     console.error("Error parseando WebSocket:", e);
@@ -174,11 +234,14 @@
             clearTimeout(hideTimeout);
             clearTimeout(cleanupTimeout);
             
-            // Limpiar el contenedor anterior
-            container.innerHTML = '';
+            // Remove previous subtitle from DOM using removeChild (predictable GC)
+            let existing = container.querySelector('.sub-box');
+            if (existing) {
+                container.removeChild(existing);
+                existing = null; // Nullify reference for GC
+            }
             
             const sub = document.createElement('div');
-            // Agregamos la clase base (para la animación general) y la clase del estilo específico
             sub.className = `sub-box style-${safeStyle}`;
             
             if (safeStyle === 'karaoke') {
@@ -229,7 +292,12 @@
                 
                 // Limpiar el nodo del DOM después de que termine la animación de salida
                 cleanupTimeout = setTimeout(() => {
-                    container.innerHTML = '';
+                    // Use removeChild for predictable GC
+                    if (sub.parentNode) {
+                        sub.parentNode.removeChild(sub);
+                    }
+                    // Signal queue to process next subtitle
+                    onSubtitleComplete();
                 }, 600); // Debe ser >= duración de la transición de salida
                 
             }, 5000);

@@ -24,6 +24,6 @@ This file tracks major LiveAudio tracks. Each track should have its own detailed
 
 ---
 
-- [ ] **Track: Subtitle Style System v2**
+- [~] **Track: Subtitle Style System v2**
   *Link: [./tracks/subtitle-style-system_20260509/](./tracks/subtitle-style-system_20260509/)*
 

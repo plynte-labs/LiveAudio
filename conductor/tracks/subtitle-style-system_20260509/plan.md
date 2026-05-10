@@ -1,30 +1,38 @@
 # Implementation Plan: Subtitle Style System v2
 
 ## Phase 1: Memory Leak Fix (REQ-1)
-- [ ] Task: Write tests — Red phase (tests fail)
-    - [ ] Test DOM node count stable after 100 subtitle cycles
-    - [ ] Test setTimeout references cleared before new subtitle
-    - [ ] Test object pool recycles elements instead of creating new
-    - [ ] Test no closure captures prevent GC
-- [ ] Task: Fix `subtitulos_obs.html` — Green phase
-    - [ ] Replace `innerHTML = ''` with `removeChild()`
-    - [ ] Nullify references after removal
-    - [ ] Cancel pending setTimeouts before creating new ones
-    - [ ] Implement object pool of 3-5 pre-created elements
-- [ ] Task: Verify all memory leak tests pass
-- [ ] Task: Conductor - User Manual Verification 'Memory Leak Fix' (Protocol in workflow.md)
+- [x] Task: Write tests — Red phase (tests fail)
+    - [x] Test `container.innerHTML = ''` not used for clearing
+    - [x] Test `removeChild()` used for predictable GC
+    - [x] Test DOM references nullified after removal
+    - [x] Test setTimeout references cleared before new ones
+    - [x] Test GC-friendly pattern (removeChild + null)
+    - [x] Test no closure capture leak
+- [x] Task: Fix `subtitulos_obs.html` — Green phase
+    - [x] Replace `innerHTML = ''` with `removeChild()`
+    - [x] Nullify references after removal
+    - [x] Cancel pending setTimeouts before creating new ones
+    - [x] Remove object pooling (rejected per Architecture review)
+- [x] Task: Verify all memory leak tests pass
+- [x] Task: Conductor - User Manual Verification 'Memory Leak Fix' (Protocol in workflow.md)
 
 ## Phase 2: Client-Side Backpressure (REQ-2)
-- [ ] Task: Write tests — Red phase (tests fail)
-    - [ ] Test debounce timer prevents rapid re-renders
-    - [ ] Test max queue of 3 messages discards oldest
-    - [ ] Test no subtitle flash under rapid production
-- [ ] Task: Fix `subtitulos_obs.html` and `core/network.py` — Green phase
-    - [ ] Add debounce timer in JS client
-    - [ ] Add max queue of 3 messages in JS
-    - [ ] Add `ws.bufferedAmount` check in Python broadcast loop
-- [ ] Task: Verify all backpressure tests pass
-- [ ] Task: Conductor - User Manual Verification 'Client-Side Backpressure' (Protocol in workflow.md)
+- [x] Task: Write tests — Red phase (tests fail)
+    - [x] Test debounce timer prevents rapid re-renders
+    - [x] Test max queue discards oldest when full
+    - [x] Test no subtitle flash under rapid production
+    - [x] Test WebSocket buffer size checked before sending
+    - [x] Test pause production when buffer exceeds threshold
+- [x] Task: Fix `subtitulos_obs.html` and `core/network.py` — Green phase
+    - [x] Add debounce timer (150ms) in JS client
+    - [x] Add max queue of 5 messages in JS
+    - [x] Add `transport.get_write_buffer_size()` check in Python
+    - [x] Add retry_buffer (max 10) instead of single message
+    - [x] Add ping_interval=10, ping_timeout=5 for dead connection cleanup
+    - [x] Add backpressure duration tracking
+    - [x] Add backpressure check to replay buffer
+- [x] Task: Verify all backpressure tests pass
+- [x] Task: Conductor - User Manual Verification 'Client-Side Backpressure' (Protocol in workflow.md)
 
 ## Phase 3: CSS Custom Properties Theme Engine (REQ-3)
 - [ ] Task: Write tests — Red phase (tests fail)

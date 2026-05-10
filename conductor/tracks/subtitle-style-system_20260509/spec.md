@@ -6,17 +6,19 @@ Evolve LiveAudio's subtitle system from a static HTML file to a modular, CSS cus
 ## Functional Requirements
 
 ### REQ-1: Memory Leak Fix (P0)
-- Replace `container.innerHTML = ''` with `container.removeChild(sub)` for predictable GC
-- Nullify references after removal: `sub = null`
+- Replace `container.innerHTML = ''` with `container.removeChild()` for predictable GC
+- Nullify references after removal: `existing = null`
 - Cancel all pending `setTimeout` references before creating new ones
-- Use object pooling: maintain 3-5 pre-created DOM elements, recycle instead of create/destroy
 - Verify no closure captures prevent GC
+- Note: Object pooling was evaluated but rejected — `removeChild()` + nullify is sufficient for sessions <4h and avoids DOM pool conflicts (see Architecture review)
 
 ### REQ-2: Client-Side Backpressure (P0)
-- Implement debounce timer in JS client: wait configurable ms between subtitle renders
-- Implement max queue of 3 messages: if more arrive while one is displaying, discard oldest
-- Add `ws.bufferedAmount` check on Python side: if > 64KB, pause subtitle production
+- Implement debounce timer in JS client: wait 150ms between subtitle renders
+- Implement max queue of 5 messages: if more arrive while one is displaying, discard oldest
+- Add `transport.get_write_buffer_size()` check on Python side: if > 64KB, buffer message for retry
 - Subtitles must not flash or interrupt mid-animation
+- Server-side: `retry_buffer` (max 10) buffers messages during backpressure, drops oldest when full
+- Dead connection cleanup via `ping_interval=10, ping_timeout=5`
 
 ### REQ-3: CSS Custom Properties Theme Engine
 - Replace 3 hardcoded CSS classes with CSS custom properties system

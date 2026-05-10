@@ -48,6 +48,22 @@ async def _poll_queue(text_queue, server, log_queue):
     """Polling loop que lee la cola IPC y hace broadcast usando la API nativa de websockets 16."""
     replay_buffer = []
     next_replay_at = 0.0
+    HIGH_WATER_MARK = 65536  # 64KB — pause production if buffer exceeds this
+    MAX_RETRY_BUFFER = 10  # Max messages to buffer during backpressure
+    retry_buffer = []  # Buffer for messages that couldn't be sent due to backpressure
+    backpressure_start = None  # Track when backpressure started
+
+    def _can_broadcast():
+        """Check if any client's buffer exceeds high water mark."""
+        for conn in server.connections:
+            try:
+                if hasattr(conn, 'transport') and conn.transport:
+                    buffered = conn.transport.get_write_buffer_size()
+                    if buffered > HIGH_WATER_MARK:
+                        return False
+            except Exception:
+                pass  # If we can't check, assume OK
+        return True
 
     def _broadcast_msg(msg):
         payload = json.dumps(msg)
@@ -56,8 +72,33 @@ async def _poll_queue(text_queue, server, log_queue):
         # server.connections devuelve el set de conexiones activas.
         broadcast(server.connections, payload)
 
+    def _flush_retry_buffer():
+        """Try to send all buffered messages. Returns True if all sent."""
+        nonlocal backpressure_start
+        while retry_buffer:
+            if _can_broadcast():
+                msg = retry_buffer.pop(0)
+                _broadcast_msg(msg)
+                if backpressure_start:
+                    duration = asyncio.get_running_loop().time() - backpressure_start
+                    if duration >= 5.0:
+                        _emit_log(log_queue, f"[WebSocket] Backpressure resuelto despues de {duration:.1f}s")
+                    backpressure_start = None
+            else:
+                if not backpressure_start:
+                    backpressure_start = asyncio.get_running_loop().time()
+                    _emit_log(log_queue, "[WebSocket] Backpressure activo — bufferizando mensajes")
+                return False
+        return True
+
     while True:
         try:
+            # First try to flush the retry buffer
+            if retry_buffer:
+                if not _flush_retry_buffer():
+                    await asyncio.sleep(0.1)  # Wait before retry
+                    continue
+
             while True:
                 msg = text_queue.get_nowait()
                 if msg is None:  # Señal de apagado
@@ -66,7 +107,18 @@ async def _poll_queue(text_queue, server, log_queue):
                 if isinstance(msg, dict) and msg.get("is_replay") and msg.get("catchup_interval_sec", 0) > 0:
                     replay_buffer.append(msg)
                 else:
-                    _broadcast_msg(msg)
+                    if _can_broadcast():
+                        _broadcast_msg(msg)
+                    else:
+                        # Buffer the message for retry instead of losing it
+                        if len(retry_buffer) >= MAX_RETRY_BUFFER:
+                            dropped = retry_buffer.pop(0)  # Drop oldest
+                            _emit_log(log_queue, "[WebSocket] Buffer de retry lleno — descartando mensaje viejo")
+                        retry_buffer.append(msg)
+                        if not backpressure_start:
+                            backpressure_start = asyncio.get_running_loop().time()
+                        _emit(log_queue, {"type": "status", "key": "ws", "text": "WS: backpressure", "state": "warn"})
+                        break  # Exit inner while to wait for buffer to clear
 
         except queue.Empty:
             pass
@@ -78,14 +130,19 @@ async def _poll_queue(text_queue, server, log_queue):
 
         now = asyncio.get_running_loop().time()
         if replay_buffer and now >= next_replay_at:
-            msg = replay_buffer.pop(0)
-            try:
-                catchup_interval = float(msg.get("catchup_interval_sec", 0.0))
-            except (TypeError, ValueError):
-                catchup_interval = 0.0
-            _emit(log_queue, {"type": "status", "key": "ws", "text": f"WS: catch-up {len(replay_buffer)}", "state": "warn"})
-            _broadcast_msg(msg)
-            next_replay_at = now + max(0.0, catchup_interval)
+            # Check backpressure before replay burst
+            if _can_broadcast():
+                msg = replay_buffer.pop(0)
+                try:
+                    catchup_interval = float(msg.get("catchup_interval_sec", 0.0))
+                except (TypeError, ValueError):
+                    catchup_interval = 0.0
+                _emit(log_queue, {"type": "status", "key": "ws", "text": f"WS: catch-up {len(replay_buffer)}", "state": "warn"})
+                _broadcast_msg(msg)
+                next_replay_at = now + max(0.0, catchup_interval)
+            else:
+                # Postpone replay if backpressure active
+                next_replay_at = now + 0.5
 
         await asyncio.sleep(0.05)
 
@@ -102,7 +159,7 @@ def run_ws_server(text_queue, log_queue=None, port=8765):
         async def handle_client(websocket):
             await _handle_client(websocket, clients, log_queue)
 
-        async with serve(handle_client, "127.0.0.1", port) as server:
+        async with serve(handle_client, "127.0.0.1", port, ping_interval=10, ping_timeout=5) as server:
             _emit(log_queue, {"type": "status", "key": "ws", "text": f"WS: localhost:{port}", "state": "ok"})
             # Ejecutar el polling de la cola en paralelo con el servidor
             await _poll_queue(text_queue, server, log_queue)
