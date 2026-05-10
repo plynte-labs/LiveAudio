@@ -12,6 +12,7 @@ El Product Owner define prioridad, alcance aceptable y criterios de producto. El
 | QA y Producto | `[Agent QA Qwen 3.6Plus]` | Valida comportamiento, casos de prueba, regresiones, UX operativa y documentación desde perspectiva de usuario. |
 | Performance y Resiliencia | `[Agent Performance Minimax M2.7]` | Audita latencia, VRAM/CPU, backpressure, colas, freezes, fallback, sesiones largas y comportamiento bajo carga. |
 | Investigación y Trazabilidad | `[Agent Research Gemini 2.5 Pro]` | Investiga documentación técnica, APIs/dependencias, alternativas, compatibilidad, decisiones previas y trazabilidad entre requerimientos, cambios y docs. |
+| Estrategia de Producto y UX | `[Agent Product Strategy ChatGPT 5.5]` | Propone estrategias de modularidad, ecosistema de plugins, temas personalizables, innovación en subtítulos, análisis competitivo y oportunidades de producto. |
 
 ## Propiedad De Seguridad
 
@@ -62,6 +63,10 @@ Métrica a observar: ...
 Hallazgo: ...
 Fuente/Referencia: ...
 Impacto en requerimientos: ...
+
+[Agent Product Strategy ChatGPT 5.5]
+Estrategia: ...
+Impacto en producto: ...
 ```
 
 Cada comentario debe clasificarse como una de estas categorías:
@@ -83,6 +88,7 @@ Una feature está cerrable cuando:
 - `[Agent QA Qwen 3.6Plus]` no tiene bloqueantes de comportamiento, UX o documentación.
 - `[Agent Performance Minimax M2.7]` no tiene bloqueantes de latencia, recursos, backpressure o resiliencia.
 - `[Agent Research Gemini 2.5 Pro]` no tiene bloqueantes de documentación, compatibilidad, dependencias o trazabilidad.
+- `[Agent Product Strategy ChatGPT 5.5]` no tiene bloqueantes de estrategia de producto, UX innovadora o oportunidades perdidas.
 - `[Agent Principal GPT-5.5]` valida diff, pruebas y alcance del commit.
 
 ## Reglas De Delegación
