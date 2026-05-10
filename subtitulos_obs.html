@@ -5,6 +5,22 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Subs Live</title>
     <style>
+        /* --- CSS Custom Properties Theme Engine --- */
+        :root {
+            --sub-bg: rgba(0, 0, 0, 0.7);
+            --sub-color: #ffffff;
+            --sub-font-size: 38px;
+            --sub-font-weight: bold;
+            --sub-radius: 10px;
+            --sub-shadow: 2px 2px 0 #000, -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000;
+            --sub-border: none;
+            --sub-padding: 10px 20px;
+            --sub-animation-duration: 0.4s;
+            --sub-font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            --sub-text-transform: none;
+            --sub-letter-spacing: normal;
+        }
+
         body {
             margin: 0;
             overflow: hidden;
@@ -14,7 +30,7 @@
             justify-content: flex-end;
             align-items: center;
             height: 100vh;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            font-family: var(--sub-font-family);
             color: transparent; /* Oculta texto basura si algo falla */
         }
 
@@ -30,7 +46,7 @@
             display: inline-block;
             opacity: 0;
             transform: translateY(20px);
-            transition: opacity 0.4s ease-out, transform 0.4s ease-out;
+            transition: opacity var(--sub-animation-duration) ease-out, transform var(--sub-animation-duration) ease-out;
         }
 
         .sub-box.visible {
@@ -47,26 +63,29 @@
 
         /* --- ESTILO 1: DEFAULT --- */
         .style-default {
-            color: #ffffff;
-            font-size: 38px;
-            font-weight: bold;
-            padding: 10px 20px;
-            background-color: rgba(0, 0, 0, 0.7);
-            border-radius: 10px;
-            text-shadow: 2px 2px 0 #000, -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000;
+            color: var(--sub-color);
+            font-size: var(--sub-font-size);
+            font-weight: var(--sub-font-weight);
+            padding: var(--sub-padding);
+            background-color: var(--sub-bg);
+            border-radius: var(--sub-radius);
+            text-shadow: var(--sub-shadow);
+            border: var(--sub-border);
+            text-transform: var(--sub-text-transform);
+            letter-spacing: var(--sub-letter-spacing);
             overflow-wrap: anywhere;
             max-width: 100%;
         }
 
         /* --- ESTILO 2: KARAOKE (Palabra por palabra) --- */
         .style-karaoke {
-            font-size: 44px;
+            font-size: calc(var(--sub-font-size) * 1.15);
             font-weight: 900;
             color: #ffcc00; /* Amarillo brillante */
             text-shadow: 3px 3px 0 #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000;
-            background-color: rgba(0, 0, 0, 0.7);
-            padding: 10px 20px;
-            border-radius: 10px;
+            background-color: var(--sub-bg);
+            padding: var(--sub-padding);
+            border-radius: var(--sub-radius);
             overflow-wrap: anywhere;
             max-width: 100%;
         }
@@ -96,9 +115,9 @@
 
         /* --- ESTILO 3: NEON --- */
         .style-neon {
-            color: #ffffff;
-            font-size: 40px;
-            font-weight: bold;
+            color: var(--sub-color);
+            font-size: var(--sub-font-size);
+            font-weight: var(--sub-font-weight);
             padding: 12px 24px;
             background: rgba(0, 20, 20, 0.6);
             border: 2px solid #00ffff;
@@ -136,6 +155,45 @@
         let ws;
         const VALID_STYLES = new Set(['default', 'karaoke', 'neon']);
         const MAX_SUBTITLE_CHARS = 600;
+
+        // --- Theme Engine: CSS Custom Properties ---
+        const VALID_THEME_TOKENS = {
+            '--sub-bg': { type: 'color', default: 'rgba(0, 0, 0, 0.7)' },
+            '--sub-color': { type: 'color', default: '#ffffff' },
+            '--sub-font-size': { type: 'size', default: '38px', min: 12, max: 120 },
+            '--sub-font-weight': { type: 'weight', default: 'bold' },
+            '--sub-radius': { type: 'size', default: '10px', min: 0, max: 50 },
+            '--sub-shadow': { type: 'shadow', default: '2px 2px 0 #000, -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000' },
+            '--sub-border': { type: 'border', default: 'none' },
+            '--sub-padding': { type: 'padding', default: '10px 20px' },
+            '--sub-animation-duration': { type: 'duration', default: '0.4s', min: 0.1, max: 2.0 },
+            '--sub-font-family': { type: 'font', default: "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif" },
+            '--sub-text-transform': { type: 'transform', default: 'none' },
+            '--sub-letter-spacing': { type: 'spacing', default: 'normal' },
+        };
+
+        function validateThemeToken(key, value) {
+            if (!VALID_THEME_TOKENS[key]) return false;
+            const schema = VALID_THEME_TOKENS[key];
+            if (schema.type === 'size' || schema.type === 'duration') {
+                const num = parseFloat(value);
+                if (isNaN(num)) return false;
+                if (schema.min !== undefined && num < schema.min) return false;
+                if (schema.max !== undefined && num > schema.max) return false;
+            }
+            return true;
+        }
+
+        function applyTheme(tokens) {
+            const root = document.documentElement;
+            for (const [key, value] of Object.entries(tokens)) {
+                if (validateThemeToken(key, value)) {
+                    root.style.setProperty(key, value);
+                } else {
+                    console.warn(`Theme token rejected: ${key}=${value}`);
+                }
+            }
+        }
 
         // --- Backpressure: Debounce + Max Queue ---
         const MAX_PENDING_QUEUE = 5;
@@ -209,6 +267,11 @@
             ws.onmessage = (event) => {
                 try {
                     const data = JSON.parse(event.data);
+                    // Handle theme messages
+                    if (data && data.type === 'theme' && data.tokens) {
+                        applyTheme(data.tokens);
+                        return;
+                    }
                     // Aseguramos que data sea un objeto con text y style
                     if (data && data.text) {
                         enqueueSubtitle(data.text, data.style || 'default');

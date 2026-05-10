@@ -14,6 +14,42 @@ MAX_TRANSCRIPT_CHARS = 600
 LIVE_QUEUE_TIMEOUT_SEC = 0.5
 ASR_TRANSCRIBE_TIMEOUT_SEC = 15.0
 
+# Theme token validation schema
+VALID_THEME_TOKENS = {
+    "--sub-bg": {"type": "color"},
+    "--sub-color": {"type": "color"},
+    "--sub-font-size": {"type": "size", "min": 12, "max": 120},
+    "--sub-font-weight": {"type": "weight"},
+    "--sub-radius": {"type": "size", "min": 0, "max": 50},
+    "--sub-shadow": {"type": "shadow"},
+    "--sub-border": {"type": "border"},
+    "--sub-padding": {"type": "padding"},
+    "--sub-animation-duration": {"type": "duration", "min": 0.1, "max": 2.0},
+    "--sub-font-family": {"type": "font"},
+    "--sub-text-transform": {"type": "transform"},
+    "--sub-letter-spacing": {"type": "spacing"},
+}
+
+
+def validate_theme_tokens(tokens: dict) -> dict:
+    """Validate theme tokens against schema. Returns only valid tokens."""
+    valid = {}
+    for key, value in tokens.items():
+        if key not in VALID_THEME_TOKENS:
+            continue
+        schema = VALID_THEME_TOKENS[key]
+        if schema["type"] in ("size", "duration"):
+            try:
+                num = float(str(value).replace("px", "").replace("s", ""))
+                if schema.get("min") is not None and num < schema["min"]:
+                    continue
+                if schema.get("max") is not None and num > schema["max"]:
+                    continue
+            except (ValueError, TypeError):
+                continue
+        valid[key] = value
+    return valid
+
 
 def _format_vtt_time(seconds: float) -> str:
     """Convert seconds to WebVTT timestamp format HH:MM:SS.mmm."""

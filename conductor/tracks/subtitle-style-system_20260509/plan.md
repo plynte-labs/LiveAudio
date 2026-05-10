@@ -35,17 +35,17 @@
 - [x] Task: Conductor - User Manual Verification 'Client-Side Backpressure' (Protocol in workflow.md)
 
 ## Phase 3: CSS Custom Properties Theme Engine (REQ-3)
-- [ ] Task: Write tests — Red phase (tests fail)
-    - [ ] Test CSS custom properties applied to subtitle element
-    - [ ] Test theme change via WebSocket message updates styles
-    - [ ] Test invalid theme tokens rejected by schema
-- [ ] Task: Fix `subtitulos_obs.html` and `core/engine.py` — Green phase
-    - [ ] Define CSS custom properties in `:root`
-    - [ ] Refactor existing styles to use variables
-    - [ ] Add theme message handler in JS
-    - [ ] Add theme token validation schema in Python
-- [ ] Task: Verify all theme engine tests pass
-- [ ] Task: Conductor - User Manual Verification 'CSS Custom Properties Theme Engine' (Protocol in workflow.md)
+- [x] Task: Write tests — Red phase (tests fail)
+    - [x] Test CSS custom properties applied to subtitle element
+    - [x] Test theme change via WebSocket message updates styles
+    - [x] Test invalid theme tokens rejected by schema
+- [x] Task: Fix `subtitulos_obs.html` and `core/engine.py` — Green phase
+    - [x] Define CSS custom properties in `:root`
+    - [x] Refactor existing styles to use variables
+    - [x] Add theme message handler in JS
+    - [x] Add theme token validation schema in Python
+- [x] Task: Verify all theme engine tests pass
+- [x] Task: Conductor - User Manual Verification 'CSS Custom Properties Theme Engine' (Protocol in workflow.md)
 
 ## Phase 4: 7 Preset Themes (REQ-4)
 - [ ] Task: Write tests — Red phase (tests fail)
