@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Tests for ASR freeze recovery and resilience (REQ-1)."""
 
 import unittest

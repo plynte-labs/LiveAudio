@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 import time
 import os
 import json
@@ -9,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeou
 from faster_whisper import WhisperModel
 import torch
 
-VALID_SUBTITLE_STYLES = {"default", "karaoke", "neon"}
+VALID_SUBTITLE_STYLES = {"default", "karaoke", "neon", "minimal", "bold", "rgb", "typewriter"}
 VALID_BACKLOG_POLICIES = {"auto", "live_only", "send_all"}
 MAX_TRANSCRIPT_CHARS = 600
 LIVE_QUEUE_TIMEOUT_SEC = 0.5
@@ -157,7 +158,7 @@ def _obs_emit_decision(shared_config, queue_delay):
     return True, queue_delay > 1.0, catchup_interval if queue_delay > 1.0 else 0.0
 
 
-def _transcribe_with_timeout(model, audio_chunk, timeout_sec=ASR_TRANSCRIBE_TIMEOUT_SEC, log_queue=None, device="cpu"):
+def _transcribe_with_timeout(model, audio_chunk, timeout_sec=ASR_TRANSCRIBE_TIMEOUT_SEC, log_queue=None, device="cpu", initial_prompt=None):
     """Wrap model.transcribe() with a timeout to prevent permanent ASR freezes.
     
     Returns (segments, info) on success, or (None, None) on timeout/failure.
@@ -167,7 +168,15 @@ def _transcribe_with_timeout(model, audio_chunk, timeout_sec=ASR_TRANSCRIBE_TIME
     catches it and continues to the next chunk.
     """
     def _do_transcribe():
-        return model.transcribe(audio_chunk, language="es", beam_size=5, vad_filter=False, condition_on_previous_text=False)
+        kwargs = {
+            "language": "es",
+            "beam_size": 5,
+            "vad_filter": False,
+            "condition_on_previous_text": False,
+        }
+        if initial_prompt:
+            kwargs["initial_prompt"] = initial_prompt
+        return model.transcribe(audio_chunk, **kwargs)
 
     # Check VRAM before transcribing on CUDA — free cache if low
     if device == "cuda":
@@ -281,7 +290,8 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
             _emit_status(log_queue, "asr", "ASR: transcribiendo", "active")
             segments, info = _transcribe_with_timeout(
                 model, audio_chunk, timeout_sec=ASR_TRANSCRIBE_TIMEOUT_SEC,
-                log_queue=log_queue, device=shared_config["device"]
+                log_queue=log_queue, device=shared_config["device"],
+                initial_prompt=shared_config.get("whisper_context_prompt") or None,
             )
             if segments is None:
                 # Timeout or error — skip to next item
@@ -321,6 +331,13 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
                 vtt_end = _format_vtt_time(queue_delay + latency)
                 
                 session_writer.write_record(transcript_record, vtt_start, vtt_end, texto_final, cue_counter)
+
+                # OBS enabled gate: skip WebSocket emission when disabled
+                obs_enabled = shared_config.get("obs_enabled", True)
+                if not obs_enabled:
+                    _emit_log(log_queue, "[IA] OBS disabled, subtitle saved only")
+                    _emit_status(log_queue, "asr", "ASR: listo", "ok")
+                    continue
 
                 # Empaquetamos enviando el estilo actualizado en TIEMPO REAL
                 style = shared_config.get("subtitle_style", "default")

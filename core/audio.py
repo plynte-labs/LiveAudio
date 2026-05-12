@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 import os
 import sys
 import time
@@ -23,21 +24,47 @@ VAD_THRESHOLD = 0.5  # Probabilidad mínima para considerar que hay voz (0.0 a 1
 RING_BUFFER_MAX_CHUNKS = 500
 
 
+def _normalize_device_name(name):
+    """Normaliza nombre de dispositivo para deduplicar variantes del mismo hardware.
+    
+    Ejemplo: 'Microphone (Realtek Audio)', 'Microphone (Realtek High Definition Audio)'
+    ambos se normalizan a 'microphone realtek audio'.
+    """
+    import re
+    # Quitar parentesis y contenido, luego limpiar
+    cleaned = re.sub(r'\([^)]*\)', '', name)
+    # Quitar caracteres especiales, lowercase
+    cleaned = re.sub(r'[^a-z0-9\s]', '', cleaned.lower().strip())
+    # Colapsar espacios multiples
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    return cleaned
+
+
 def list_audio_devices():
     """
     Retorna una lista de dispositivos de audio disponibles para captura.
     Cada entrada es un dict con: index, name, hostapi, max_input_channels, is_loopback.
     Incluye dispositivos WASAPI loopback en Windows para capturar audio del sistema.
+    Dispositivos duplicados (mismo nombre base) se filtran para evitar confusion.
     """
     devices = sd.query_devices()
     hostapis = sd.query_hostapis()
     
     result = []
+    seen_names = set()  # Para deduplicar por nombre normalizado
     
     for i, dev in enumerate(devices):
-        # Dispositivos de entrada normales (micrófonos)
+        # Dispositivos de entrada normales (microfonos)
         if dev["max_input_channels"] > 0:
             hostapi_name = hostapis[dev["hostapi"]]["name"]
+            norm_name = _normalize_device_name(dev["name"])
+            
+            # Saltar duplicados (mismo nombre base, mismo tipo)
+            dedup_key = f"input:{norm_name}"
+            if dedup_key in seen_names:
+                continue
+            seen_names.add(dedup_key)
+            
             result.append({
                 "index": i,
                 "name": dev["name"],
@@ -51,6 +78,13 @@ def list_audio_devices():
         if sys.platform == "win32" and dev["max_output_channels"] > 0:
             hostapi_name = hostapis[dev["hostapi"]]["name"]
             if "WASAPI" in hostapi_name:
+                norm_name = _normalize_device_name(dev["name"])
+                
+                dedup_key = f"loopback:{norm_name}"
+                if dedup_key in seen_names:
+                    continue
+                seen_names.add(dedup_key)
+                
                 result.append({
                     "index": i,
                     "name": dev["name"],
@@ -198,6 +232,11 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
         last_reported_state = "idle"
         utterance_sequence = 0
 
+        # Pre-buffer: guarda los últimos chunks descartados para recuperar
+        # los primeros ~96ms de voz cuando el VAD recién detecta speech.
+        # 3 chunks * 32ms = 96ms de audio recuperado.
+        pre_buffer = collections.deque(maxlen=3)
+
         def enqueue_phrase(full_audio):
             nonlocal utterance_sequence
             utterance_sequence += 1
@@ -232,6 +271,12 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
 
                 if speech_prob > VAD_THRESHOLD:
                     # Se detectó voz
+                    if not is_speaking:
+                        # Transición silencio → voz: prependé el pre-buffer
+                        # para recuperar los primeros ~96ms de audio
+                        speech_buffer.extend(pre_buffer)
+                        pre_buffer.clear()
+
                     is_speaking = True
                     if last_reported_state != "speech":
                         _status("vad", "VAD: voz detectada", "active")
@@ -267,6 +312,10 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
                         silence_counter = 0
                         _status("vad", "VAD: frase enviada", "ok")
                         last_reported_state = "idle"
+                else:
+                    # Silencio continuo — guardar chunk en pre-buffer
+                    # para recuperar los primeros ms cuando se detecte voz
+                    pre_buffer.append(audio_chunk)
 
     # Construir kwargs para InputStream
     stream_kwargs = {

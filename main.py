@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 import os
 import queue
 import datetime
@@ -22,12 +23,66 @@ ctk.set_default_color_theme("green")
 QUEUE_MAXSIZE = 100
 LOG_MAX_LINES = 300
 PREVIEW_MAX_CHARS = 600
+PREVIEW_SAMPLE_TEXT = "Hola mundo! Internacionalización y extraordinariamente con emojis 🎤🎵 y mixed content"
 BACKLOG_POLICY_LABELS = {
     "Auto (recomendado)": "auto",
     "Solo en vivo": "live_only",
     "Enviar todo": "send_all",
 }
 BACKLOG_POLICY_BY_VALUE = {value: label for label, value in BACKLOG_POLICY_LABELS.items()}
+
+# CTk-compatible style properties for subtitle preview panel
+PRESET_STYLES = {
+    "default": {
+        "fg_color": "#1f2a2d",
+        "text_color": "#E8E8E8",
+        "font_weight": "normal",
+        "corner_radius": 8,
+        "font_family": "Consolas",
+    },
+    "karaoke": {
+        "fg_color": "#1a1a2e",
+        "text_color": "#FFD700",
+        "font_weight": "bold",
+        "corner_radius": 12,
+        "font_family": "Arial",
+    },
+    "neon": {
+        "fg_color": "#0d0d0d",
+        "text_color": "#00FF41",
+        "font_weight": "bold",
+        "corner_radius": 4,
+        "font_family": "Consolas",
+    },
+    "minimal": {
+        "fg_color": "transparent",
+        "text_color": "#CCCCCC",
+        "font_weight": "normal",
+        "corner_radius": 0,
+        "font_family": "Segoe UI",
+    },
+    "bold": {
+        "fg_color": "#2c2c2c",
+        "text_color": "#FFFFFF",
+        "font_weight": "bold",
+        "corner_radius": 6,
+        "font_family": "Arial",
+    },
+    "rgb": {
+        "fg_color": "#1a1a1a",
+        "text_color": "#FF6B6B",
+        "font_weight": "bold",
+        "corner_radius": 10,
+        "font_family": "Consolas",
+    },
+    "typewriter": {
+        "fg_color": "#f5f5dc",
+        "text_color": "#333333",
+        "font_weight": "normal",
+        "corner_radius": 2,
+        "font_family": "Consolas",
+    },
+}
 
 
 def _validate_output_dir(path):
@@ -202,7 +257,7 @@ class LiveASRApp(ctk.CTk):
         tab_profiles = tabs.add("Perfiles")
         tab_audio = tabs.add("Audio/VAD")
         tab_model = tabs.add("Rendimiento")
-        tab_obs = tabs.add("OBS")
+        tab_subtitulos = tabs.add("Subtítulos")
         tab_advanced = tabs.add("Avanzado")
 
         # === SECCIÓN: Perfiles ===
@@ -283,6 +338,21 @@ class LiveASRApp(ctk.CTk):
         self.opt_model = ctk.CTkOptionMenu(tab_model, values=modelos_desc, variable=self.var_model, command=self.on_setting_change)
         self.opt_model.pack(fill="x", padx=10, pady=(0, 15))
 
+        # Contexto para Whisper (initial_prompt)
+        ctk.CTkLabel(tab_model, text="Contexto para Whisper (opcional):").pack(anchor="w", padx=10)
+        self.text_whisper_prompt = ctk.CTkTextbox(tab_model, height=60)
+        self.text_whisper_prompt.insert("0.0", self.config_data.get("whisper_context_prompt", ""))
+        self.text_whisper_prompt.pack(fill="x", padx=10, pady=(0, 15))
+        self.text_whisper_prompt.bind("<FocusOut>", lambda e: self.on_setting_change())
+        ctk.CTkLabel(
+            tab_model,
+            text="Ayuda a reducir alucinaciones. Ej: 'Stream de tecnología, el host habla de Python y gaming'.",
+            wraplength=260,
+            justify="left",
+            font=ctk.CTkFont(size=10),
+            text_color="#AEB8BC",
+        ).pack(anchor="w", padx=10, pady=(0, 0))
+
         # --- Sliders de Latencia ---
         ctk.CTkLabel(tab_audio, text="Control de Latencia (Ritmo):", font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=10, pady=(10, 0))
         
@@ -305,37 +375,106 @@ class LiveASRApp(ctk.CTk):
         self.check_session = ctk.CTkSwitch(tab_advanced, text="Mantener la misma sesión al reiniciar motor", variable=self.var_session, command=self.on_setting_change)
         self.check_session.pack(anchor="w", padx=10, pady=(10, 15))
 
-        # Estilos visuales
-        ctk.CTkLabel(tab_obs, text="Estilo Visual en OBS:").pack(anchor="w", padx=10, pady=(10, 0))
+        # === TAB: Subtítulos ===
+
+        # --- Sección: Preview ---
+        ctk.CTkLabel(tab_subtitulos, text="Preview del estilo:", font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=10, pady=(10, 0))
+        self.frame_preview = ctk.CTkFrame(tab_subtitulos, corner_radius=8)
+        self.frame_preview.pack(fill="x", padx=10, pady=(0, 8))
+        self.lbl_preview_sample = ctk.CTkLabel(
+            self.frame_preview,
+            text=PREVIEW_SAMPLE_TEXT,
+            wraplength=260,
+            font=ctk.CTkFont(size=16, weight="normal"),
+        )
+        self.lbl_preview_sample.pack(padx=12, pady=10)
+
+        # Style selector — MUST be before _update_preview()
+        ctk.CTkLabel(tab_subtitulos, text="Estilo Visual:").pack(anchor="w", padx=10, pady=(10, 0))
         self.var_style = ctk.StringVar(value=self.config_data.get("subtitle_style", "default"))
         self.opt_style = ctk.CTkOptionMenu(
-            tab_obs,
-            values=["default", "karaoke", "neon"], 
-            variable=self.var_style, 
-            command=self.on_setting_change
+            tab_subtitulos,
+            values=["default", "karaoke", "neon", "minimal", "bold", "rgb", "typewriter"],
+            variable=self.var_style,
+            command=self._on_style_change
         )
-        self.opt_style.pack(fill="x", padx=10, pady=(0, 15))
+        self.opt_style.pack(fill="x", padx=10, pady=(0, 8))
 
-        ctk.CTkLabel(tab_obs, text="Atraso en OBS:").pack(anchor="w", padx=10)
+        self._update_preview()
+
+        # OBS enable/disable toggle — debajo del preview
+        self.var_obs_enabled = ctk.BooleanVar(value=self.config_data.get("obs_enabled", True))
+        self.switch_obs_enabled = ctk.CTkSwitch(
+            tab_subtitulos,
+            text="Enviar subtítulos a OBS",
+            variable=self.var_obs_enabled,
+            command=self._on_obs_toggle,
+        )
+        self.switch_obs_enabled.pack(anchor="w", padx=10, pady=(8, 10))
+
+        # Mini guía de OBS
+        self.frame_obs_guide = ctk.CTkFrame(tab_subtitulos, fg_color="#1a2730", corner_radius=8)
+        self.frame_obs_guide.pack(fill="x", padx=10, pady=(0, 10))
+        ctk.CTkLabel(
+            self.frame_obs_guide,
+            text="📺 Cómo agregar en OBS:",
+            font=ctk.CTkFont(weight="bold", size=13),
+            text_color="#64B5F6",
+        ).pack(anchor="w", padx=14, pady=(10, 4))
+        guide_steps = (
+            "1. En OBS, agrega una fuente: «Navegador» (Browser)\n"
+            "2. Marca «Archivo local» y selecciona:\n"
+            f"   {os.path.abspath('subtitulos_obs.html')}\n"
+            "3. Ancho: 1920 | Alto: 200 (o mas segun estilo)\n"
+            "4. En la URL, agrega el puerto si no es 8765:\n"
+            "   file:///.../subtitulos_obs.html?port=8765\n"
+            "5. Listo! Los subtitulos apareceran en vivo."
+        )
+        ctk.CTkLabel(
+            self.frame_obs_guide,
+            text=guide_steps,
+            wraplength=250,
+            justify="left",
+            font=ctk.CTkFont(size=11),
+            text_color="#B0BEC5",
+        ).pack(anchor="w", padx=14, pady=(0, 10))
+
+        # OBS backlog policy (basic)
+        ctk.CTkLabel(tab_subtitulos, text="Atraso en OBS:").pack(anchor="w", padx=10)
         current_backlog_policy = BACKLOG_POLICY_BY_VALUE.get(self.config_data.get("subtitle_backlog_policy", "auto"), "Auto (recomendado)")
         self.var_backlog_policy = ctk.StringVar(value=current_backlog_policy)
         self.opt_backlog_policy = ctk.CTkOptionMenu(
-            tab_obs,
+            tab_subtitulos,
             values=list(BACKLOG_POLICY_LABELS.keys()),
             variable=self.var_backlog_policy,
             command=self.on_setting_change,
         )
-        self.opt_backlog_policy.pack(fill="x", padx=10, pady=(0, 8))
+        self.opt_backlog_policy.pack(fill="x", padx=10, pady=(0, 15))
 
-        self.lbl_max_live_delay = ctk.CTkLabel(tab_obs, text=f"Max atraso live: {self.config_data['subtitle_max_live_delay_sec']}s")
+        # Progressive disclosure: advanced subtitle settings
+        self._subtitle_advanced_visible = False
+        self.frame_subtitle_advanced = ctk.CTkFrame(tab_subtitulos, fg_color="transparent")
+        # Hidden by default — shown via grid when toggle is clicked
+
+        self.btn_toggle_subtitle_advanced = ctk.CTkButton(
+            tab_subtitulos,
+            text="▼ Configuración avanzada",
+            fg_color="transparent",
+            border_width=1,
+            command=self._toggle_advanced_subtitles,
+        )
+        self.btn_toggle_subtitle_advanced.pack(fill="x", padx=10, pady=(0, 8))
+
+        ctk.CTkLabel(self.frame_subtitle_advanced, text=f"Max atraso live: {self.config_data['subtitle_max_live_delay_sec']}s").pack(anchor="w", padx=10)
+        self.lbl_max_live_delay = ctk.CTkLabel(self.frame_subtitle_advanced, text=f"Max atraso live: {self.config_data['subtitle_max_live_delay_sec']}s")
         self.lbl_max_live_delay.pack(anchor="w", padx=10)
-        self.slider_max_live_delay = ctk.CTkSlider(tab_obs, from_=1.0, to=120.0, command=self.on_setting_change)
+        self.slider_max_live_delay = ctk.CTkSlider(self.frame_subtitle_advanced, from_=1.0, to=120.0, command=self.on_setting_change)
         self.slider_max_live_delay.set(self.config_data["subtitle_max_live_delay_sec"])
         self.slider_max_live_delay.pack(fill="x", padx=10, pady=(0, 8))
 
-        self.lbl_catchup_interval = ctk.CTkLabel(tab_obs, text=f"Pacing catch-up: {self.config_data['subtitle_catchup_interval_sec']}s")
+        self.lbl_catchup_interval = ctk.CTkLabel(self.frame_subtitle_advanced, text=f"Pacing catch-up: {self.config_data['subtitle_catchup_interval_sec']}s")
         self.lbl_catchup_interval.pack(anchor="w", padx=10)
-        self.slider_catchup_interval = ctk.CTkSlider(tab_obs, from_=0.0, to=10.0, command=self.on_setting_change)
+        self.slider_catchup_interval = ctk.CTkSlider(self.frame_subtitle_advanced, from_=0.0, to=10.0, command=self.on_setting_change)
         self.slider_catchup_interval.set(self.config_data["subtitle_catchup_interval_sec"])
         self.slider_catchup_interval.pack(fill="x", padx=10, pady=(0, 15))
 
@@ -471,6 +610,8 @@ class LiveASRApp(ctk.CTk):
         draft["blacklist"] = self.text_blacklist.get("0.0", "end").strip()
         draft["subtitle_style"] = self.var_style.get()
         draft["subtitle_backlog_policy"] = BACKLOG_POLICY_LABELS.get(self.var_backlog_policy.get(), "auto")
+        draft["obs_enabled"] = self.var_obs_enabled.get()
+        draft["whisper_context_prompt"] = self.text_whisper_prompt.get("0.0", "end").strip()
         return draft
 
     def _load_ui_from_config(self, config):
@@ -495,6 +636,9 @@ class LiveASRApp(ctk.CTk):
         self.slider_catchup_interval.set(config["subtitle_catchup_interval_sec"])
         self.text_blacklist.delete("0.0", "end")
         self.text_blacklist.insert("0.0", config.get("blacklist", ""))
+        self.var_obs_enabled.set(config.get("obs_enabled", True))
+        self.text_whisper_prompt.delete("0.0", "end")
+        self.text_whisper_prompt.insert("0.0", config.get("whisper_context_prompt", ""))
         self._ui_ready = True
         self.on_setting_change()
 
@@ -570,13 +714,32 @@ class LiveASRApp(ctk.CTk):
     def on_setting_change(self, *args):
         if not self._ui_ready:
             return
-        self.update_ui_state() 
+        self.update_ui_state()
 
         self.lbl_silence.configure(text=f"Detección de Silencio: {self.slider_silence.get():.1f}s")
         self.lbl_max_dur.configure(text=f"Duración máxima de frase: {self.slider_max_dur.get():.1f}s")
         self.lbl_max_live_delay.configure(text=f"Max atraso live: {self.slider_max_live_delay.get():.1f}s")
         self.lbl_catchup_interval.configure(text=f"Pacing catch-up: {self.slider_catchup_interval.get():.1f}s")
         self.refresh_profile_status()
+
+    def _on_style_change(self, *args):
+        """Handle style change: update preview and trigger settings change."""
+        self._update_preview()
+        self.on_setting_change()
+
+    def _toggle_advanced_subtitles(self):
+        """Toggle visibility of advanced subtitle settings (progressive disclosure)."""
+        self._subtitle_advanced_visible = not self._subtitle_advanced_visible
+        if self._subtitle_advanced_visible:
+            self.frame_subtitle_advanced.pack(fill="x", padx=10, pady=(0, 8))
+            self.btn_toggle_subtitle_advanced.configure(text="▲ Ocultar configuración avanzada")
+        else:
+            self.frame_subtitle_advanced.pack_forget()
+            self.btn_toggle_subtitle_advanced.configure(text="▼ Configuración avanzada")
+
+    def _on_obs_toggle(self, *args):
+        """Handle OBS enable/disable toggle change."""
+        self.on_setting_change()
 
     def _pending_restart_flags(self, draft):
         needs_asr_restart = any(self.config_data.get(key) != draft.get(key) for key in ["device", "model_size", "cpu_threads"])
@@ -709,6 +872,19 @@ class LiveASRApp(ctk.CTk):
         self.preview_text.delete("0.0", "end")
         self.preview_text.insert("0.0", clean_text or "Sin transcripciones todavia.")
         self.preview_text.configure(state="disabled")
+
+    def _update_preview(self):
+        """Update static preview panel based on selected style from PRESET_STYLES."""
+        style_name = self.var_style.get()
+        style = PRESET_STYLES.get(style_name, PRESET_STYLES["default"])
+        if hasattr(self, "frame_preview"):
+            self.frame_preview.configure(fg_color=style["fg_color"])
+        if hasattr(self, "lbl_preview_sample"):
+            self.lbl_preview_sample.configure(
+                text=PREVIEW_SAMPLE_TEXT,
+                text_color=style["text_color"],
+                font=ctk.CTkFont(size=18, weight=style["font_weight"], family=style["font_family"]),
+            )
 
     def update_session_label(self):
         if self.current_session_dir:

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 import asyncio
 import json
 import queue
@@ -34,9 +35,10 @@ async def _handle_client(websocket, clients, log_queue):
     print(f"[WebSocket] Cliente conectado: {client_id}")
 
     try:
-        # Mantener la conexión abierta — wait_closed() es el patrón correcto
-        # en websockets 16.x cuando no esperamos mensajes del cliente.
-        await websocket.wait_closed()
+        async for message in websocket:
+            pass  # Client messages ignored (OBS browser source is receive-only)
+    except Exception:
+        pass  # Connection closed or error
     finally:
         clients.discard(websocket)
         _emit_log(log_queue, f"[WebSocket] Cliente desconectado: {client_id}")

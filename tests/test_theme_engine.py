@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Tests for CSS custom properties theme engine (REQ-3)."""
 
 import unittest
@@ -79,6 +80,34 @@ class TestThemeValidationPython(unittest.TestCase):
             has_validation,
             "Python should have theme token validation logic"
         )
+
+
+class TestNewPresetCSSClasses(unittest.TestCase):
+    """Tests for 4 new preset CSS classes (T2 — subtitle-style-system-v2)."""
+
+    def setUp(self):
+        """Load subtitulos_obs.html."""
+        html_path = os.path.join(os.path.dirname(__file__), "..", "subtitulos_obs.html")
+        with open(html_path, "r", encoding="utf-8") as f:
+            self.html_content = f.read()
+
+    def test_minimal_style_class_exists(self):
+        """.style-minimal CSS class should be defined."""
+        self.assertIn(".style-minimal", self.html_content)
+
+    def test_bold_style_class_exists(self):
+        """.style-bold CSS class should be defined with font-weight 900."""
+        self.assertIn(".style-bold", self.html_content)
+        self.assertIn("900", self.html_content)
+
+    def test_rgb_style_class_exists(self):
+        """.style-rgb CSS class should be defined."""
+        self.assertIn(".style-rgb", self.html_content)
+
+    def test_typewriter_style_class_exists(self):
+        """.style-typewriter CSS class should be defined with monospace font."""
+        self.assertIn(".style-typewriter", self.html_content)
+        self.assertIn("monospace", self.html_content)
 
 
 if __name__ == "__main__":

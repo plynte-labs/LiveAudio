@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Tests for core/network.py WebSocket layer (REQ-5)."""
 
 import unittest
@@ -187,6 +188,8 @@ class TestWebSocketLocalhostBinding(unittest.TestCase):
         self.assertIn("127.0.0.1", source)
         self.assertIn("::1", source)
         self.assertIn("localhost", source)
+
+
 
 
 if __name__ == "__main__":

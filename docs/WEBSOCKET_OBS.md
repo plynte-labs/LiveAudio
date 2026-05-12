@@ -59,7 +59,7 @@ Cuando Whisper produce una transcripción válida y la política de backlog perm
 |---|---|---|
 | `id` | `string` | Identificador estable de la frase dentro de la sesión. |
 | `text` | `string` | Texto transcrito limpio (después del filtrado por blacklist). |
-| `style` | `string` | Estilo visual seleccionado: `default`, `karaoke` o `neon`. |
+| `style` | `string` | Estilo visual seleccionado: `default`, `karaoke`, `neon`, `minimal`, `bold`, `rgb` o `typewriter`. |
 | `created_at` | `number` | Timestamp de creación del segmento de audio. |
 | `processed_at` | `number` | Timestamp al terminar la transcripción. |
 | `queue_delay` | `number` | Tiempo que el audio esperó antes de entrar al ASR. |
@@ -135,7 +135,7 @@ Opciones de `config.json`:
 
 ## 6. Estilos visuales disponibles
 
-Puedes cambiar el estilo desde la interfaz de LiveAudio (selector **"Estilo Visual en OBS"**).
+Puedes cambiar el estilo desde la pestaña **"Subtítulos"** en LiveAudio.
 
 ### `default`
 - Texto blanco con fondo negro semitransparente.
@@ -152,9 +152,35 @@ Puedes cambiar el estilo desde la interfaz de LiveAudio (selector **"Estilo Visu
 - Texto en mayúsculas y espaciado amplio.
 - Fondo oscuro con glow (`box-shadow`).
 
+### `minimal`
+- Limpio, sin fondo, fade sutil.
+- Ideal para streams con diseño propio.
+
+### `bold`
+- Alto contraste, texto grueso, animación rápida.
+- Presencia fuerte en pantalla.
+
+### `rgb`
+- Cada palabra recibe un color diferente del arcoíris.
+- Efecto visual dinámico y llamativo.
+
+### `typewriter`
+- Las palabras aparecen una por una con efecto de máquina de escribir.
+- Cursor parpadeante, fuente monoespaciada.
+
 ---
 
-## 7. Personalizar el HTML (avanzado)
+## 7. Modo solo transcript (sin OBS)
+
+Si solo necesitás guardar transcripciones sin enviar subtítulos a OBS:
+
+1. Abrí la pestaña **Subtítulos**.
+2. Desactivá el switch **"Enviar subtítulos a OBS"**.
+3. Las transcripciones se guardan en disco normalmente (JSONL + VTT).
+
+---
+
+## 8. Personalizar el HTML (avanzado)
 
 Si quieres modificar colores, fuentes o animaciones, edita directamente `subtitulos_obs.html`.
 
@@ -199,7 +225,7 @@ El puerto se configura desde `config.json` — no hace falta editar código:
 
 ---
 
-## 8. Depuración
+## 9. Depuración
 
 ### Verificar que el servidor está activo
 
@@ -240,7 +266,7 @@ Ejecútalo mientras LiveAudio está activo y deberías ver los JSON con las tran
 
 ---
 
-## 9. Notas técnicas
+## 10. Notas técnicas
 
 - **Broadcast sin backpressure:** `websockets>=16` usa `broadcast()` que envía a todos los clientes de forma optimizada, sin bloquear si un cliente es lento.
 - **Reconexión automática:** el HTML intenta reconectar cada 3 segundos si se pierde la conexión.

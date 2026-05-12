@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Tests for queue backpressure non-blocking behavior (REQ-2)."""
 
 import unittest

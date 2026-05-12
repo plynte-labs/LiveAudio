@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Tests for Unicode bidi strip (REQ-4)."""
 
 import unittest

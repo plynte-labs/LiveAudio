@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Tests for GPU auto-detection and VRAM monitoring (REQ-9)."""
 
 import unittest

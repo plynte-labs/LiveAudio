@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Tests for audio producer graceful shutdown (REQ-3)."""
 
 import unittest

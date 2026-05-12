@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Tests for utils/config.py validation functions (REQ-2)."""
 
 import unittest
@@ -205,6 +206,35 @@ class TestNormalizeConfig(unittest.TestCase):
         result, updated = _normalize_config(config)
         self.assertEqual(result["profile_mode"], "preset")
         self.assertTrue(updated)
+
+
+class TestNewSubtitleStyles(unittest.TestCase):
+    """Tests for expanded subtitle styles (T1 — subtitle-style-system-v2)."""
+
+    def test_valid_subtitle_styles_has_seven_presets(self):
+        """VALID_SUBTITLE_STYLES should contain exactly 7 presets."""
+        expected = {"default", "karaoke", "neon", "minimal", "bold", "rgb", "typewriter"}
+        self.assertEqual(VALID_SUBTITLE_STYLES, expected)
+
+    def test_obs_enabled_in_default_config(self):
+        """DEFAULT_CONFIG should include obs_enabled set to True."""
+        self.assertIn("obs_enabled", DEFAULT_CONFIG)
+        self.assertTrue(DEFAULT_CONFIG["obs_enabled"])
+
+    def test_normalize_accepts_new_style_minimal(self):
+        """_normalize_config should accept 'minimal' as valid subtitle style."""
+        config = DEFAULT_CONFIG.copy()
+        config["subtitle_style"] = "minimal"
+        result, updated = _normalize_config(config)
+        self.assertEqual(result["subtitle_style"], "minimal")
+        self.assertFalse(updated)
+
+    def test_normalize_validates_obs_enabled(self):
+        """_normalize_config should validate obs_enabled as boolean."""
+        config = DEFAULT_CONFIG.copy()
+        config["obs_enabled"] = "not_a_bool"
+        result, updated = _normalize_config(config)
+        self.assertIsInstance(result["obs_enabled"], bool)
 
 
 class TestConfigValidation(unittest.TestCase):

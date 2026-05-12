@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Tests for output_dir validation (REQ-8)."""
 
 import unittest

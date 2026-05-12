@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Tests for VAD download error handling (REQ-7)."""
 
 import unittest

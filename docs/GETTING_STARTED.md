@@ -139,9 +139,14 @@ Los cambios no se activan hasta pulsar **Aplicar cambios**. Si modificas un pres
 - **Guillotina (max audio):** duración máxima de un segmento antes de forzar el corte.
   - Valor recomendado: **5s - 15s**
 
-### 5.6. Configurar atraso en OBS
+### 5.6. Configurar subtítulos y OBS
 
-El control **Atraso en OBS** decide qué se muestra en vivo si Whisper se atrasa por GPU/CPU ocupada o VRAM llena. La transcripción completa siempre se guarda en disco.
+En la pestaña **Subtítulos** encontrás:
+
+- **Preview en vivo:** vista previa del estilo seleccionado sin abrir OBS.
+- **Estilo visual:** 7 presets disponibles (`default`, `karaoke`, `neon`, `minimal`, `bold`, `rgb`, `typewriter`).
+- **Enviar subtítulos a OBS:** activá o desactivá el envío a OBS. Si lo desactivás, las transcripciones se guardan en disco pero no aparecen en OBS.
+- **Atraso en OBS:** decide qué se muestra en vivo si Whisper se atrasa.
 
 | Modo | Uso recomendado |
 |---|---|

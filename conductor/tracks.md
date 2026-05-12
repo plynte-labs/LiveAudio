@@ -24,6 +24,7 @@ This file tracks major LiveAudio tracks. Each track should have its own detailed
 
 ---
 
-- [~] **Track: Subtitle Style System v2**
+- [x] **Track: Subtitle Style System v2**
   *Link: [./tracks/subtitle-style-system_20260509/](./tracks/subtitle-style-system_20260509/)*
+  *Status: completed. SDD formal workflow with 3 chained PRs. 18 tasks, 242 tests, 7 presets.*
 

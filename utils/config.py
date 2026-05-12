@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 import os
 import json
 import multiprocessing as mp
@@ -18,7 +19,7 @@ VALID_MODELS = {
     "turbo (Máxima precisión GPU)",
 }
 MODEL_BY_KEY = {model.split()[0]: model for model in VALID_MODELS}
-VALID_SUBTITLE_STYLES = {"default", "karaoke", "neon"}
+VALID_SUBTITLE_STYLES = {"default", "karaoke", "neon", "minimal", "bold", "rgb", "typewriter"}
 VALID_BACKLOG_POLICIES = {"auto", "live_only", "send_all"}
 
 DEFAULT_CONFIG = {
@@ -38,6 +39,8 @@ DEFAULT_CONFIG = {
     "selected_profile_id": "balanced",
     "profile_mode": "preset",
     "ws_port": 8765,
+    "obs_enabled": True,
+    "whisper_context_prompt": "",  # Optional context hint for Whisper to reduce hallucinations
 }
 
 
@@ -106,6 +109,10 @@ def _normalize_config(config):
         config["blacklist"] = DEFAULT_CONFIG["blacklist"]
         updated = True
 
+    if not isinstance(config.get("whisper_context_prompt"), str):
+        config["whisper_context_prompt"] = DEFAULT_CONFIG["whisper_context_prompt"]
+        updated = True
+
     if config.get("subtitle_style") not in VALID_SUBTITLE_STYLES:
         config["subtitle_style"] = DEFAULT_CONFIG["subtitle_style"]
         updated = True
@@ -140,6 +147,10 @@ def _normalize_config(config):
         port_val, port_changed = _clamp_number(ws_port, 8765, 1, 65535, int)
         config["ws_port"] = port_val
         updated = updated or port_changed
+
+    if not isinstance(config.get("obs_enabled"), bool):
+        config["obs_enabled"] = bool(config.get("obs_enabled"))
+        updated = True
 
     return config, updated
 

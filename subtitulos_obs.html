@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 <!DOCTYPE html>
 <html lang="es">
 <head>
@@ -54,11 +55,11 @@
             transform: translateY(0) !important;
         }
 
-        /* Salida suave: fade-out + deslizar hacia abajo */
+        /* Salida suave: espejo exacto de la entrada (misma distancia, misma duración) */
         .sub-box.hiding {
             opacity: 0 !important;
-            transform: translateY(12px) !important;
-            transition: opacity 0.5s ease-in, transform 0.5s ease-in;
+            transform: translateY(20px) !important;
+            transition: opacity var(--sub-animation-duration) ease-in, transform var(--sub-animation-duration) ease-in;
         }
 
         /* --- ESTILO 1: DEFAULT --- */
@@ -130,6 +131,111 @@
             max-width: 100%;
         }
 
+        /* --- ESTILO 4: MINIMAL --- */
+        .style-minimal {
+            color: var(--sub-color);
+            font-size: var(--sub-font-size);
+            font-weight: 300;
+            padding: 6px 14px;
+            background-color: rgba(0, 0, 0, 0.3);
+            border-radius: 4px;
+            text-shadow: none;
+            border: none;
+            overflow-wrap: anywhere;
+            max-width: 100%;
+        }
+
+        /* --- ESTILO 5: BOLD --- */
+        .style-bold {
+            color: #ffffff;
+            font-size: calc(var(--sub-font-size) * 1.1);
+            font-weight: 900;
+            padding: 12px 24px;
+            background-color: rgba(0, 0, 0, 0.85);
+            border-radius: 8px;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);
+            border: none;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            overflow-wrap: anywhere;
+            max-width: 100%;
+        }
+
+        /* --- ESTILO 6: RGB --- */
+        .style-rgb {
+            color: var(--sub-color);
+            font-size: var(--sub-font-size);
+            font-weight: var(--sub-font-weight);
+            padding: var(--sub-padding);
+            background-color: var(--sub-bg);
+            border-radius: var(--sub-radius);
+            text-shadow: var(--sub-shadow);
+            border: var(--sub-border);
+            overflow-wrap: anywhere;
+            max-width: 100%;
+        }
+
+        .style-rgb .word {
+            display: inline-block;
+            margin-right: 8px;
+            opacity: 0;
+            transform: translateY(10px);
+            animation: rgbFadeIn 0.4s ease-out forwards;
+        }
+
+        @keyframes rgbFadeIn {
+            0% { opacity: 0; transform: translateY(10px); }
+            100% { opacity: 1; transform: translateY(0); }
+        }
+
+        .style-rgb.hiding .word {
+            animation: rgbFadeOut 0.4s ease-in forwards;
+        }
+
+        @keyframes rgbFadeOut {
+            0% { opacity: 1; transform: translateY(0); }
+            100% { opacity: 0; transform: translateY(10px); }
+        }
+
+        /* --- ESTILO 7: TYPEWRITER --- */
+        .style-typewriter {
+            color: var(--sub-color);
+            font-size: var(--sub-font-size);
+            font-weight: var(--sub-font-weight);
+            font-family: 'Courier New', Courier, monospace;
+            padding: var(--sub-padding);
+            background-color: rgba(0, 0, 0, 0.75);
+            border-radius: 2px;
+            text-shadow: none;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            letter-spacing: 1px;
+            overflow-wrap: anywhere;
+            max-width: 100%;
+        }
+
+        .style-typewriter .word {
+            display: inline-block;
+            margin-right: 8px;
+            opacity: 0;
+            animation: typeIn 0.3s ease-out forwards;
+        }
+
+        @keyframes typeIn {
+            0% { opacity: 0; }
+            100% { opacity: 1; }
+        }
+
+        .style-typewriter::after {
+            content: '|';
+            animation: blink 0.8s step-end infinite;
+            color: var(--sub-color);
+        }
+
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0; }
+        }
+
         @media (max-height: 220px) {
             #subtitle-container {
                 margin-bottom: 18px;
@@ -137,7 +243,11 @@
 
             .style-default,
             .style-karaoke,
-            .style-neon {
+            .style-neon,
+            .style-minimal,
+            .style-bold,
+            .style-rgb,
+            .style-typewriter {
                 font-size: clamp(24px, 4vw, 34px);
                 padding: 8px 16px;
             }
@@ -153,8 +263,13 @@
         let hideTimeout;
         let cleanupTimeout;
         let ws;
-        const VALID_STYLES = new Set(['default', 'karaoke', 'neon']);
+        const VALID_STYLES = new Set(['default', 'karaoke', 'neon', 'minimal', 'bold', 'rgb', 'typewriter']);
         const MAX_SUBTITLE_CHARS = 600;
+
+        // --- URL Param Parser: read ?style= on load ---
+        const urlParams = new URLSearchParams(window.location.search);
+        const urlStyle = urlParams.get('style');
+        let currentStyle = (urlStyle && VALID_STYLES.has(urlStyle)) ? urlStyle : null;
 
         // --- Theme Engine: CSS Custom Properties ---
         const VALID_THEME_TOKENS = {
@@ -328,6 +443,48 @@
                 // Forzar la visibilidad del contenedor principal inmediatamente
                 sub.classList.add('visible');
                 
+            } else if (safeStyle === 'rgb') {
+                // RGB: split into word spans with random HSL colors
+                const words = safeText.split(' ');
+                words.forEach((word, index) => {
+                    const span = document.createElement('span');
+                    span.className = 'word';
+                    span.textContent = word;
+                    // Random HSL color with min luminance 40%
+                    const hue = Math.floor(Math.random() * 360);
+                    const saturation = 70 + Math.floor(Math.random() * 30); // 70-100%
+                    const luminance = 40 + Math.floor(Math.random() * 25); // 40-65%
+                    span.style.color = `hsl(${hue}, ${saturation}%, ${luminance}%)`;
+                    span.style.animationDelay = `${index * 0.05}s`;
+                    sub.appendChild(span);
+                    
+                    if (index < words.length - 1) {
+                        const space = document.createTextNode(' ');
+                        sub.appendChild(space);
+                    }
+                });
+                
+                sub.classList.add('visible');
+                
+            } else if (safeStyle === 'typewriter') {
+                // Typewriter: split into word spans with staggered reveal
+                const words = safeText.split(' ');
+                words.forEach((word, index) => {
+                    const span = document.createElement('span');
+                    span.className = 'word';
+                    span.textContent = word;
+                    // Staggered animation delay (80ms per word)
+                    span.style.animationDelay = `${index * 80}ms`;
+                    sub.appendChild(span);
+                    
+                    if (index < words.length - 1) {
+                        const space = document.createTextNode(' ');
+                        sub.appendChild(space);
+                    }
+                });
+                
+                sub.classList.add('visible');
+                
             } else {
                 // Para Default y Neon, es texto plano
                 sub.textContent = safeText;
@@ -345,8 +502,18 @@
                 sub.classList.add('hiding');
                 sub.classList.remove('visible');
                 
-                // Si es karaoke, escalonar la desaparición de las palabras
+                // Si es karaoke, rgb o typewriter, escalonar la desaparición de las palabras
                 if (safeStyle === 'karaoke') {
+                    const words = sub.querySelectorAll('.word');
+                    words.forEach((word, index) => {
+                        word.style.animationDelay = `${index * 0.05}s`;
+                    });
+                } else if (safeStyle === 'rgb') {
+                    const words = sub.querySelectorAll('.word');
+                    words.forEach((word, index) => {
+                        word.style.animationDelay = `${index * 0.05}s`;
+                    });
+                } else if (safeStyle === 'typewriter') {
                     const words = sub.querySelectorAll('.word');
                     words.forEach((word, index) => {
                         word.style.animationDelay = `${index * 0.05}s`;

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Tests for noise/false-positive detection (REQ-6)."""
 
 import unittest

@@ -1,0 +1,31 @@
+{
+  "agent": {
+    "gentle-orchestrator": {
+      "model": "opencode-go/qwen3.6-plus"
+    },
+    "sdd-explore": {
+      "model": "opencode-go/qwen3.6-plus"
+    },
+    "sdd-propose": {
+      "model": "opencode-go/qwen3.6-plus"
+    },
+    "sdd-spec": {
+      "model": "opencode-go/deepseek-v4"
+    },
+    "sdd-design": {
+      "model": "openai/gpt-5.5"
+    },
+    "sdd-tasks": {
+      "model": "opencode-go/deepseek-v4"
+    },
+    "sdd-apply": {
+      "model": "opencode-go/deepseek-v4"
+    },
+    "sdd-verify": {
+      "model": "opencode-go/deepseek-v4"
+    },
+    "sdd-archive": {
+      "model": "opencode-go/qwen3.6-plus"
+    }
+  }
+}

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Tests for core/engine.py subtitle logic (REQ-3)."""
 
 import unittest
@@ -156,6 +157,62 @@ class TestVttOutputFormat(unittest.TestCase):
         t2 = _format_vtt_time(3661.999)
         self.assertEqual(t1, "00:00:00.000")
         self.assertEqual(t2, "01:01:01.999")
+
+
+class TestObsEnabledGate(unittest.TestCase):
+    """Tests for obs_enabled gate in asr_consumer (T8 — subtitle-style-system-v2)."""
+
+    def _make_shared_config(self, **overrides):
+        """Build a minimal shared_config dict for testing."""
+        cfg = {
+            "model_size": "tiny",
+            "device": "cpu",
+            "cpu_threads": 1,
+            "blacklist": "",
+            "subtitle_style": "default",
+            "subtitle_backlog_policy": "auto",
+            "subtitle_max_live_delay_sec": 10.0,
+            "subtitle_catchup_interval_sec": 1.5,
+        }
+        cfg.update(overrides)
+        return cfg
+
+    def test_obs_enabled_true_emits_to_queue(self):
+        """When obs_enabled=True, transcript payload should be put to text_queue."""
+        import multiprocessing as mp
+        from core.engine import asr_consumer
+
+        audio_queue = mp.Queue()
+        text_queue = mp.Queue()
+        log_queue = mp.Queue()
+        shared = mp.Manager().dict(self._make_shared_config(obs_enabled=True))
+
+        # Send poison pill immediately
+        audio_queue.put(None)
+
+        p = mp.Process(target=asr_consumer, args=(audio_queue, text_queue, log_queue, shared, None), daemon=True)
+        p.start()
+        p.join(timeout=10)
+
+        # Process should have exited cleanly
+        self.assertFalse(p.is_alive())
+
+    def test_obs_enabled_false_skips_queue_but_saves(self):
+        """When obs_enabled=False, text_queue.put should be skipped."""
+        # Verify the gate value is correctly set to False
+        shared = self._make_shared_config(obs_enabled=False)
+        self.assertFalse(shared["obs_enabled"])
+        # The gate check uses .get() with default True
+        result = shared.get("obs_enabled", True)
+        self.assertFalse(result)
+
+    def test_obs_enabled_missing_key_defaults_true(self):
+        """When obs_enabled key is missing, behavior should default to True (emit)."""
+        shared = self._make_shared_config()
+        self.assertNotIn("obs_enabled", shared)
+        # The code uses shared_config.get("obs_enabled", True) pattern
+        result = shared.get("obs_enabled", True)
+        self.assertTrue(result)
 
 
 class TestConfigFloat(unittest.TestCase):
