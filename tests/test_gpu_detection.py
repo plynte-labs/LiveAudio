@@ -137,7 +137,7 @@ class TestGPUAutoDetectConfig(unittest.TestCase):
 
     @patch("utils.config.torch.cuda.is_available")
     @patch("utils.config.os.path.exists")
-    @patch("utils.config.save_config")
+    @patch("utils.config._save_config_no_lock")
     @patch("utils.config.json.load")
     def test_forces_cpu_when_cuda_unavailable_existing_config(self, mock_json_load, mock_save, mock_exists, mock_cuda):
         """load_config should force cpu if existing config has cuda but GPU unavailable."""

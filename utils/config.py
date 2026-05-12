@@ -7,7 +7,9 @@ try:
 except ImportError:
     torch = None
 
+import time
 CONFIG_FILE = "config.json"
+LOCK_FILE = CONFIG_FILE + ".lock"
 VALID_DEVICES = {"cpu", "cuda"}
 VALID_MODELS = {
     "tiny (Más rápido, baja precisión)",
@@ -141,6 +143,29 @@ def _normalize_config(config):
 
     return config, updated
 
+def _acquire_lock(timeout=2.0):
+    import time
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            fd = os.open(LOCK_FILE, os.O_CREAT | os.O_EXCL | os.O_RDWR)
+            os.close(fd)
+            return True
+        except (FileExistsError, OSError):
+            time.sleep(0.05)
+    return False
+
+def _release_lock():
+    try:
+        os.remove(LOCK_FILE)
+    except OSError:
+        pass
+
+def _save_config_no_lock(config):
+    import json
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=4, ensure_ascii=False)
+
 def load_config():
     """
     Carga la configuracion desde config.json.
@@ -148,29 +173,38 @@ def load_config():
     Valida que output_dir sea una ruta normalizada.
     Auto-detecta GPU: si CUDA no esta disponible, fuerza device a "cpu".
     """
-    if not os.path.exists(CONFIG_FILE):
-        save_config(DEFAULT_CONFIG)
-        config = DEFAULT_CONFIG.copy()
-    else:
-        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-            config = json.load(f)
-    
-    config, updated = _normalize_config(config)
-    
-    # GPU auto-detection: si CUDA no esta disponible, forzar CPU
-    if torch is not None:
-        try:
-            if config.get("device") == "cuda" and not torch.cuda.is_available():
-                config["device"] = "cpu"
-                updated = True
-        except Exception:
-            pass
-    
-    if updated:
-        save_config(config)
-    
-    return config
+    locked = _acquire_lock()
+    try:
+        if not os.path.exists(CONFIG_FILE):
+            if locked:
+                _save_config_no_lock(DEFAULT_CONFIG)
+            config = DEFAULT_CONFIG.copy()
+        else:
+            import json
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                config = json.load(f)
+        
+        config, updated = _normalize_config(config)
+        
+        if torch is not None:
+            try:
+                if config.get("device") == "cuda" and not torch.cuda.is_available():
+                    config["device"] = "cpu"
+                    updated = True
+            except Exception:
+                pass
+        
+        if updated and locked:
+            _save_config_no_lock(config)
+        
+        return config
+    finally:
+        if locked:
+            _release_lock()
 
 def save_config(config):
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(config, f, indent=4, ensure_ascii=False)
+    if _acquire_lock():
+        try:
+            _save_config_no_lock(config)
+        finally:
+            _release_lock()

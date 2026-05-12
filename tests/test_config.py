@@ -302,6 +302,29 @@ class TestLoadSaveConfig(unittest.TestCase):
             loaded = json.load(f)
         self.assertEqual(loaded["device"], DEFAULT_CONFIG["device"])
 
+    def test_load_config_respects_lock(self):
+        """load_config should fallback to read-only if file is locked."""
+        save_config(DEFAULT_CONFIG)
+        
+        with open("config.json", "w", encoding="utf-8") as f:
+            broken_config = DEFAULT_CONFIG.copy()
+            del broken_config["device"]
+            json.dump(broken_config, f)
+            
+        open("config.json.lock", "w").close()
+        
+        with patch("utils.config.torch") as mock_torch:
+            mock_torch.cuda.is_available.return_value = True
+            config = load_config()
+            
+        self.assertEqual(config["device"], "cuda")
+        
+        with open("config.json", "r", encoding="utf-8") as f:
+            disk_config = json.load(f)
+            self.assertNotIn("device", disk_config)
+            
+        os.remove("config.json.lock")
+
 
 if __name__ == "__main__":
     unittest.main()
