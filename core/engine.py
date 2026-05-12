@@ -4,6 +4,7 @@ import json
 import multiprocessing as mp
 import queue
 import traceback
+import threading
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from faster_whisper import WhisperModel
 import torch
@@ -49,6 +50,45 @@ def validate_theme_tokens(tokens: dict) -> dict:
                 continue
         valid[key] = value
     return valid
+
+
+class SessionWriter:
+    """Handles asynchronous disk I/O for saving session transcripts and subtitles."""
+    def __init__(self, jsonl_path, vtt_path):
+        self.jsonl_path = jsonl_path
+        self.vtt_path = vtt_path
+        self.queue = queue.Queue()
+        self.thread = threading.Thread(target=self._worker, daemon=True)
+        self.thread.start()
+
+    def _worker(self):
+        while True:
+            item = self.queue.get()
+            if item is None:
+                self.queue.task_done()
+                break
+            
+            try:
+                record, vtt_start, vtt_end, texto_final, cue_counter = item
+                with open(self.jsonl_path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
+                
+                with open(self.vtt_path, "a", encoding="utf-8") as f:
+                    f.write(f"{cue_counter}\n{vtt_start} --> {vtt_end}\n{texto_final}\n\n#cue:{cue_counter}\n")
+            except Exception:
+                pass
+            finally:
+                self.queue.task_done()
+
+    def write_record(self, record, vtt_start, vtt_end, texto_final, cue_counter):
+        self.queue.put((record, vtt_start, vtt_end, texto_final, cue_counter))
+
+    def stop(self):
+        self.queue.put(None)
+        self.thread.join(timeout=2.0)
+
+    def flush(self):
+        self.queue.join()
 
 
 def _format_vtt_time(seconds: float) -> str:
@@ -219,6 +259,8 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
                     elif stripped.isdigit():
                         cue_counter = max(cue_counter, int(stripped))
 
+        session_writer = SessionWriter(jsonl_path, vtt_path)
+
         while True:
             audio_item = audio_queue.get()
             if audio_item is None: break
@@ -274,14 +316,11 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
                     "device": shared_config["device"],
                 }
                 
-                with open(jsonl_path, "a", encoding="utf-8") as f:
-                    f.write(json.dumps(transcript_record, ensure_ascii=False) + "\n")
+                cue_counter += 1
+                vtt_start = _format_vtt_time(queue_delay)
+                vtt_end = _format_vtt_time(queue_delay + latency)
                 
-                with open(vtt_path, "a", encoding="utf-8") as f:
-                    cue_counter += 1
-                    vtt_start = _format_vtt_time(queue_delay)
-                    vtt_end = _format_vtt_time(queue_delay + latency)
-                    f.write(f"{cue_counter}\n{vtt_start} --> {vtt_end}\n{texto_final}\n\n#cue:{cue_counter}\n")
+                session_writer.write_record(transcript_record, vtt_start, vtt_end, texto_final, cue_counter)
 
                 # Empaquetamos enviando el estilo actualizado en TIEMPO REAL
                 style = shared_config.get("subtitle_style", "default")
@@ -336,6 +375,8 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
                     })
                     _emit_log(log_queue, f"[IA] Subtitulo atrasado {total_delay:.1f}s guardado; omitido en OBS por politica live.")
             _emit_status(log_queue, "asr", "ASR: listo", "ok")
+
+        session_writer.stop()
 
     except Exception as e:
         _emit_status(log_queue, "asr", "ASR: error", "error")
