@@ -1,4 +1,5 @@
 {
+  "$schema": "https://opencode.ai/config.json",
   "agent": {
     "gentle-orchestrator": {
       "model": "opencode-go/qwen3.6-plus"

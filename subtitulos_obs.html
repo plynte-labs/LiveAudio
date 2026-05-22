@@ -16,7 +16,7 @@
             --sub-shadow: 2px 2px 0 #000, -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000;
             --sub-border: none;
             --sub-padding: 10px 20px;
-            --sub-animation-duration: 0.4s;
+            --sub-animation-duration: 0.2s;
             --sub-font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             --sub-text-transform: none;
             --sub-letter-spacing: normal;
@@ -96,7 +96,7 @@
             margin-right: 12px;
             opacity: 0;
             transform: scale(0.5);
-            animation: popIn 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+            animation: popIn 0.15s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
         }
 
         @keyframes popIn {
@@ -106,7 +106,7 @@
 
         /* Karaoke salida: las palabras se desvanecen en cascada reversa */
         .style-karaoke.hiding .word {
-            animation: popOut 0.3s ease-in forwards;
+            animation: popOut 0.15s ease-in forwards;
         }
 
         @keyframes popOut {
@@ -180,7 +180,7 @@
             margin-right: 8px;
             opacity: 0;
             transform: translateY(10px);
-            animation: rgbFadeIn 0.4s ease-out forwards;
+            animation: rgbFadeIn 0.2s ease-out forwards;
         }
 
         @keyframes rgbFadeIn {
@@ -189,7 +189,7 @@
         }
 
         .style-rgb.hiding .word {
-            animation: rgbFadeOut 0.4s ease-in forwards;
+            animation: rgbFadeOut 0.2s ease-in forwards;
         }
 
         @keyframes rgbFadeOut {
@@ -217,7 +217,7 @@
             display: inline-block;
             margin-right: 8px;
             opacity: 0;
-            animation: typeIn 0.3s ease-out forwards;
+            animation: typeIn 0.15s ease-out forwards;
         }
 
         @keyframes typeIn {
@@ -312,7 +312,7 @@
 
         // --- Backpressure: Debounce + Max Queue ---
         const MAX_PENDING_QUEUE = 5;
-        const DEBOUNCE_MS = 150; // Minimum time between subtitle renders
+        const DEBOUNCE_MS = 80; // Minimum time between subtitle renders
         let pendingQueue = [];
         let lastShowTime = 0;
         let isShowing = false;
@@ -429,8 +429,8 @@
                     const span = document.createElement('span');
                     span.className = 'word';
                     span.textContent = word;
-                    // Escalonamos la aparición (100ms por palabra)
-                    span.style.animationDelay = `${index * 0.1}s`; 
+                    // Escalonamos la aparición (50ms por palabra)
+                    span.style.animationDelay = `${index * 0.025}s`;
                     sub.appendChild(span);
                     
                     // Espacio entre palabras
@@ -473,8 +473,8 @@
                     const span = document.createElement('span');
                     span.className = 'word';
                     span.textContent = word;
-                    // Staggered animation delay (80ms per word)
-                    span.style.animationDelay = `${index * 80}ms`;
+                    // Staggered animation delay (40ms per word)
+                    span.style.animationDelay = `${index * 40}ms`;
                     sub.appendChild(span);
                     
                     if (index < words.length - 1) {
@@ -506,17 +506,17 @@
                 if (safeStyle === 'karaoke') {
                     const words = sub.querySelectorAll('.word');
                     words.forEach((word, index) => {
-                        word.style.animationDelay = `${index * 0.05}s`;
+                        word.style.animationDelay = `${index * 0.025}s`;
                     });
                 } else if (safeStyle === 'rgb') {
                     const words = sub.querySelectorAll('.word');
                     words.forEach((word, index) => {
-                        word.style.animationDelay = `${index * 0.05}s`;
+                        word.style.animationDelay = `${index * 0.025}s`;
                     });
                 } else if (safeStyle === 'typewriter') {
                     const words = sub.querySelectorAll('.word');
                     words.forEach((word, index) => {
-                        word.style.animationDelay = `${index * 0.05}s`;
+                        word.style.animationDelay = `${index * 0.025}s`;
                     });
                 }
                 
@@ -528,7 +528,7 @@
                     }
                     // Signal queue to process next subtitle
                     onSubtitleComplete();
-                }, 600); // Debe ser >= duración de la transición de salida
+                }, 350); // Debe ser >= duración de la transición de salida
                 
             }, 5000);
         }

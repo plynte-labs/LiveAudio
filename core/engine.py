@@ -230,6 +230,7 @@ def _transcribe_with_timeout(model, audio_chunk, timeout_sec=ASR_TRANSCRIBE_TIME
         return None, None
 
 def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queue, shared_config: dict, session_dir: str):
+    session_writer = None
     try:
         clean_model_name = shared_config["model_size"].split()[0] 
         _emit_status(log_queue, "asr", "ASR: cargando", "active")
@@ -393,8 +394,9 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
                     _emit_log(log_queue, f"[IA] Subtitulo atrasado {total_delay:.1f}s guardado; omitido en OBS por politica live.")
             _emit_status(log_queue, "asr", "ASR: listo", "ok")
 
-        session_writer.stop()
-
     except Exception as e:
         _emit_status(log_queue, "asr", "ASR: error", "error")
         _emit_log(log_queue, f"[IA ERROR] {str(e)}")
+    finally:
+        if session_writer is not None:
+            session_writer.stop()
