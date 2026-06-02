@@ -1,0 +1,21 @@
+{
+    "output_dir": "sessions",
+    "device": "cpu",
+    "cpu_threads": 4,
+    "model_size": "small (Balance CPU)",
+    "blacklist": "amara.org, subtítulos por, suscríbete, dale like, gracias por ver, memos, gracias, activar la campanita, ¡Hasta la próxima!, por favor",
+    "continuous_session": true,
+    "subtitle_style": "default",
+    "subtitle_backlog_policy": "auto",
+    "subtitle_max_live_delay_sec": 10.0,
+    "subtitle_catchup_interval_sec": 1.5,
+    "silence_timeout": 0.8,
+    "max_chunk_duration": 5.0,
+    "audio_device": null,
+    "selected_profile_id": "balanced",
+    "profile_mode": "preset",
+    "ws_port": 8765,
+    "obs_enabled": true,
+    "whisper_context_prompt": "",
+    "settings_navigation_mode": "tabs"
+}
