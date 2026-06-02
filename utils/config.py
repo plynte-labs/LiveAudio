@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: MIT
 import os
 import json
 import multiprocessing as mp
@@ -41,6 +41,8 @@ DEFAULT_CONFIG = {
     "ws_port": 8765,
     "obs_enabled": True,
     "whisper_context_prompt": "",  # Optional context hint for Whisper to reduce hallucinations
+    "settings_navigation_mode": "tabs",  # "tabs" o "dropdown"
+    "language": None,  # None = autodetectar
 }
 
 
@@ -150,6 +152,14 @@ def _normalize_config(config):
 
     if not isinstance(config.get("obs_enabled"), bool):
         config["obs_enabled"] = bool(config.get("obs_enabled"))
+        updated = True
+
+    if config.get("settings_navigation_mode") not in {"tabs", "dropdown"}:
+        config["settings_navigation_mode"] = DEFAULT_CONFIG["settings_navigation_mode"]
+        updated = True
+
+    if config.get("language") not in {None, "es", "en"}:
+        config["language"] = None
         updated = True
 
     return config, updated

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: MIT
 import time
 import os
 import json
@@ -337,6 +337,15 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
                 obs_enabled = shared_config.get("obs_enabled", True)
                 if not obs_enabled:
                     _emit_log(log_queue, "[IA] OBS disabled, subtitle saved only")
+                    _emit_transcript(log_queue, {
+                        "type": "transcript",
+                        "text": texto_final,
+                        "latency": latency,
+                        "queue_delay": queue_delay,
+                        "total_delay": total_delay,
+                        "obs_emitted": False,
+                        "reason": "obs_disabled",
+                    })
                     _emit_status(log_queue, "asr", "ASR: listo", "ok")
                     continue
 
