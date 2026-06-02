@@ -28,3 +28,9 @@ This file tracks major LiveAudio tracks. Each track should have its own detailed
   *Link: [./tracks/subtitle-style-system_20260509/](./tracks/subtitle-style-system_20260509/)*
   *Status: completed. SDD formal workflow with 3 chained PRs. 18 tasks, 242 tests, 7 presets.*
 
+---
+
+- [x] **Track: Dynamic Internationalization (i18n) & Settings Reorganization**
+  *Link: N/A - completed directly to optimize workspace open-source transition.*
+  *Status: completed. Real-time dynamic i18n for English/Spanish, translated preview panels, dynamic status pills, and merged Profiles settings tab. Commits: `5a6fad8`, `c7dc1c3`, `9b5ea8f`.*
+
