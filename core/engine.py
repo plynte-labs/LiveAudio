@@ -158,7 +158,7 @@ def _obs_emit_decision(shared_config, queue_delay):
     return True, queue_delay > 1.0, catchup_interval if queue_delay > 1.0 else 0.0
 
 
-def _transcribe_with_timeout(model, audio_chunk, timeout_sec=ASR_TRANSCRIBE_TIMEOUT_SEC, log_queue=None, device="cpu", initial_prompt=None):
+def _transcribe_with_timeout(model, audio_chunk, timeout_sec=ASR_TRANSCRIBE_TIMEOUT_SEC, log_queue=None, device="cpu", initial_prompt=None, language="es"):
     """Wrap model.transcribe() with a timeout to prevent permanent ASR freezes.
     
     Returns (segments, info) on success, or (None, None) on timeout/failure.
@@ -169,7 +169,7 @@ def _transcribe_with_timeout(model, audio_chunk, timeout_sec=ASR_TRANSCRIBE_TIME
     """
     def _do_transcribe():
         kwargs = {
-            "language": "es",
+            "language": language,
             "beam_size": 5,
             "vad_filter": False,
             "condition_on_previous_text": False,
@@ -289,10 +289,16 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
 
             start_time = time.time()
             _emit_status(log_queue, "asr", "ASR: transcribiendo", "active")
+
+            # Leer idioma de voz y prompt de contexto en caliente desde shared_config
+            asr_lang = shared_config.get("asr_language") or "es"
+            prompt_key = f"whisper_context_prompt_{asr_lang}"
+            context_prompt = shared_config.get(prompt_key) or None
+
             segments, info = _transcribe_with_timeout(
                 model, audio_chunk, timeout_sec=ASR_TRANSCRIBE_TIMEOUT_SEC,
                 log_queue=log_queue, device=shared_config["device"],
-                initial_prompt=shared_config.get("whisper_context_prompt") or None,
+                initial_prompt=context_prompt, language=asr_lang,
             )
             if segments is None:
                 # Timeout or error — skip to next item

@@ -40,9 +40,11 @@ DEFAULT_CONFIG = {
     "profile_mode": "preset",
     "ws_port": 8765,
     "obs_enabled": True,
-    "whisper_context_prompt": "",  # Optional context hint for Whisper to reduce hallucinations
+    "whisper_context_prompt_es": "",
+    "whisper_context_prompt_en": "",
+    "asr_language": "es",  # Idioma de voz (ASR): "es" o "en"
     "settings_navigation_mode": "tabs",  # "tabs" o "dropdown"
-    "language": None,  # None = autodetectar
+    "language": None,  # None = autodetectar idioma de UI
 }
 
 
@@ -111,8 +113,27 @@ def _normalize_config(config):
         config["blacklist"] = DEFAULT_CONFIG["blacklist"]
         updated = True
 
-    if not isinstance(config.get("whisper_context_prompt"), str):
-        config["whisper_context_prompt"] = DEFAULT_CONFIG["whisper_context_prompt"]
+    # Migración transparente: mover whisper_context_prompt a whisper_context_prompt_es
+    old_prompt = config.get("whisper_context_prompt", "")
+    if old_prompt and isinstance(old_prompt, str) and old_prompt.strip():
+        if not config.get("whisper_context_prompt_es"):
+            config["whisper_context_prompt_es"] = old_prompt.strip()
+            updated = True
+    # Eliminar clave deprecada para mantener archivo limpio
+    if "whisper_context_prompt" in config:
+        del config["whisper_context_prompt"]
+        updated = True
+
+    if not isinstance(config.get("whisper_context_prompt_es"), str):
+        config["whisper_context_prompt_es"] = DEFAULT_CONFIG["whisper_context_prompt_es"]
+        updated = True
+
+    if not isinstance(config.get("whisper_context_prompt_en"), str):
+        config["whisper_context_prompt_en"] = DEFAULT_CONFIG["whisper_context_prompt_en"]
+        updated = True
+
+    if config.get("asr_language") not in {"es", "en"}:
+        config["asr_language"] = DEFAULT_CONFIG["asr_language"]
         updated = True
 
     if config.get("subtitle_style") not in VALID_SUBTITLE_STYLES:

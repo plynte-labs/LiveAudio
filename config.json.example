@@ -16,6 +16,8 @@
     "profile_mode": "preset",
     "ws_port": 8765,
     "obs_enabled": true,
-    "whisper_context_prompt": "",
+    "whisper_context_prompt_es": "",
+    "whisper_context_prompt_en": "",
+    "asr_language": "es",
     "settings_navigation_mode": "tabs"
 }

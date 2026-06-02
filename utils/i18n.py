@@ -49,8 +49,11 @@ TRANSLATIONS = {
         "hardware": "Hardware:",
         "cpu_threads": "Hilos CPU (Max {}):",
         "model_size": "Tamaño del Modelo:",
+        "spoken_language_label": "Idioma de voz (Habla):",
         "whisper_context": "Contexto para Whisper (opcional):",
         "whisper_context_help": "Ayuda a reducir alucinaciones. Ej: 'Stream de tecnología, el host habla de Python y gaming'.",
+        "whisper_context_help_es": "Ayuda a reducir alucinaciones en español. Ej: 'Stream de gaming, jugamos Minecraft y charlamos con viewers'.",
+        "whisper_context_help_en": "Ayuda a reducir alucinaciones en inglés. Ej: 'Coding stream, Python tutorials, backend development'.",
         
         # Subtitles Section
         "style_preview": "Preview del estilo:",
@@ -199,8 +202,11 @@ TRANSLATIONS = {
         "hardware": "Hardware:",
         "cpu_threads": "CPU Threads (Max {}):",
         "model_size": "Model Size:",
+        "spoken_language_label": "Spoken Language (ASR):",
         "whisper_context": "Context for Whisper (optional):",
         "whisper_context_help": "Helps reduce hallucinations. E.g.: 'Technology stream, the host talks about Python and gaming'.",
+        "whisper_context_help_es": "Helps reduce hallucinations in Spanish. E.g.: 'Gaming stream, Minecraft gameplay, chat with viewers'.",
+        "whisper_context_help_en": "Helps reduce hallucinations in English. E.g.: 'Coding stream, Python tutorials, backend development'.",
         
         # Subtitles Section
         "style_preview": "Style Preview:",

@@ -609,20 +609,35 @@ class LiveASRApp(ctk.CTk):
         self.opt_model = self._create_premium_option_menu(tab_model, values=modelos_desc, variable=self.var_model, command=self.on_setting_change)
         self.opt_model.pack(fill="x", padx=10, pady=(0, 15))
 
-        # Contexto para Whisper (initial_prompt)
+        # Selector de idioma de voz (ASR) — independiente del idioma de UI
+        ctk.CTkLabel(tab_model, text=t("spoken_language_label")).pack(anchor="w", padx=10)
+        asr_lang_values = ["Español", "English"]
+        current_asr = self.config_data.get("asr_language", "es")
+        current_asr_display = "Español" if current_asr == "es" else "English"
+        self.var_asr_lang = ctk.StringVar(value=current_asr_display)
+        self.opt_asr_lang = self._create_premium_option_menu(
+            tab_model, values=asr_lang_values, variable=self.var_asr_lang,
+            command=self._on_asr_language_change
+        )
+        self.opt_asr_lang.pack(fill="x", padx=10, pady=(0, 15))
+
+        # Contexto para Whisper (initial_prompt) — carga el prompt del idioma de voz activo
         ctk.CTkLabel(tab_model, text=t("whisper_context")).pack(anchor="w", padx=10)
         self.text_whisper_prompt = ctk.CTkTextbox(tab_model, height=60)
-        self.text_whisper_prompt.insert("0.0", self.config_data.get("whisper_context_prompt", ""))
+        prompt_key = f"whisper_context_prompt_{current_asr}"
+        self.text_whisper_prompt.insert("0.0", self.config_data.get(prompt_key, ""))
         self.text_whisper_prompt.pack(fill="x", padx=10, pady=(0, 15))
         self.text_whisper_prompt.bind("<FocusOut>", lambda e: self.on_setting_change())
-        ctk.CTkLabel(
+        help_key = f"whisper_context_help_{current_asr}"
+        self.lbl_whisper_context_help = ctk.CTkLabel(
             tab_model,
-            text=t("whisper_context_help"),
+            text=t(help_key),
             wraplength=260,
             justify="left",
             font=ctk.CTkFont(size=10),
             text_color="#AEB8BC",
-        ).pack(anchor="w", padx=10, pady=(0, 0))
+        )
+        self.lbl_whisper_context_help.pack(anchor="w", padx=10, pady=(0, 0))
 
         # --- Sliders de Latencia ---
         ctk.CTkLabel(tab_audio, text=t("latency_control"), font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=10, pady=(10, 0))
@@ -921,7 +936,20 @@ class LiveASRApp(ctk.CTk):
         draft["subtitle_backlog_policy"] = backlog_val
         
         draft["obs_enabled"] = self.var_obs_enabled.get()
-        draft["whisper_context_prompt"] = self.text_whisper_prompt.get("0.0", "end").strip()
+        # Preservar prompts de ambos idiomas desde draft_config (acumula cambios),
+        # luego sobrescribir el del idioma activo con el contenido actual de la UI
+        draft["whisper_context_prompt_es"] = self.draft_config.get(
+            "whisper_context_prompt_es",
+            self.config_data.get("whisper_context_prompt_es", "")
+        )
+        draft["whisper_context_prompt_en"] = self.draft_config.get(
+            "whisper_context_prompt_en",
+            self.config_data.get("whisper_context_prompt_en", "")
+        )
+        asr_lang = self.draft_config.get("asr_language", self.config_data.get("asr_language", "es"))
+        prompt_key = f"whisper_context_prompt_{asr_lang}"
+        draft[prompt_key] = self.text_whisper_prompt.get("0.0", "end").strip()
+        draft["asr_language"] = asr_lang
         draft["settings_navigation_mode"] = self.config_data.get("settings_navigation_mode", "tabs")
         return draft
 
@@ -957,8 +985,14 @@ class LiveASRApp(ctk.CTk):
         self.text_blacklist.delete("0.0", "end")
         self.text_blacklist.insert("0.0", config.get("blacklist", ""))
         self.var_obs_enabled.set(config.get("obs_enabled", True))
+        # Cargar el prompt según el idioma de voz activo
+        asr_lang = config.get("asr_language", "es")
+        self.var_asr_lang.set("Español" if asr_lang == "es" else "English")
+        prompt_key = f"whisper_context_prompt_{asr_lang}"
         self.text_whisper_prompt.delete("0.0", "end")
-        self.text_whisper_prompt.insert("0.0", config.get("whisper_context_prompt", ""))
+        self.text_whisper_prompt.insert("0.0", config.get(prompt_key, ""))
+        help_key = f"whisper_context_help_{asr_lang}"
+        self.lbl_whisper_context_help.configure(text=t(help_key))
         self._ui_ready = True
         self.on_setting_change()
 
@@ -1028,6 +1062,38 @@ class LiveASRApp(ctk.CTk):
             if device:
                 self.draft_config["audio_device"] = device
         self.refresh_profile_status()
+
+    def _on_asr_language_change(self, selected):
+        """Callback cuando cambia el idioma de voz (ASR)."""
+        if not self._ui_ready:
+            return
+
+        new_lang_code = "es" if selected == "Español" else "en"
+        prev_lang_code = self.draft_config.get("asr_language", "es")
+
+        if new_lang_code == prev_lang_code:
+            return
+
+        # 1. Guardar el prompt actual en la clave del idioma anterior
+        current_prompt = self.text_whisper_prompt.get("0.0", "end").strip()
+        prev_prompt_key = f"whisper_context_prompt_{prev_lang_code}"
+        self.draft_config[prev_prompt_key] = current_prompt
+
+        # 2. Cambiar idioma ASR
+        self.draft_config["asr_language"] = new_lang_code
+
+        # 3. Cargar el prompt del nuevo idioma en la caja de texto
+        new_prompt_key = f"whisper_context_prompt_{new_lang_code}"
+        new_prompt = self.draft_config.get(new_prompt_key, "")
+        self.text_whisper_prompt.delete("0.0", "end")
+        self.text_whisper_prompt.insert("0.0", new_prompt)
+
+        # 4. Actualizar texto de ayuda
+        help_key = f"whisper_context_help_{new_lang_code}"
+        self.lbl_whisper_context_help.configure(text=t(help_key))
+
+        # 5. Disparar cambio para guardar config y notificar al motor
+        self.on_setting_change()
 
     # --- LÓGICA DE CONTROL ---
     def update_ui_state(self):
