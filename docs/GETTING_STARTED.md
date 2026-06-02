@@ -77,11 +77,6 @@ Con el entorno activado:
 python main.py
 ```
 
-Si tienes un entorno conda en una ruta específica (por ejemplo, `flux_env`):
-
-```bash
-E:\Miniconda\envs\flux_env\python.exe main.py
-```
 
 Al iniciar por primera vez, se creará automáticamente un archivo `config.json` con valores predeterminados.
 

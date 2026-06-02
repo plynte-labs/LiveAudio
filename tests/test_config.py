@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: MIT
 """Tests for utils/config.py validation functions (REQ-2)."""
 
 import unittest

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: MIT
 """Tests for OBS HTML port reading from query parameter (REQ-5)."""
 
 import unittest

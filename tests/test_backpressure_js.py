@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: MIT
 """Tests for client-side backpressure in subtitle HTML (REQ-2)."""
 
 import unittest

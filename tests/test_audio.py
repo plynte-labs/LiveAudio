@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: MIT
 """Tests for core/audio.py pipeline logic (REQ-4)."""
 
 import unittest

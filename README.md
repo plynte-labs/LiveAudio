@@ -63,11 +63,6 @@ LiveAudio es un motor de reconocimiento de voz automático (ASR) en tiempo real,
    python main.py
    ```
 
-   Si usas un entorno conda específico (como `flux_env`):
-   ```bash
-   E:\Miniconda\envs\flux_env\python.exe main.py
-   ```
-
 ---
 
 ## Estructura del proyecto
@@ -212,7 +207,7 @@ Opciones relacionadas:
 
 ## Licencia
 
-Proyecto privado. Todos los derechos reservados.
+Distribuido bajo la Licencia MIT. Consulta el archivo `LICENSE` para más detalles.
 
 ---
 
