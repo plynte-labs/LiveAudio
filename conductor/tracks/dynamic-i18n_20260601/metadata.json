@@ -1,0 +1,8 @@
+{
+  "track_id": "dynamic-i18n_20260601",
+  "type": "feature",
+  "status": "completed",
+  "created_at": "2026-06-01T18:00:00Z",
+  "updated_at": "2026-06-01T18:05:47Z",
+  "description": "Dynamic Internationalization (i18n) & Settings Reorganization: Real-time language switching (Spanish/English) without app restarts, layout compression merging settings tabs from 5 to 4, live-panel preview translation, dynamic IPC status translation, and speech transcription local fallback when OBS WebSocket output is disabled."
+}
