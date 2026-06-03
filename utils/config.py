@@ -21,6 +21,7 @@ VALID_MODELS = {
 MODEL_BY_KEY = {model.split()[0]: model for model in VALID_MODELS}
 VALID_SUBTITLE_STYLES = {"default", "karaoke", "neon", "minimal", "bold", "rgb", "typewriter"}
 VALID_BACKLOG_POLICIES = {"auto", "live_only", "send_all"}
+VALID_DIAGNOSTICS_LEVELS = {"off", "minimal", "deep"}
 
 DEFAULT_CONFIG = {
     "output_dir": os.path.abspath("sessions"),  # Usa una carpeta local por defecto
@@ -45,6 +46,9 @@ DEFAULT_CONFIG = {
     "asr_language": "es",  # Idioma de voz (ASR): "es" o "en"
     "settings_navigation_mode": "tabs",  # "tabs" o "dropdown"
     "language": None,  # None = autodetectar idioma de UI
+    "diagnostics_enabled": False,
+    "diagnostics_level": "minimal",
+    "diagnostics_export_dir": None,
 }
 
 
@@ -181,6 +185,28 @@ def _normalize_config(config):
 
     if config.get("language") not in {None, "es", "en"}:
         config["language"] = None
+        updated = True
+
+    if not isinstance(config.get("diagnostics_enabled"), bool):
+        config["diagnostics_enabled"] = bool(config.get("diagnostics_enabled"))
+        updated = True
+
+    if config.get("diagnostics_level") not in VALID_DIAGNOSTICS_LEVELS:
+        config["diagnostics_level"] = DEFAULT_CONFIG["diagnostics_level"]
+        updated = True
+
+    diagnostics_export_dir = config.get("diagnostics_export_dir")
+    if diagnostics_export_dir is None or str(diagnostics_export_dir).strip() == "":
+        if diagnostics_export_dir is not None:
+            updated = True
+        config["diagnostics_export_dir"] = None
+    elif isinstance(diagnostics_export_dir, str):
+        normalized_export_dir = os.path.normpath(os.path.abspath(diagnostics_export_dir))
+        if diagnostics_export_dir != normalized_export_dir:
+            updated = True
+        config["diagnostics_export_dir"] = normalized_export_dir
+    else:
+        config["diagnostics_export_dir"] = None
         updated = True
 
     return config, updated

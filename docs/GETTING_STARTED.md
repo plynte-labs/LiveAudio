@@ -218,7 +218,52 @@ Ajusta el slider **"Detección de silencio"** a un valor mayor (ej. 1.0s - 1.5s)
 
 ---
 
-## 9. Consejos de rendimiento
+## 9. Diagnóstico local para mantenimiento
+
+LiveAudio incorpora un flujo de diagnóstico **local-first**.
+
+No manda telemetría a servicios externos. La idea es capturar evidencia local cuando algo se atrasa, se congela o no termina limpio.
+
+### Config básica
+
+```json
+{
+  "diagnostics_enabled": true,
+  "diagnostics_level": "minimal",
+  "diagnostics_export_dir": null
+}
+```
+
+### Cuándo usarlo
+
+- si OBS deja de recibir subtítulos
+- si el ASR empieza a atrasarse
+- si el audio reconecta muchas veces
+- si una corrida de tests termina assertions pero no suelta el proceso
+
+### Cómo usarlo
+
+1. Reproduce el problema.
+2. En la app, pulsa **Export diagnostics**.
+3. Abre el JSON exportado y revisa:
+   - estado de procesos
+   - tamaños de colas visibles
+   - estados `audio` / `asr` / `ws`
+4. Si investigás tests, usá los helpers locales del suite para resumir procesos, threads y queues vivos.
+
+### Privacidad
+
+El reporte:
+
+- no exporta audio crudo
+- no exporta transcriptos completos como carga de diagnóstico
+- sanitiza secrets, passwords, tokens y rutas sensibles
+
+Si necesitás más detalle puntual, subí `diagnostics_level` a `deep` temporalmente.
+
+---
+
+## 10. Consejos de rendimiento
 
 - **Cierra programas innecesarios** mientras streameas para liberar CPU/GPU.
 - **Usa SSD** para la carpeta de sesiones; escribir VTT/JSONL en disco lento puede causar micro-lag.

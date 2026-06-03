@@ -9,12 +9,59 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from faster_whisper import WhisperModel
 import torch
+from core.diagnostics import create_store_from_config
 
 VALID_SUBTITLE_STYLES = {"default", "karaoke", "neon", "minimal", "bold", "rgb", "typewriter"}
 VALID_BACKLOG_POLICIES = {"auto", "live_only", "send_all"}
 MAX_TRANSCRIPT_CHARS = 600
 LIVE_QUEUE_TIMEOUT_SEC = 0.5
 ASR_TRANSCRIBE_TIMEOUT_SEC = 15.0
+
+
+def _record_asr_runtime_health(
+    diagnostics_store,
+    *,
+    model_name=None,
+    model_load_sec=None,
+    queue_delay=None,
+    latency=None,
+    total_delay=None,
+    obs_emitted=None,
+    reason=None,
+    backlog_mode=None,
+    shutdown_sec=None,
+    timed_out=False,
+    queue_full=False,
+):
+    if diagnostics_store is None:
+        return
+    if model_load_sec is not None:
+        diagnostics_store.record_duration("asr.model_load_sec", float(model_load_sec))
+    if latency is not None:
+        diagnostics_store.record_duration("asr.latency_sec", float(latency))
+    if queue_delay is not None:
+        diagnostics_store.record_duration("asr.queue_delay_sec", float(queue_delay))
+    if total_delay is not None:
+        diagnostics_store.record_duration("asr.total_delay_sec", float(total_delay))
+    if shutdown_sec is not None:
+        diagnostics_store.record_duration("asr.shutdown_sec", float(shutdown_sec))
+    if timed_out:
+        diagnostics_store.record_counter("asr.timeouts")
+    if queue_full:
+        diagnostics_store.record_counter("asr.ws_queue_full")
+    payload = {}
+    if model_name is not None:
+        payload["model"] = model_name
+    if obs_emitted is not None:
+        payload["obs_emitted"] = bool(obs_emitted)
+    if reason is not None:
+        payload["reason"] = reason
+    if backlog_mode is not None:
+        payload["backlog_mode"] = backlog_mode
+    if total_delay is not None:
+        payload["last_total_delay_sec"] = round(float(total_delay), 3)
+    if payload:
+        diagnostics_store.record_state("asr.last_event", payload)
 
 # Theme token validation schema
 VALID_THEME_TOKENS = {
@@ -229,12 +276,14 @@ def _transcribe_with_timeout(model, audio_chunk, timeout_sec=ASR_TRANSCRIBE_TIME
         })
         return None, None
 
-def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queue, shared_config: dict, session_dir: str):
+def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queue, shared_config: dict, session_dir: str, diagnostics_store=None):
     session_writer = None
+    shutdown_started_at = None
     try:
         clean_model_name = shared_config["model_size"].split()[0] 
         _emit_status(log_queue, "asr", "ASR: cargando", "active")
         _emit_log(log_queue, f"[IA] Cargando Whisper ({clean_model_name}) en {shared_config['device'].upper()}...")
+        diagnostics_store = diagnostics_store or create_store_from_config(dict(shared_config))
         
         model_kwargs = {
             "model_size_or_path": clean_model_name,
@@ -244,7 +293,13 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
         if shared_config["device"] == "cpu":
             model_kwargs["cpu_threads"] = int(shared_config["cpu_threads"])
 
+        model_load_started_at = time.time()
         model = WhisperModel(**model_kwargs)
+        _record_asr_runtime_health(
+            diagnostics_store,
+            model_name=clean_model_name,
+            model_load_sec=time.time() - model_load_started_at,
+        )
         _emit_status(log_queue, "asr", "ASR: listo", "ok")
         _emit_log(log_queue, "[IA] Modelo cargado y listo.")
 
@@ -302,6 +357,12 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
             )
             if segments is None:
                 # Timeout or error — skip to next item
+                _record_asr_runtime_health(
+                    diagnostics_store,
+                    model_name=clean_model_name,
+                    queue_delay=queue_delay,
+                    timed_out=True,
+                )
                 _emit_status(log_queue, "asr", "ASR: listo", "ok")
                 continue
 
@@ -342,6 +403,15 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
                 # OBS enabled gate: skip WebSocket emission when disabled
                 obs_enabled = shared_config.get("obs_enabled", True)
                 if not obs_enabled:
+                    _record_asr_runtime_health(
+                        diagnostics_store,
+                        model_name=clean_model_name,
+                        queue_delay=queue_delay,
+                        latency=latency,
+                        total_delay=total_delay,
+                        obs_emitted=False,
+                        reason="obs_disabled",
+                    )
                     _emit_log(log_queue, "[IA] OBS disabled, subtitle saved only")
                     _emit_transcript(log_queue, {
                         "type": "transcript",
@@ -375,6 +445,16 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
                 if should_emit:
                     try:
                         text_queue.put(payload, timeout=LIVE_QUEUE_TIMEOUT_SEC)
+                        _record_asr_runtime_health(
+                            diagnostics_store,
+                            model_name=clean_model_name,
+                            queue_delay=queue_delay,
+                            latency=latency,
+                            total_delay=total_delay,
+                            backlog_mode=shared_config.get("subtitle_backlog_policy", "auto"),
+                            obs_emitted=True,
+                            reason="emitted",
+                        )
                         _emit_transcript(log_queue, {
                             "type": "transcript",
                             "text": texto_final,
@@ -385,6 +465,17 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
                             "is_replay": is_replay,
                         })
                     except queue.Full:
+                        _record_asr_runtime_health(
+                            diagnostics_store,
+                            model_name=clean_model_name,
+                            queue_delay=queue_delay,
+                            latency=latency,
+                            total_delay=total_delay,
+                            backlog_mode=shared_config.get("subtitle_backlog_policy", "auto"),
+                            obs_emitted=False,
+                            reason="ws_queue_full",
+                            queue_full=True,
+                        )
                         _emit_status(log_queue, "ws", "WS: salida saturada", "warn")
                         _emit_transcript(log_queue, {
                             "type": "transcript",
@@ -397,6 +488,16 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
                         })
                         _emit_log(log_queue, "[IA] Subtitulo guardado, pero no enviado a OBS porque la cola live esta saturada.")
                 else:
+                    _record_asr_runtime_health(
+                        diagnostics_store,
+                        model_name=clean_model_name,
+                        queue_delay=queue_delay,
+                        latency=latency,
+                        total_delay=total_delay,
+                        backlog_mode=shared_config.get("subtitle_backlog_policy", "auto"),
+                        obs_emitted=False,
+                        reason="backlog_policy",
+                    )
                     _emit_transcript(log_queue, {
                         "type": "transcript",
                         "text": texto_final,
@@ -413,5 +514,10 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
         _emit_status(log_queue, "asr", "ASR: error", "error")
         _emit_log(log_queue, f"[IA ERROR] {str(e)}")
     finally:
+        shutdown_started_at = time.time()
         if session_writer is not None:
             session_writer.stop()
+        _record_asr_runtime_health(
+            diagnostics_store,
+            shutdown_sec=(time.time() - shutdown_started_at) if shutdown_started_at is not None else None,
+        )

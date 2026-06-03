@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 import os
 import queue
+import json
 import datetime
 import copy
 import multiprocessing as mp
@@ -18,6 +19,7 @@ from utils.i18n import t, set_language, autodetect_language, get_language
 from core.engine import asr_consumer
 from core.audio import audio_producer, list_audio_devices
 from core.network import run_ws_server
+from core.diagnostics import build_diagnostics_report, normalize_export_dir
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("green")
@@ -86,6 +88,49 @@ PRESET_STYLES = {
         "font_family": "Consolas",
     },
 }
+
+
+def _safe_queue_size(queue_obj):
+    if queue_obj is None:
+        return None
+    try:
+        return queue_obj.qsize()
+    except Exception:
+        return None
+
+
+def build_app_runtime_summary(app_state: dict) -> dict:
+    """Create a bounded local runtime snapshot from app-visible state."""
+    processes = app_state.get("processes", {})
+    queues = app_state.get("queues", {})
+    return {
+        "is_running": bool(app_state.get("is_running")),
+        "session_dir": app_state.get("session_dir"),
+        "statuses": dict(app_state.get("statuses", {})),
+        "processes": {
+            name: bool(proc.is_alive()) if proc is not None else False
+            for name, proc in processes.items()
+        },
+        "queues": {name: value for name, value in queues.items()},
+    }
+
+
+def export_local_diagnostics_report(report: dict, export_dir: str) -> str:
+    """Persist a diagnostics report locally as JSON."""
+    normalized_dir = normalize_export_dir(export_dir)
+    if not normalized_dir:
+        raise ValueError("Diagnostics export directory is not configured.")
+    if "generated_at" not in report:
+        report = build_diagnostics_report(
+            runtime_health=report.get("runtime"),
+            test_health=report.get("test_health"),
+        )
+    os.makedirs(normalized_dir, exist_ok=True)
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    file_path = os.path.join(normalized_dir, f"liveaudio_diagnostics_{timestamp}.json")
+    with open(file_path, "w", encoding="utf-8") as handle:
+        json.dump(report, handle, indent=2, ensure_ascii=False)
+    return file_path
 
 
 def _validate_output_dir(path):
@@ -332,7 +377,7 @@ class LiveASRApp(ctk.CTk):
             cursor="hand2"
         )
         lbl_by.pack(pady=(0, 15))
-        lbl_by.bind("<Button-1>", lambda e: webbrowser.open_new("https://github.com/Plynte/LiveAudio"))
+        lbl_by.bind("<Button-1>", lambda e: webbrowser.open_new("https://github.com/plynte-labs/LiveAudio"))
 
         # Tarjeta de tips estilizada
         tips_card = ctk.CTkFrame(left_panel, fg_color="#0a1214", corner_radius=12, border_width=1, border_color="#18272c")
@@ -808,11 +853,20 @@ class LiveASRApp(ctk.CTk):
         self.btn_discard.pack(fill="x", padx=20, pady=(0, 6))
         self.btn_power = ctk.CTkButton(frame_bottom, text=t("start_system"), height=46, font=ctk.CTkFont(size=16, weight="bold"), command=self.toggle_system)
         self.btn_power.pack(fill="x", padx=20, pady=(0, 10))
+        self.btn_diagnostics = ctk.CTkButton(
+            frame_bottom,
+            text="Export diagnostics",
+            height=28,
+            fg_color="transparent",
+            border_width=1,
+            command=self.export_diagnostics_report,
+        )
+        self.btn_diagnostics.pack(fill="x", padx=20, pady=(0, 8))
 
         # --- CRÉDITOS ---
         lbl_credit = ctk.CTkLabel(frame_bottom, text="LiveAudio by Plynte", text_color="#AEB8BC", cursor="hand2", font=ctk.CTkFont(size=11, weight="bold"))
         lbl_credit.pack(side="bottom", pady=(0, 5))
-        lbl_credit.bind("<Button-1>", lambda e: webbrowser.open_new("https://github.com/Plynte/LiveAudio"))
+        lbl_credit.bind("<Button-1>", lambda e: webbrowser.open_new("https://github.com/plynte-labs/LiveAudio"))
 
         # Panel Derecho (estado principal, preview y debug avanzado)
         frame_der = ctk.CTkFrame(self.screen_main)
@@ -1400,6 +1454,34 @@ class LiveASRApp(ctk.CTk):
             except queue.Empty:
                 break
         self.after(100, self.process_logs)
+
+    def _collect_runtime_diagnostics(self):
+        statuses = {key: label.cget("text") for key, label in self.status_labels.items()}
+        queue_sizes = {
+            "audio": _safe_queue_size(self.audio_queue),
+            "text": _safe_queue_size(self.text_queue),
+            "log": _safe_queue_size(self.log_queue),
+        }
+        return build_app_runtime_summary(
+            {
+                "is_running": self.is_running,
+                "session_dir": self.current_session_dir,
+                "statuses": statuses,
+                "processes": {
+                    "audio": self.p_audio,
+                    "asr": self.p_ia,
+                    "ws": self.p_ws,
+                },
+                "queues": queue_sizes,
+            }
+        )
+
+    def export_diagnostics_report(self):
+        export_dir = self.config_data.get("diagnostics_export_dir") or self.config_data.get("output_dir")
+        report = build_diagnostics_report(runtime_health=self._collect_runtime_diagnostics())
+        file_path = export_local_diagnostics_report(report, export_dir)
+        self.print_log(f"[Diagnostics] Local-only report exported: {file_path}")
+        messagebox.showinfo("Diagnostics", f"Local diagnostics exported to:\n{file_path}")
 
     def _stop_process(self, proc, name="proceso", timeout=3):
         """Apagado limpio de un proceso: espera con timeout, luego mata."""
