@@ -26,12 +26,8 @@ class TestVADErrorHandling(unittest.TestCase):
             "max_chunk_duration": 5.0,
         }
 
-        # Run in a thread since audio_producer has an infinite loop
-        import threading
-        import time
-        t = threading.Thread(target=audio_producer, args=(audio_queue, config, log_queue), daemon=True)
-        t.start()
-        time.sleep(0.5)
+        with self.assertRaises(RuntimeError):
+            audio_producer(audio_queue, config, log_queue)
 
         # Collect log messages
         messages = []
@@ -62,11 +58,8 @@ class TestVADErrorHandling(unittest.TestCase):
             "max_chunk_duration": 5.0,
         }
 
-        import threading
-        import time
-        t = threading.Thread(target=audio_producer, args=(audio_queue, config, log_queue), daemon=True)
-        t.start()
-        time.sleep(0.5)
+        with self.assertRaises(RuntimeError):
+            audio_producer(audio_queue, config, log_queue)
 
         # Collect log messages
         messages = []

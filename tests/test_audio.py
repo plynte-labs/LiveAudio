@@ -6,7 +6,7 @@ import multiprocessing as mp
 from unittest.mock import MagicMock, patch, call
 import numpy as np
 
-from tests.helpers import MockQueue, make_shared_config
+from tests.helpers import MockQueue, make_shared_config, safe_queue_close
 
 
 class TestAudioPipelineMocks(unittest.TestCase):
@@ -45,33 +45,42 @@ class TestAudioQueueBackpressure(unittest.TestCase):
 
     def test_queue_does_not_grow_unbounded(self):
         """Audio queue should have bounded size."""
-        q = mp.Queue(maxsize=1000)
-        for i in range(1000):
-            q.put({"audio": b"test", "created_at": 0.0, "sequence": i})
-        self.assertEqual(q.qsize(), 1000)
-        # Adding one more should raise or block
-        with self.assertRaises(Exception):
-            q.put_nowait({"audio": b"overflow"})
+        q = mp.Queue(maxsize=3)
+        try:
+            for i in range(3):
+                q.put({"audio": b"test", "created_at": 0.0, "sequence": i})
+            self.assertEqual(q.qsize(), 3)
+            # Adding one more should raise or block
+            with self.assertRaises(Exception):
+                q.put_nowait({"audio": b"overflow"})
+        finally:
+            safe_queue_close(q)
 
     def test_queue_drains_correctly(self):
         """Audio queue should drain items in FIFO order."""
         q = mp.Queue()
-        items = [{"seq": i} for i in range(5)]
-        for item in items:
-            q.put(item)
-        for expected_seq in range(5):
-            item = q.get()
-            self.assertEqual(item["seq"], expected_seq)
+        try:
+            items = [{"seq": i} for i in range(5)]
+            for item in items:
+                q.put(item)
+            for expected_seq in range(5):
+                item = q.get()
+                self.assertEqual(item["seq"], expected_seq)
+        finally:
+            safe_queue_close(q)
 
     def test_queue_handles_none_sentinel(self):
         """None sentinel should signal queue end."""
         q = mp.Queue()
-        q.put({"audio": b"test"})
-        q.put(None)
-        first = q.get()
-        self.assertIsNotNone(first)
-        second = q.get()
-        self.assertIsNone(second)
+        try:
+            q.put({"audio": b"test"})
+            q.put(None)
+            first = q.get()
+            self.assertIsNotNone(first)
+            second = q.get()
+            self.assertIsNone(second)
+        finally:
+            safe_queue_close(q)
 
 
 class TestAudioDeviceResolution(unittest.TestCase):

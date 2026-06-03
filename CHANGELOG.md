@@ -6,6 +6,13 @@ Todos los cambios notables de LiveAudio se documentan aquí.
 
 ## [Unreleased] — 2026-05-09
 
+### Public Launch Readiness
+
+- **Canonical public repository** — referencias públicas alineadas a `https://github.com/plynte-labs/LiveAudio`.
+- **Portable/runtime dependency parity** — `Pillow` agregado a `requirements.txt` y al instalador portable porque `main.py` importa `PIL.Image` e `ImageTk`.
+- **Public artifact sanitization** — los artifacts públicos de workflow deben evitar rutas personales, secretos, envs privados y URLs internas.
+- **Non-blocking follow-up clarity** — el track de separación de idioma ASR/UI queda documentado como seguimiento no bloqueante para launch.
+
 ### Critical Bug Fixes (Dream Team Audit)
 
 9 fixes de alta y crítica severidad identificados por el equipo de 4 agents especializados.

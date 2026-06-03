@@ -136,13 +136,14 @@ def main():
         ], check=True)
         
     # Instalar las demás dependencias declaradas
-    print("\nInstalando librerías secundarias (faster-whisper, sounddevice, customtkinter, websockets, numpy)...")
+    print("\nInstalando librerías secundarias (faster-whisper, sounddevice, customtkinter, Pillow, websockets, numpy)...")
     subprocess.run([
         local_python_exe, "-m", "pip", "install",
         "faster-whisper>=1.0.0,<2.0.0",
         "sounddevice>=0.4.6,<0.5.0",
         "numpy>=1.24.0,<2.1.0",
         "customtkinter>=5.2.0,<6.0.0",
+        "Pillow>=10.0.0,<12.0.0",
         "websockets>=14.0,<17.0"
     ], check=True)
     

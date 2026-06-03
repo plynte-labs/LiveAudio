@@ -1,0 +1,16 @@
+{
+  "track_id": "asr-language-separation_20260601",
+  "status": "pending_verification",
+  "branch": "feature/empaquetado-portatil",
+  "pr": "https://github.com/FranGuh/LiveAudio/pull/1",
+  "commit": "5680b08",
+  "created": "2026-06-01",
+  "files": [
+    "core/engine.py",
+    "main.py",
+    "utils/config.py",
+    "utils/i18n.py",
+    "config.json.example",
+    "tests/test_asr_language.py"
+  ]
+}

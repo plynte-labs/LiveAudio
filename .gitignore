@@ -75,3 +75,11 @@ checkpoints/
 # Cache de descargas de torch/huggingface dentro del proyecto
 .cache/
 hub/
+
+# ============================================
+# Artefactos locales de pruebas / sistema
+# ============================================
+.pytest_cache/
+.build_cache/
+desktop.ini
+.atl/.skill-registry.cache.json
