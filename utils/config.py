@@ -49,6 +49,7 @@ DEFAULT_CONFIG = {
     "diagnostics_enabled": False,
     "diagnostics_level": "minimal",
     "diagnostics_export_dir": None,
+    "last_update_check": 0,
 }
 
 
@@ -207,6 +208,10 @@ def _normalize_config(config):
         config["diagnostics_export_dir"] = normalized_export_dir
     else:
         config["diagnostics_export_dir"] = None
+        updated = True
+
+    if not isinstance(config.get("last_update_check"), int):
+        config["last_update_check"] = DEFAULT_CONFIG["last_update_check"]
         updated = True
 
     return config, updated

@@ -16,6 +16,12 @@ os.environ["PATH"] = f"{torch_lib_path};{os.environ.get('PATH', '')}"
 
 from utils.config import load_config, save_config
 from utils.i18n import t, set_language, autodetect_language, get_language
+from utils.crash_handler import install_crash_handler
+from utils.updater import check_for_updates_async, APP_VERSION
+
+# Instalar el manejador de crashes lo antes posible
+install_crash_handler()
+
 from core.engine import asr_consumer
 from core.audio import audio_producer, list_audio_devices
 from core.network import run_ws_server
@@ -277,6 +283,43 @@ class LiveASRApp(ctk.CTk):
         self.build_main_screen()
         self.screen_welcome.grid(row=0, column=0, sticky="nsew")
         self.after(100, self.process_logs)
+        self.after(1000, self.check_updates)
+
+    def check_updates(self):
+        def on_update_result(available, tag):
+            if available:
+                self.after(100, lambda: self.display_update_alert(tag))
+        check_for_updates_async(on_update_result)
+
+    def display_update_alert(self, latest_tag):
+        """Muestra un banner discreto en la barra de Ajustes para avisar del update."""
+        if hasattr(self, "frame_update_banner"):
+            return
+            
+        # Banner verde oscuro premium
+        self.frame_update_banner = ctk.CTkFrame(
+            self.screen_main,
+            fg_color="#1b5e20",
+            height=34,
+            corner_radius=0
+        )
+        # Lo posicionamos arriba del todo usando grid (desplazando el resto)
+        self.frame_update_banner.grid(row=2, column=0, columnspan=2, sticky="ew")
+        self.frame_update_banner.grid_propagate(False)
+        
+        lbl_msg = ctk.CTkLabel(
+            self.frame_update_banner,
+            text=f"✨ ¡Nueva versión {latest_tag} disponible! Haz clic aquí para descargar.",
+            font=ctk.CTkFont(size=12, weight="bold", family="Segoe UI"),
+            text_color="#FFFFFF",
+            cursor="hand2"
+        )
+        lbl_msg.pack(fill="both", expand=True)
+        
+        def open_releases(e):
+            webbrowser.open_new("https://github.com/plynte-labs/LiveAudio/releases")
+            
+        lbl_msg.bind("<Button-1>", open_releases)
 
     def _create_premium_option_menu(self, master, values, variable, command=None, width=140, **kwargs):
         """Crea un CTkOptionMenu con un estilo premium personalizado y coherente con el tema verde."""
