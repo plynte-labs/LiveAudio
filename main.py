@@ -348,7 +348,7 @@ class LiveASRApp(ctk.CTk):
         set_language(lang_code)
         self.config_data["language"] = lang_code
         save_config(self.config_data)
-        self._rebuild_ui()
+        self.after(50, self._rebuild_ui)
 
     def _rebuild_ui(self):
         """Reconstruye la pantalla activa para aplicar el nuevo idioma inmediatamente."""
@@ -1379,13 +1379,21 @@ class LiveASRApp(ctk.CTk):
         self._log_lines.append(msg)
         if len(self._log_lines) > LOG_MAX_LINES:
             self._log_lines = self._log_lines[-LOG_MAX_LINES:]
-        self.consola.configure(state="normal")
-        self.consola.delete("0.0", "end")
-        self.consola.insert("end", "\n".join(self._log_lines) + "\n")
-        self.consola.see("end")
-        self.consola.configure(state="disabled")
+        
+        if not self._ui_ready or not hasattr(self, "consola") or not self.consola.winfo_exists():
+            return
+        try:
+            self.consola.configure(state="normal")
+            self.consola.delete("0.0", "end")
+            self.consola.insert("end", "\n".join(self._log_lines) + "\n")
+            self.consola.see("end")
+            self.consola.configure(state="disabled")
+        except Exception:
+            pass
 
     def set_status(self, key, text, state="idle"):
+        if not self._ui_ready or not hasattr(self, "status_labels"):
+            return
         colors = {
             "idle": "#263238",
             "ok": "#1B5E20",
@@ -1394,17 +1402,26 @@ class LiveASRApp(ctk.CTk):
             "error": "#7F1D1D",
         }
         label = self.status_labels.get(key)
-        if label:
-            label.configure(text=text, fg_color=colors.get(state, colors["idle"]))
+        if label and label.winfo_exists():
+            try:
+                label.configure(text=text, fg_color=colors.get(state, colors["idle"]))
+            except Exception:
+                pass
 
     def set_preview(self, text):
         clean_text = " ".join(str(text).split())
         if len(clean_text) > PREVIEW_MAX_CHARS:
             clean_text = clean_text[:PREVIEW_MAX_CHARS].rstrip() + "..."
-        self.preview_text.configure(state="normal")
-        self.preview_text.delete("0.0", "end")
-        self.preview_text.insert("0.0", clean_text or t("no_transcripts_yet"))
-        self.preview_text.configure(state="disabled")
+        
+        if not self._ui_ready or not hasattr(self, "preview_text") or not self.preview_text.winfo_exists():
+            return
+        try:
+            self.preview_text.configure(state="normal")
+            self.preview_text.delete("0.0", "end")
+            self.preview_text.insert("0.0", clean_text or t("no_transcripts_yet"))
+            self.preview_text.configure(state="disabled")
+        except Exception:
+            pass
 
     def _update_preview(self):
         """Update static preview panel based on selected style from PRESET_STYLES."""
