@@ -1,117 +1,120 @@
 # Plynte LiveAudio
 
-LiveAudio es un motor de reconocimiento de voz automático (ASR) en tiempo real, diseñado para streamers y creadores de contenido. Captura audio del micrófono o del sistema, lo transcribe localmente usando **Whisper** (OpenAI) y envía los subtítulos a **OBS Studio** vía **WebSocket**.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
+[![Platform: Windows](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)](https://github.com/plynte-labs/LiveAudio)
 
-**Todo el procesamiento es 100% local.** No se envía nada a la nube.
+LiveAudio is a real-time automatic speech recognition (ASR) engine designed for streamers and content creators. It captures audio from your microphone or system, transcribes it locally using **Whisper** (OpenAI), and sends subtitles to **OBS Studio** via **WebSocket**.
 
----
-
-## Características principales
-
-- **Transcripción en tiempo real** con Whisper (modelos `tiny`, `base`, `small`, `turbo`).
-- **Detección de voz (VAD)** con Silero VAD para cortar silencios automáticamente.
-- **Captura flexible:** micrófono físico o audio del sistema (WASAPI Loopback en Windows).
-- **WebSocket integrado** para enviar subtítulos a OBS o cualquier cliente HTML.
-- **Control de backlog para OBS:** evita ráfagas de subtítulos viejos tras freezes, sin perder la transcripción guardada.
-- **Filtrado de alucinaciones** mediante blacklist personalizable.
-- **Gestión de sesiones:** guarda transcripciones en `.jsonl` y subtítulos en `.vtt`.
-- **Hot-swap inteligente:** cambia de dispositivo o modelo sin reiniciar el programa.
-- **Arquitectura robusta:** procesos aislados (multiprocessing), ring buffer de audio y reconexión automática ante desconexiones de hardware.
+**100% local processing — nothing is sent to the cloud.**
 
 ---
 
-## Requisitos del sistema
+## Features
 
-| Componente | Recomendado |
+- **Real-time transcription** with Whisper (`tiny`, `base`, `small`, `turbo` models).
+- **Voice activity detection (VAD)** with Silero VAD to cut silences automatically.
+- **Flexible capture:** physical microphone or system audio (WASAPI Loopback on Windows).
+- **Integrated WebSocket** to send subtitles to OBS or any HTML client.
+- **OBS backlog control:** prevents bursts of old subtitles after freezes, without losing the saved transcript.
+- **Hallucination filtering** via a customizable blacklist.
+- **Session management:** saves transcriptions as `.jsonl` and subtitles as `.vtt`.
+- **Intelligent hot-swap:** change device or model without restarting the program.
+- **Robust architecture:** isolated processes (multiprocessing), audio ring buffer, and automatic reconnection on hardware disconnects.
+
+---
+
+## System Requirements
+
+| Component | Recommended |
 |---|---|
-| **SO** | Windows 10/11 (WASAPI Loopback), Linux o macOS |
-| **Python** | 3.10 o superior |
-| **GPU** | NVIDIA con CUDA (opcional pero recomendado para modelos grandes) |
-| **RAM** | 8 GB mínimo, 16 GB recomendado |
-| **Micrófono** | Cualquier dispositivo de entrada de audio |
+| **OS** | Windows 10/11 (WASAPI Loopback), Linux, or macOS |
+| **Python** | 3.10 or higher |
+| **GPU** | NVIDIA with CUDA (optional but recommended for larger models) |
+| **RAM** | 8 GB minimum, 16 GB recommended |
+| **Microphone** | Any audio input device |
 
 ---
 
-## Instalación rápida
+## Quick Start
 
-1. **Clona el repositorio:**
-   ```bash
-   git clone https://github.com/plynte-labs/LiveAudio.git
-   cd LiveAudio
-   ```
+```bash
+git clone https://github.com/plynte-labs/LiveAudio.git
+cd LiveAudio
+```
 
-2. **Crea y activa un entorno virtual (recomendado):**
+1. **Create and activate a virtual environment (recommended):**
    ```bash
-   # Con conda (recomendado para PyTorch/CUDA)
+   # With conda (recommended for PyTorch/CUDA)
    conda create -n liveaudio python=3.11
    conda activate liveaudio
 
-   # O con venv
+   # Or with venv
    python -m venv venv
    venv\Scripts\activate  # Windows
    ```
 
-3. **Instala las dependencias:**
+2. **Install dependencies:**
    ```bash
    pip install -r requirements.txt
    ```
 
-   > **Nota:** Si usas GPU NVIDIA, asegúrate de tener los [drivers CUDA](https://developer.nvidia.com/cuda-downloads) instalados. PyTorch se instalará con soporte CUDA automáticamente si tu sistema lo detecta.
+   > **Note:** If you use an NVIDIA GPU, make sure [CUDA drivers](https://developer.nvidia.com/cuda-downloads) are installed. PyTorch will install with CUDA support automatically if your system supports it.
 
-4. **Ejecuta la aplicación:**
+3. **Run:**
    ```bash
    python main.py
    ```
 
 ---
 
-## Estructura del proyecto
+## Project Structure
 
 ```
 LiveAudio/
 ├── core/
-│   ├── audio.py          # Captura de audio, VAD y reconexión automática
-│   ├── engine.py         # Motor ASR (Whisper) y guardado de sesiones
-│   └── network.py        # Servidor WebSocket (broadcast)
+│   ├── audio.py          # Audio capture, VAD, and automatic reconnection
+│   ├── engine.py         # ASR engine (Whisper) and session saving
+│   └── network.py        # WebSocket server (broadcast)
 ├── utils/
-│   └── config.py         # Carga/guardado de configuración persistente
+│   └── config.py         # Persistent configuration load/save
 ├── docs/
-│   ├── GETTING_STARTED.md    # Guía detallada para nuevos usuarios
-│   └── WEBSOCKET_OBS.md      # Integración con OBS Studio
-├── main.py               # Interfaz gráfica (CustomTkinter) y orquestador
-├── config.json           # Configuración local del usuario (ignorado por git)
-├── requirements.txt      # Dependencias de Python
-├── subtitulos_obs.html   # Browser Source para OBS
-└── sessions/             # Transcripciones generadas (ignorado por git)
+│   ├── GETTING_STARTED.md    # Detailed guide for new users
+│   └── WEBSOCKET_OBS.md      # OBS Studio integration
+├── main.py               # GUI (CustomTkinter) and orchestrator
+├── config.json.example   # Example configuration (copy to config.json)
+├── requirements.txt      # Python dependencies
+├── subtitulos_obs.html   # Browser Source for OBS
+└── sessions/             # Generated transcriptions (git-ignored)
 ```
 
 ---
 
-## Dependencias principales
+## Main Dependencies
 
-| Librería | Versión | Propósito |
+| Library | Version | Purpose |
 |---|---|---|
-| `faster-whisper` | >=1.0.0,<2.0.0 | Transcripción con Whisper optimizada |
-| `torch` | >=2.0.0,<2.7.0 | Backend de inferencia (CPU/CUDA) |
-| `sounddevice` | >=0.4.6,<0.5.0 | Captura de audio en tiempo real |
-| `numpy` | >=1.24.0,<2.1.0 | Manipulación de buffers de audio |
-| `customtkinter` | >=5.2.0,<6.0.0 | Interfaz gráfica moderna |
-| `Pillow` | >=10.0.0,<12.0.0 | Carga y procesamiento de imágenes para branding/UI |
-| `websockets` | >=14.0,<17.0 | Servidor WebSocket para OBS |
+| `faster-whisper` | >=1.0.0,<2.0.0 | Optimized Whisper transcription |
+| `torch` | >=2.0.0,<2.7.0 | Inference backend (CPU/CUDA) |
+| `sounddevice` | >=0.4.6,<0.5.0 | Real-time audio capture |
+| `numpy` | >=1.24.0,<2.1.0 | Audio buffer manipulation |
+| `customtkinter` | >=5.2.0,<6.0.0 | Modern GUI |
+| `Pillow` | >=10.0.0,<12.0.0 | Image processing for branding/UI |
+| `websockets` | >=14.0,<17.0 | WebSocket server for OBS |
 
 ---
 
-## Configuración por defecto
+## Configuration
 
-Al iniciar por primera vez, se crea un archivo `config.json` con los siguientes valores:
+On first run, a `config.json` file is created from `config.json.example`. You can modify all settings from the GUI or by editing `config.json` directly.
 
 ```json
 {
-    "output_dir": "<ruta_absoluta>/sessions",
+    "output_dir": "<absolute_path>/sessions",
     "device": "cuda",
     "cpu_threads": 8,
     "model_size": "small (Balance CPU)",
-    "blacklist": "amara.org, subtitulos por, suscribete, dale like, gracias por ver, aplausos, victoria, gracias, memos, flupco, cuanos, kibon, skip, quita, plechitin, pae",
+    "blacklist": "amara.org, subtitulos por, suscribete, dale like, gracias por ver",
     "continuous_session": true,
     "subtitle_style": "default",
     "subtitle_backlog_policy": "auto",
@@ -121,165 +124,111 @@ Al iniciar por primera vez, se crea un archivo `config.json` con los siguientes 
     "max_chunk_duration": 5.0,
     "audio_device": null,
     "selected_profile_id": "balanced",
-    "profile_mode": "preset",
     "ws_port": 8765,
     "obs_enabled": true,
-    "whisper_context_prompt_es": "",
-    "whisper_context_prompt_en": "",
     "asr_language": "es",
-    "settings_navigation_mode": "tabs",
-    "language": null,
-    "diagnostics_enabled": false,
-    "diagnostics_level": "minimal",
-    "diagnostics_export_dir": null
+    "diagnostics_enabled": false
 }
 ```
 
-Puedes modificar estos valores desde la interfaz gráfica o editando directamente `config.json`.
+---
+
+## Basic Usage
+
+1. Run `main.py`.
+2. On the welcome screen, choose the folder where sessions will be saved.
+3. In the settings panel:
+   - Choose a **profile** (`Fast`, `Balanced`, `Quality`, or `Stable Streaming`) to start without manual tuning.
+   - Select your **audio device** (microphone or system loopback).
+   - Choose **CPU** or **CUDA** depending on your hardware.
+   - Select the **model size** (`tiny`, `base`, `small`, `turbo`).
+   - Press **Apply changes** to activate and save settings.
+4. Press **START SYSTEM**.
+5. Open `subtitulos_obs.html` as a **Browser Source** in OBS (see [docs/WEBSOCKET_OBS.md](docs/WEBSOCKET_OBS.md)).
 
 ---
 
-## Uso básico
+## Configuration Profiles
 
-1. Ejecuta `main.py`.
-2. En la pantalla de bienvenida, elige la carpeta donde se guardarán las sesiones.
-3. En el panel de ajustes:
-   - Elige un **perfil** (`Rápido`, `Balanceado`, `Calidad` o `Streaming estable`) si quieres empezar sin tocar cada slider.
-   - Selecciona tu **dispositivo de audio** (micrófono o loopback del sistema).
-   - Elige **CPU** o **CUDA** según tu hardware.
-   - Selecciona el **tamaño del modelo** (`tiny`, `base`, `small`, `turbo`).
-   - Ajusta los **sliders de latencia** y **Atraso en OBS** si necesitas tuning avanzado.
-   - Pulsa **Aplicar cambios** para activar y guardar los ajustes; mover sliders ya no reinicia el motor por sí solo.
-4. Pulsa **INICIAR SISTEMA**.
-5. Abre `subtitulos_obs.html` como **Browser Source** en OBS (ver [docs/WEBSOCKET_OBS.md](docs/WEBSOCKET_OBS.md)).
+Profiles are built-in presets to avoid manually tuning every sensitive control.
 
----
-
-## Perfiles de configuración
-
-Los perfiles son presets integrados para evitar configurar manualmente cada control sensible.
-
-| Perfil | Uso recomendado |
+| Profile | Recommended for |
 |---|---|
-| `Rápido` | Menor demora y frases cortas; baja un poco la precisión. |
-| `Balanceado` | Recomendado para la mayoría de sesiones. |
-| `Calidad` | Más precisión; puede usar más VRAM y tardar más. |
-| `Streaming estable` | Reduce carga de GPU para jugar o transmitir en una PC ocupada. |
+| `Fast` | Lower latency and short phrases; slightly lower accuracy. |
+| `Balanced` | Recommended for most sessions. |
+| `Quality` | Higher accuracy; may use more VRAM and take longer. |
+| `Stable Streaming` | Reduces GPU load for gaming or streaming on a busy PC. |
 
-Si modificas un perfil integrado, LiveAudio lo tratará como `Personalizado`. Los cambios quedan pendientes hasta pulsar **Aplicar cambios**. Si el motor está activo y el ajuste requiere hot-swap, puede haber un corte breve y la frase actual podría cortarse.
-
----
-
-## Blacklist predeterminada
-
-La blacklist evita que aparezcan en pantalla palabras o frases comunes que Whisper suele "alucinar" cuando no hay voz clara:
-
-```
-amara.org, subtitulos por, suscribete, dale like, gracias por ver,
-aplausos, victoria, gracias, memos, flupco, cuanos, kibon,
-skip, quita, plechitin, pae
-```
-
-Puedes editarla desde la interfaz. Separa las palabras o frases con comas.
+If you modify a built-in profile, LiveAudio treats it as `Custom`. Changes are pending until you press **Apply changes**.
 
 ---
 
-## Política de atraso en OBS
+## OBS Backlog Policy
 
-LiveAudio siempre guarda las transcripciones válidas en la sesión (`transcript.jsonl` y `subtitles.vtt`). La opción **Atraso en OBS** solo controla qué se muestra en vivo en OBS cuando el ASR se atrasó por GPU/CPU ocupada, VRAM llena o un freeze temporal.
+LiveAudio always saves valid transcriptions to the session (`transcript.jsonl` and `subtitles.vtt`). The **OBS Delay** option only controls what is shown live in OBS when the ASR falls behind due to a busy GPU/CPU, full VRAM, or a temporary freeze.
 
-| Modo | Comportamiento |
+| Mode | Behavior |
 |---|---|
-| `Auto` | Envía subtítulos frescos. Si hay backlog corto, lo emite con pacing. Si supera `subtitle_max_live_delay_sec`, lo guarda pero no lo muestra en OBS. |
-| `Solo en vivo` | Guarda todo, pero solo muestra en OBS subtítulos dentro del atraso máximo configurado. |
-| `Enviar todo` | Envía todo a OBS aunque llegue tarde. Útil si prefieres fidelidad visual completa sobre evitar ráfagas. |
-
-Opciones relacionadas:
-
-| Config | Descripción |
-|---|---|
-| `subtitle_backlog_policy` | `auto`, `live_only` o `send_all`. |
-| `subtitle_max_live_delay_sec` | Atraso máximo para considerar un subtítulo apto para OBS live. |
-| `subtitle_catchup_interval_sec` | Separación entre subtítulos de catch-up en modo `auto`. |
+| `Auto` | Sends fresh subtitles. Short backlogs are emitted with pacing. If delay exceeds `subtitle_max_live_delay_sec`, they are saved but not shown in OBS. |
+| `Live only` | Saves everything, but only shows subtitles within the configured max delay in OBS. |
+| `Send all` | Sends everything to OBS even if it arrives late. Useful if you prefer full visual fidelity over avoiding bursts. |
 
 ---
 
-## Solución de problemas
+## Troubleshooting
 
-| Síntoma | Posible causa | Solución |
+| Symptom | Possible cause | Solution |
 |---|---|---|
-| No transcribe nada | Dispositivo de audio incorrecto | Verifica en la UI que tienes seleccionado el micrófono o loopback correcto. |
-| Latencia muy alta | Modelo muy grande en CPU | Cambia a `tiny` o `base`, o usa GPU. |
-| OBS no muestra subtítulos | WebSocket no conectado | Verifica que LiveAudio esté iniciado y que el HTML apunte a `ws://127.0.0.1:8765`. |
-| Error de CUDA | Drivers desactualizados | Actualiza los drivers de NVIDIA o cambia a CPU en los ajustes. |
-| Procesos zombies al cerrar | Cierre abrupto | Usa siempre el botón "DETENER SISTEMA" antes de cerrar la ventana. |
+| Nothing is transcribed | Wrong audio device | Verify the correct microphone or loopback is selected in the UI. |
+| Very high latency | Model too large on CPU | Switch to `tiny` or `base`, or use GPU. |
+| OBS shows no subtitles | WebSocket not connected | Make sure LiveAudio is running and the HTML points to `ws://127.0.0.1:8765`. |
+| CUDA error | Outdated drivers | Update NVIDIA drivers or switch to CPU in settings. |
+| Zombie processes on close | Abrupt shutdown | Always use the **STOP SYSTEM** button before closing the window. |
 
 ---
 
-## Diagnósticos locales
+## Local Diagnostics
 
-LiveAudio incluye diagnósticos **local-first** para mantenimiento.
+LiveAudio includes **local-first** diagnostics for maintenance. Nothing is sent to any external service.
 
-### Qué miden
+### What they measure
 
-- estado visible de procesos `audio`, `asr`, `ws`
-- tamaños de colas visibles desde la UI
-- latencias y estados del pipeline instrumentado
-- señales de backpressure, reconnect y timeout
-- snapshots de salud para tests y teardown
+- Visible state of `audio`, `asr`, `ws` processes
+- Queue sizes visible from the UI
+- Pipeline latencies and instrumented states
+- Backpressure, reconnect, and timeout signals
 
-### Qué NO exportan
+### Configuration
 
-- audio crudo
-- transcriptos completos como payload de diagnóstico
-- secrets, tokens o passwords
-- rutas personales absolutas sin sanitizar
-- URLs privadas
-
-### Configuración
-
-| Clave | Valor | Descripción |
+| Key | Value | Description |
 |---|---|---|
-| `diagnostics_enabled` | `true/false` | Activa la instrumentación local |
-| `diagnostics_level` | `minimal` / `deep` | Controla cuánto contexto local se guarda |
-| `diagnostics_export_dir` | ruta o `null` | Carpeta preferida para exportar reportes |
+| `diagnostics_enabled` | `true/false` | Enables local instrumentation |
+| `diagnostics_level` | `minimal` / `deep` | Controls how much local context is saved |
+| `diagnostics_export_dir` | path or `null` | Preferred folder for exporting reports |
 
-### Exportar un reporte
-
-En la UI principal pulsa **Export diagnostics**.
-
-El reporte:
-
-- se guarda en `diagnostics_export_dir` si existe
-- usa `output_dir` como fallback
-- sale en JSON
-- se mantiene local
-
-### Flujo recomendado para investigar un cuelgue
-
-1. Reproducí el problema.
-2. Exportá el reporte local.
-3. Revisá primero:
-   - `runtime.processes`
-   - `runtime.queues`
-   - estados `audio`, `asr`, `ws`
-4. Si el problema es de tests, usá también los helpers de salud local del suite para ver procesos, threads y colas vivas.
+Press **Export diagnostics** in the main UI to generate a local JSON report.
 
 ---
 
-## Licencia
+## Contributing
 
-Distribuido bajo la Licencia MIT. Consulta el archivo `LICENSE` para más detalles.
+Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
 
-## Estado de lanzamiento público
+- [Bug Report](https://github.com/plynte-labs/LiveAudio/issues/new?template=bug_report.yml)
+- [Feature Request](https://github.com/plynte-labs/LiveAudio/issues/new?template=feature_request.yml)
+- [Security Vulnerability](SECURITY.md) — report privately, do not open a public issue
 
-- Repositorio canónico público: [plynte-labs/LiveAudio](https://github.com/plynte-labs/LiveAudio)
-- Los artifacts de Conductor/SDD pueden permanecer públicos mientras estén sanitizados y no contengan rutas personales, secretos, envs privados ni URLs internas.
-- La separación de idioma ASR/UI sigue visible como seguimiento funcional, pero actualmente se considera **non-blocking follow-up** para la apertura pública del repositorio.
+Please follow our [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ---
 
-## Créditos
+## License
+
+Distributed under the MIT License. See [LICENSE](LICENSE) for details.
+
+---
+
+## Credits
 
 - [OpenAI Whisper](https://github.com/openai/whisper)
 - [Faster Whisper](https://github.com/SYSTRAN/faster-whisper)
