@@ -1,0 +1,92 @@
+name: Bug Report
+description: Report a bug or unexpected behavior in LiveAudio
+title: "[Bug]: "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Please fill out the sections below so we can reproduce and fix it.
+
+        > **Security issue?** Do NOT use this form — use [Security Advisories](https://github.com/plynte-labs/LiveAudio/security/advisories/new) instead.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A clear description of what the bug is.
+      placeholder: "When I do X, Y happens instead of Z."
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps to reproduce the behavior.
+      placeholder: |
+        1. Open LiveAudio
+        2. Select device '...'
+        3. Start transcription
+        4. Observe error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or error output
+      description: Paste any relevant log output. Wrap in code blocks if long.
+      render: text
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      options:
+        - Windows 11
+        - Windows 10
+        - Linux
+        - macOS
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: gpu
+    attributes:
+      label: GPU / Compute
+      options:
+        - NVIDIA GPU with CUDA
+        - CPU only
+        - AMD GPU (ROCm)
+        - Unknown
+    validations:
+      required: true
+
+  - type: input
+    id: model
+    attributes:
+      label: Whisper model size
+      description: Which model were you using? (tiny, base, small, turbo)
+      placeholder: small
+
+  - type: input
+    id: python_version
+    attributes:
+      label: Python version
+      placeholder: "3.11.x"
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Anything else that might help (OBS version, audio device, etc.)
