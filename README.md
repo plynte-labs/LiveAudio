@@ -36,7 +36,7 @@ LiveAudio es un motor de reconocimiento de voz automático (ASR) en tiempo real,
 
 1. **Clona el repositorio:**
    ```bash
-   git clone <url-del-repo>
+   git clone https://github.com/plynte-labs/LiveAudio.git
    cd LiveAudio
    ```
 
@@ -61,11 +61,6 @@ LiveAudio es un motor de reconocimiento de voz automático (ASR) en tiempo real,
 4. **Ejecuta la aplicación:**
    ```bash
    python main.py
-   ```
-
-   Si usas un entorno conda específico (como `flux_env`):
-   ```bash
-   E:\Miniconda\envs\flux_env\python.exe main.py
    ```
 
 ---
@@ -96,12 +91,13 @@ LiveAudio/
 
 | Librería | Versión | Propósito |
 |---|---|---|
-| `faster-whisper` | >=1.0.0 | Transcripción con Whisper optimizada |
-| `torch` | >=2.0.0 | Backend de inferencia (CPU/CUDA) |
-| `sounddevice` | >=0.4.6 | Captura de audio en tiempo real |
-| `numpy` | >=1.24.0 | Manipulación de buffers de audio |
-| `customtkinter` | >=5.2.0 | Interfaz gráfica moderna |
-| `websockets` | >=12.0 | Servidor WebSocket para OBS |
+| `faster-whisper` | >=1.0.0,<2.0.0 | Transcripción con Whisper optimizada |
+| `torch` | >=2.0.0,<2.7.0 | Backend de inferencia (CPU/CUDA) |
+| `sounddevice` | >=0.4.6,<0.5.0 | Captura de audio en tiempo real |
+| `numpy` | >=1.24.0,<2.1.0 | Manipulación de buffers de audio |
+| `customtkinter` | >=5.2.0,<6.0.0 | Interfaz gráfica moderna |
+| `Pillow` | >=10.0.0,<12.0.0 | Carga y procesamiento de imágenes para branding/UI |
+| `websockets` | >=14.0,<17.0 | Servidor WebSocket para OBS |
 
 ---
 
@@ -125,7 +121,17 @@ Al iniciar por primera vez, se crea un archivo `config.json` con los siguientes 
     "max_chunk_duration": 5.0,
     "audio_device": null,
     "selected_profile_id": "balanced",
-    "profile_mode": "preset"
+    "profile_mode": "preset",
+    "ws_port": 8765,
+    "obs_enabled": true,
+    "whisper_context_prompt_es": "",
+    "whisper_context_prompt_en": "",
+    "asr_language": "es",
+    "settings_navigation_mode": "tabs",
+    "language": null,
+    "diagnostics_enabled": false,
+    "diagnostics_level": "minimal",
+    "diagnostics_export_dir": null
 }
 ```
 
@@ -210,9 +216,66 @@ Opciones relacionadas:
 
 ---
 
+## Diagnósticos locales
+
+LiveAudio incluye diagnósticos **local-first** para mantenimiento.
+
+### Qué miden
+
+- estado visible de procesos `audio`, `asr`, `ws`
+- tamaños de colas visibles desde la UI
+- latencias y estados del pipeline instrumentado
+- señales de backpressure, reconnect y timeout
+- snapshots de salud para tests y teardown
+
+### Qué NO exportan
+
+- audio crudo
+- transcriptos completos como payload de diagnóstico
+- secrets, tokens o passwords
+- rutas personales absolutas sin sanitizar
+- URLs privadas
+
+### Configuración
+
+| Clave | Valor | Descripción |
+|---|---|---|
+| `diagnostics_enabled` | `true/false` | Activa la instrumentación local |
+| `diagnostics_level` | `minimal` / `deep` | Controla cuánto contexto local se guarda |
+| `diagnostics_export_dir` | ruta o `null` | Carpeta preferida para exportar reportes |
+
+### Exportar un reporte
+
+En la UI principal pulsa **Export diagnostics**.
+
+El reporte:
+
+- se guarda en `diagnostics_export_dir` si existe
+- usa `output_dir` como fallback
+- sale en JSON
+- se mantiene local
+
+### Flujo recomendado para investigar un cuelgue
+
+1. Reproducí el problema.
+2. Exportá el reporte local.
+3. Revisá primero:
+   - `runtime.processes`
+   - `runtime.queues`
+   - estados `audio`, `asr`, `ws`
+4. Si el problema es de tests, usá también los helpers de salud local del suite para ver procesos, threads y colas vivas.
+
+---
+
 ## Licencia
 
-Proyecto privado. Todos los derechos reservados.
+Distribuido bajo la Licencia MIT. Consulta el archivo `LICENSE` para más detalles.
+
+## Estado de lanzamiento público
+
+- Repositorio canónico público: [plynte-labs/LiveAudio](https://github.com/plynte-labs/LiveAudio)
+- Los artifacts de Conductor/SDD pueden permanecer públicos mientras estén sanitizados y no contengan rutas personales, secretos, envs privados ni URLs internas.
+- La separación de idioma ASR/UI sigue visible como seguimiento funcional, pero actualmente se considera **non-blocking follow-up** para la apertura pública del repositorio.
 
 ---
 

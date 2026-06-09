@@ -10,6 +10,7 @@ import numpy as np
 import sounddevice as sd
 import torch
 import warnings
+from core.diagnostics import create_store_from_config
 
 # Suprimir solo advertencias de PyTorch/UserWarning, no todas
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -23,6 +24,33 @@ VAD_THRESHOLD = 0.5  # Probabilidad mínima para considerar que hay voz (0.0 a 1
 # 500 chunks * 32ms = 16 segundos de buffer. Más que suficiente para absorber
 # cualquier pico de CPU sin perder audio.
 RING_BUFFER_MAX_CHUNKS = 500
+
+
+def _record_audio_runtime_health(
+    diagnostics_store,
+    *,
+    ring_buffer_chunks=None,
+    callback_age_sec=None,
+    worker_alive=None,
+    stream_active=None,
+    reconnecting=False,
+    dropped_phrases=0,
+):
+    if diagnostics_store is None:
+        return
+    if ring_buffer_chunks is not None:
+        diagnostics_store.record_state("audio.ring_buffer", {"chunks": int(ring_buffer_chunks)})
+    if callback_age_sec is not None:
+        diagnostics_store.record_duration("audio.callback_age_sec", float(callback_age_sec))
+        diagnostics_store.record_state("audio.callback_watchdog", {"age_sec": round(float(callback_age_sec), 3)})
+    if worker_alive is not None:
+        diagnostics_store.record_state("audio.worker", {"alive": bool(worker_alive)})
+    if stream_active is not None:
+        diagnostics_store.record_state("audio.stream", {"active": bool(stream_active), "reconnecting": bool(reconnecting)})
+    if reconnecting:
+        diagnostics_store.record_counter("audio.reconnects")
+    if dropped_phrases:
+        diagnostics_store.record_counter("audio.queue_full_drops", int(dropped_phrases))
 
 
 def _normalize_device_name(name):
@@ -122,7 +150,7 @@ def _resolve_device_settings(config):
         return None, None  # Fallback al default
 
 
-def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = None):
+def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = None, diagnostics_store=None):
     """
     Proceso dedicado a la captura de audio y VAD.
     Vive en su propio núcleo y no bloquea el hilo principal.
@@ -154,6 +182,7 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
 
     silence_sec = config.get("silence_timeout", 0.8)
     max_sec = config.get("max_chunk_duration", 5.0)
+    diagnostics_store = diagnostics_store or create_store_from_config(config)
 
     SILENCE_CHUNKS_TO_END = int((SAMPLE_RATE / CHUNK_SIZE) * silence_sec)
     MAX_CHUNKS_LIMIT = int((SAMPLE_RATE / CHUNK_SIZE) * max_sec)
@@ -251,6 +280,12 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
                 # Queue is full — drop oldest phrase from speech_buffer to prevent blocking
                 if speech_buffer:
                     speech_buffer.pop(0)  # Drop oldest chunk
+                _record_audio_runtime_health(
+                    diagnostics_store,
+                    ring_buffer_chunks=len(ring_buffer),
+                    worker_alive=worker_running.is_set(),
+                    dropped_phrases=1,
+                )
                 _status("vad", "VAD: cola llena", "warn")
                 _log("[Productor] ⚠️ Cola de audio saturada. Descartando audio antiguo.")
         
@@ -347,6 +382,12 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
     # Iniciar el hilo VAD Worker
     vad_thread = threading.Thread(target=vad_worker, name="VAD-Worker", daemon=True)
     vad_thread.start()
+    _record_audio_runtime_health(
+        diagnostics_store,
+        ring_buffer_chunks=len(ring_buffer),
+        worker_alive=vad_thread.is_alive(),
+        stream_active=False,
+    )
 
     while not shutdown_event.is_set():
         try:
@@ -357,6 +398,12 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
                 
                 _log("[Productor] 🎤 Audio conectado y escuchando.")
                 _status("audio", "Audio: escuchando", "ok")
+                _record_audio_runtime_health(
+                    diagnostics_store,
+                    ring_buffer_chunks=len(ring_buffer),
+                    worker_alive=vad_thread.is_alive(),
+                    stream_active=True,
+                )
                 
                 while not shutdown_event.is_set():
                     sd.sleep(500)
@@ -364,6 +411,13 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
                     # 1. Si pasaron más de 2 segundos sin que el callback se ejecute = Dispositivo desconectado
                     with callback_time_lock:
                         elapsed = time.time() - last_callback_time
+                    _record_audio_runtime_health(
+                        diagnostics_store,
+                        ring_buffer_chunks=len(ring_buffer),
+                        callback_age_sec=elapsed,
+                        worker_alive=vad_thread.is_alive(),
+                        stream_active=stream.active,
+                    )
                     if elapsed > 2.0:
                         raise sd.PortAudioError("Silencio total detectado (Watchdog timeout).")
                     
@@ -378,6 +432,13 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
             _log(f"\n[Productor] ⚠️ ALERTA: Hardware de audio perdido. Detalles: {e}")
             _log("[Productor] 🔄 Buscando dispositivo... reintentando en 3 segundos.")
             _status("audio", "Audio: reconectando", "warn")
+            _record_audio_runtime_health(
+                diagnostics_store,
+                ring_buffer_chunks=len(ring_buffer),
+                worker_alive=vad_thread.is_alive(),
+                stream_active=False,
+                reconnecting=True,
+            )
             
             # Limpiar el ring buffer y el estado del worker al reconectar
             ring_buffer.clear()
@@ -393,6 +454,12 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
         except Exception as e:
             _log(f"\n[Productor] ❌ Error inesperado: {e}")
             _status("audio", "Audio: error", "error")
+            _record_audio_runtime_health(
+                diagnostics_store,
+                ring_buffer_chunks=len(ring_buffer),
+                worker_alive=vad_thread.is_alive(),
+                stream_active=False,
+            )
             time.sleep(3)
     
     # Graceful shutdown — signal worker to stop and wait for it
@@ -404,6 +471,12 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
     
     if vad_thread.is_alive():
         vad_thread.join(timeout=2.0)
+    _record_audio_runtime_health(
+        diagnostics_store,
+        ring_buffer_chunks=len(ring_buffer),
+        worker_alive=vad_thread.is_alive(),
+        stream_active=False,
+    )
     
     _log("[Productor] Audio apagado correctamente.")
 

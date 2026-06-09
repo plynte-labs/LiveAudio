@@ -21,6 +21,7 @@ VALID_MODELS = {
 MODEL_BY_KEY = {model.split()[0]: model for model in VALID_MODELS}
 VALID_SUBTITLE_STYLES = {"default", "karaoke", "neon", "minimal", "bold", "rgb", "typewriter"}
 VALID_BACKLOG_POLICIES = {"auto", "live_only", "send_all"}
+VALID_DIAGNOSTICS_LEVELS = {"off", "minimal", "deep"}
 
 DEFAULT_CONFIG = {
     "output_dir": os.path.abspath("sessions"),  # Usa una carpeta local por defecto
@@ -40,7 +41,15 @@ DEFAULT_CONFIG = {
     "profile_mode": "preset",
     "ws_port": 8765,
     "obs_enabled": True,
-    "whisper_context_prompt": "",  # Optional context hint for Whisper to reduce hallucinations
+    "whisper_context_prompt_es": "",
+    "whisper_context_prompt_en": "",
+    "asr_language": "es",  # Idioma de voz (ASR): "es" o "en"
+    "settings_navigation_mode": "tabs",  # "tabs" o "dropdown"
+    "language": None,  # None = autodetectar idioma de UI
+    "diagnostics_enabled": False,
+    "diagnostics_level": "minimal",
+    "diagnostics_export_dir": None,
+    "last_update_check": 0,
 }
 
 
@@ -109,8 +118,27 @@ def _normalize_config(config):
         config["blacklist"] = DEFAULT_CONFIG["blacklist"]
         updated = True
 
-    if not isinstance(config.get("whisper_context_prompt"), str):
-        config["whisper_context_prompt"] = DEFAULT_CONFIG["whisper_context_prompt"]
+    # Migración transparente: mover whisper_context_prompt a whisper_context_prompt_es
+    old_prompt = config.get("whisper_context_prompt", "")
+    if old_prompt and isinstance(old_prompt, str) and old_prompt.strip():
+        if not config.get("whisper_context_prompt_es"):
+            config["whisper_context_prompt_es"] = old_prompt.strip()
+            updated = True
+    # Eliminar clave deprecada para mantener archivo limpio
+    if "whisper_context_prompt" in config:
+        del config["whisper_context_prompt"]
+        updated = True
+
+    if not isinstance(config.get("whisper_context_prompt_es"), str):
+        config["whisper_context_prompt_es"] = DEFAULT_CONFIG["whisper_context_prompt_es"]
+        updated = True
+
+    if not isinstance(config.get("whisper_context_prompt_en"), str):
+        config["whisper_context_prompt_en"] = DEFAULT_CONFIG["whisper_context_prompt_en"]
+        updated = True
+
+    if config.get("asr_language") not in {"es", "en"}:
+        config["asr_language"] = DEFAULT_CONFIG["asr_language"]
         updated = True
 
     if config.get("subtitle_style") not in VALID_SUBTITLE_STYLES:
@@ -150,6 +178,40 @@ def _normalize_config(config):
 
     if not isinstance(config.get("obs_enabled"), bool):
         config["obs_enabled"] = bool(config.get("obs_enabled"))
+        updated = True
+
+    if config.get("settings_navigation_mode") not in {"tabs", "dropdown"}:
+        config["settings_navigation_mode"] = DEFAULT_CONFIG["settings_navigation_mode"]
+        updated = True
+
+    if config.get("language") not in {None, "es", "en"}:
+        config["language"] = None
+        updated = True
+
+    if not isinstance(config.get("diagnostics_enabled"), bool):
+        config["diagnostics_enabled"] = bool(config.get("diagnostics_enabled"))
+        updated = True
+
+    if config.get("diagnostics_level") not in VALID_DIAGNOSTICS_LEVELS:
+        config["diagnostics_level"] = DEFAULT_CONFIG["diagnostics_level"]
+        updated = True
+
+    diagnostics_export_dir = config.get("diagnostics_export_dir")
+    if diagnostics_export_dir is None or str(diagnostics_export_dir).strip() == "":
+        if diagnostics_export_dir is not None:
+            updated = True
+        config["diagnostics_export_dir"] = None
+    elif isinstance(diagnostics_export_dir, str):
+        normalized_export_dir = os.path.normpath(os.path.abspath(diagnostics_export_dir))
+        if diagnostics_export_dir != normalized_export_dir:
+            updated = True
+        config["diagnostics_export_dir"] = normalized_export_dir
+    else:
+        config["diagnostics_export_dir"] = None
+        updated = True
+
+    if not isinstance(config.get("last_update_check"), int):
+        config["last_update_check"] = DEFAULT_CONFIG["last_update_check"]
         updated = True
 
     return config, updated

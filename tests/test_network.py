@@ -9,6 +9,38 @@ from unittest.mock import MagicMock, patch, AsyncMock
 from tests.helpers import MockQueue, make_shared_config
 
 
+class _AcceptedLocalhostWebSocket:
+    """Concrete async websocket double that stays connected until released."""
+
+    def __init__(self, connected_event, release_event):
+        self.remote_address = ("127.0.0.1", 12345)
+        self._connected_event = connected_event
+        self._release_event = release_event
+
+    def __aiter__(self):
+        async def _messages():
+            self._connected_event.set()
+            await self._release_event.wait()
+            if False:  # pragma: no cover - keeps this an async generator
+                yield None
+
+        return _messages()
+
+
+class _DisconnectingLocalhostWebSocket:
+    """Concrete async websocket double that disconnects during iteration."""
+
+    remote_address = ("127.0.0.1", 12345)
+
+    def __aiter__(self):
+        async def _messages():
+            raise ConnectionError("disconnected")
+            if False:  # pragma: no cover - keeps this an async generator
+                yield None
+
+        return _messages()
+
+
 class TestWebSocketConnectionLifecycle(unittest.TestCase):
     """Tests for WebSocket connect/disconnect/reconnect behavior."""
 
@@ -18,26 +50,17 @@ class TestWebSocketConnectionLifecycle(unittest.TestCase):
         clients = set()
         log_queue = MockQueue()
 
-        mock_websocket = MagicMock()
-        mock_websocket.remote_address = ("127.0.0.1", 12345)
-        # Make wait_closed hang until we cancel it, so we can check clients set
         connected_event = asyncio.Event()
-
-        async def hang_until_cancelled():
-            connected_event.set()
-            await asyncio.Event().wait()  # Hang forever
-
-        mock_websocket.wait_closed = hang_until_cancelled
+        release_event = asyncio.Event()
+        websocket = _AcceptedLocalhostWebSocket(connected_event, release_event)
 
         async def run_test():
-            task = asyncio.create_task(_handle_client(mock_websocket, clients, log_queue))
+            task = asyncio.create_task(_handle_client(websocket, clients, log_queue))
             await connected_event.wait()  # Wait for connection
-            self.assertIn(mock_websocket, clients)
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+            self.assertIn(websocket, clients)
+            release_event.set()
+            await task
+            self.assertNotIn(websocket, clients)
 
         asyncio.run(run_test())
 
@@ -64,18 +87,16 @@ class TestWebSocketConnectionLifecycle(unittest.TestCase):
         clients = set()
         log_queue = MockQueue()
 
-        mock_websocket = MagicMock()
-        mock_websocket.remote_address = ("127.0.0.1", 12345)
-        mock_websocket.wait_closed = AsyncMock(side_effect=ConnectionError("disconnected"))
+        websocket = _DisconnectingLocalhostWebSocket()
 
         async def run_test():
             try:
-                await _handle_client(mock_websocket, clients, log_queue)
+                await _handle_client(websocket, clients, log_queue)
             except ConnectionError:
                 pass
 
         asyncio.run(run_test())
-        self.assertNotIn(mock_websocket, clients)
+        self.assertNotIn(websocket, clients)
 
 
 class TestPortConfiguration(unittest.TestCase):

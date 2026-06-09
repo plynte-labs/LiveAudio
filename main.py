@@ -1,20 +1,31 @@
 # SPDX-License-Identifier: MIT
 import os
 import queue
+import json
 import datetime
 import copy
 import multiprocessing as mp
 import customtkinter as ctk
 import torch
+import webbrowser
+from PIL import Image, ImageTk
 from tkinter import filedialog, messagebox
 
 torch_lib_path = os.path.join(os.path.dirname(torch.__file__), "lib")
 os.environ["PATH"] = f"{torch_lib_path};{os.environ.get('PATH', '')}"
 
 from utils.config import load_config, save_config
+from utils.i18n import t, set_language, autodetect_language, get_language
+from utils.crash_handler import install_crash_handler
+from utils.updater import check_for_updates_async, APP_VERSION
+
+# Instalar el manejador de crashes lo antes posible
+install_crash_handler()
+
 from core.engine import asr_consumer
 from core.audio import audio_producer, list_audio_devices
 from core.network import run_ws_server
+from core.diagnostics import build_diagnostics_report, normalize_export_dir
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("green")
@@ -83,6 +94,49 @@ PRESET_STYLES = {
         "font_family": "Consolas",
     },
 }
+
+
+def _safe_queue_size(queue_obj):
+    if queue_obj is None:
+        return None
+    try:
+        return queue_obj.qsize()
+    except Exception:
+        return None
+
+
+def build_app_runtime_summary(app_state: dict) -> dict:
+    """Create a bounded local runtime snapshot from app-visible state."""
+    processes = app_state.get("processes", {})
+    queues = app_state.get("queues", {})
+    return {
+        "is_running": bool(app_state.get("is_running")),
+        "session_dir": app_state.get("session_dir"),
+        "statuses": dict(app_state.get("statuses", {})),
+        "processes": {
+            name: bool(proc.is_alive()) if proc is not None else False
+            for name, proc in processes.items()
+        },
+        "queues": {name: value for name, value in queues.items()},
+    }
+
+
+def export_local_diagnostics_report(report: dict, export_dir: str) -> str:
+    """Persist a diagnostics report locally as JSON."""
+    normalized_dir = normalize_export_dir(export_dir)
+    if not normalized_dir:
+        raise ValueError("Diagnostics export directory is not configured.")
+    if "generated_at" not in report:
+        report = build_diagnostics_report(
+            runtime_health=report.get("runtime"),
+            test_health=report.get("test_health"),
+        )
+    os.makedirs(normalized_dir, exist_ok=True)
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    file_path = os.path.join(normalized_dir, f"liveaudio_diagnostics_{timestamp}.json")
+    with open(file_path, "w", encoding="utf-8") as handle:
+        json.dump(report, handle, indent=2, ensure_ascii=False)
+    return file_path
 
 
 def _validate_output_dir(path):
@@ -168,10 +222,39 @@ class LiveASRApp(ctk.CTk):
         self.title("Plynte LiveAudio")
         self.geometry("1200x800")
         
+        # --- ICONO PERSONALIZADO (Chihuahua Kawaii y Taskbar Fix) ---
+        try:
+            # 1. Resolver ID de aplicación para forzar icono desacoplado en la barra de tareas de Windows
+            import ctypes
+            myappid = 'plynte.liveaudio.chihuahua.v1'
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+        except Exception:
+            pass
+
+        try:
+            # 2. Generar el archivo .ico al vuelo desde el .png de forma dinámica si no existe
+            png_path = os.path.join(os.path.dirname(__file__), "LiveAudio-Fran.png")
+            ico_path = os.path.join(os.path.dirname(__file__), "LiveAudio-Fran.ico")
+            
+            if os.path.exists(png_path) and not os.path.exists(ico_path):
+                img = Image.open(png_path)
+                img.save(ico_path, format="ICO", sizes=[(16, 16), (32, 32), (48, 48), (256, 256)])
+            
+            if os.path.exists(ico_path):
+                self.iconbitmap(ico_path)
+        except Exception as e:
+            print(f"[Icono] No se pudo cargar el icono: {e}")
+        
         # --- DEFENSA 1: Manejo del botón 'X' de Windows ---
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
         self.config_data = load_config()
+        # --- CONFIGURACIÓN DE IDIOMA ---
+        lang = self.config_data.get("language")
+        if not lang:
+            lang = autodetect_language()
+        set_language(lang)
+
         self.draft_config = copy.deepcopy(self.config_data)
         self._ui_ready = False
         self._applying_settings = False
@@ -200,32 +283,271 @@ class LiveASRApp(ctk.CTk):
         self.build_main_screen()
         self.screen_welcome.grid(row=0, column=0, sticky="nsew")
         self.after(100, self.process_logs)
+        self.after(1000, self.check_updates)
+
+    def check_updates(self):
+        def on_update_result(available, tag):
+            if available:
+                self.after(100, lambda: self.display_update_alert(tag))
+        check_for_updates_async(on_update_result)
+
+    def display_update_alert(self, latest_tag):
+        """Muestra un banner discreto en la barra de Ajustes para avisar del update."""
+        if hasattr(self, "frame_update_banner"):
+            return
+            
+        # Banner verde oscuro premium
+        self.frame_update_banner = ctk.CTkFrame(
+            self.screen_main,
+            fg_color="#1b5e20",
+            height=34,
+            corner_radius=0
+        )
+        # Lo posicionamos arriba del todo usando grid (desplazando el resto)
+        self.frame_update_banner.grid(row=2, column=0, columnspan=2, sticky="ew")
+        self.frame_update_banner.grid_propagate(False)
+        
+        lbl_msg = ctk.CTkLabel(
+            self.frame_update_banner,
+            text=f"✨ ¡Nueva versión {latest_tag} disponible! Haz clic aquí para descargar.",
+            font=ctk.CTkFont(size=12, weight="bold", family="Segoe UI"),
+            text_color="#FFFFFF",
+            cursor="hand2"
+        )
+        lbl_msg.pack(fill="both", expand=True)
+        
+        def open_releases(e):
+            webbrowser.open_new("https://github.com/plynte-labs/LiveAudio/releases")
+            
+        lbl_msg.bind("<Button-1>", open_releases)
+
+    def _create_premium_option_menu(self, master, values, variable, command=None, width=140, **kwargs):
+        """Crea un CTkOptionMenu con un estilo premium personalizado y coherente con el tema verde."""
+        menu = ctk.CTkOptionMenu(
+            master,
+            values=values,
+            variable=variable,
+            command=command,
+            width=width,
+            fg_color="#1a2730",               # Botón fondo oscuro sutil
+            button_color="#2d7a4d",           # Flecha con acento verde
+            button_hover_color="#3c9e66",     # Hover flecha verde brillante
+            dropdown_fg_color="#182226",      # Fondo del menú desplegable
+            dropdown_hover_color="#2d7a4d",   # Hover de los items en verde
+            dropdown_text_color="#E8E8E8",    # Texto claro premium
+            dropdown_font=ctk.CTkFont(family="Segoe UI", size=12),
+            font=ctk.CTkFont(family="Segoe UI", size=12),
+            dynamic_resizing=True,            # Auto-ancho según contenido para ver nombres largos
+            **kwargs
+        )
+        return menu
+
+    def _on_language_change(self, selected_lang):
+        """Callback cuando cambia el idioma."""
+        lang_code = "es" if selected_lang in ("Español", "Spanish") else "en"
+        set_language(lang_code)
+        self.config_data["language"] = lang_code
+        save_config(self.config_data)
+        self.after(50, self._rebuild_ui)
+
+    def _rebuild_ui(self):
+        """Reconstruye la pantalla activa para aplicar el nuevo idioma inmediatamente."""
+        self._ui_ready = False
+        
+        # Detectar qué pantalla está visible y reconstruirla
+        if hasattr(self, "screen_welcome") and self.screen_welcome.winfo_ismapped():
+            # Limpiar bienvenida
+            for widget in self.screen_welcome.winfo_children():
+                widget.destroy()
+            self.build_welcome_screen()
+        elif hasattr(self, "screen_main") and self.screen_main.winfo_ismapped():
+            # Limpiar principal
+            if hasattr(self, "screen_main") and self.screen_main:
+                self.screen_main.destroy()
+            self.screen_main = ctk.CTkFrame(self, fg_color="transparent")
+            self.build_main_screen()
+            self.screen_main.grid(row=0, column=0, sticky="nsew")
 
     # --- PANTALLA 1: BIENVENIDA ---
     def build_welcome_screen(self):
-        container = ctk.CTkFrame(self.screen_welcome, width=600, height=400)
-        container.place(relx=0.5, rely=0.5, anchor="center")
-
-        ctk.CTkLabel(container, text="Bienvenido a LiveAudio", font=ctk.CTkFont(size=28, weight="bold")).pack(pady=(30, 10))
-        
-        tips_text = (
-            "💡 Tips de configuración:\n\n"
-            "• Gaming Pesado (AAA): Usa CPU + Modelo Small.\n"
-            "• Just Chatting / Gaming Ligero: Usa GPU + Modelo Turbo.\n"
-            "• Si desconectas tu micrófono, el sistema se reconectará solo."
+        # Frame contenedor con estilo premium de tarjeta flotante
+        container = ctk.CTkFrame(
+            self.screen_welcome, 
+            width=780, 
+            height=480, 
+            corner_radius=16, 
+            border_width=1, 
+            border_color="#1f2d33", 
+            fg_color="#111b1e"
         )
-        ctk.CTkLabel(container, text=tips_text, justify="left", font=ctk.CTkFont(size=14)).pack(pady=20, padx=40)
+        container.place(relx=0.5, rely=0.5, anchor="center")
+        container.grid_propagate(False)
+        container.pack_propagate(False)
 
-        ctk.CTkLabel(container, text="Carpeta de Sesiones Actual:", font=ctk.CTkFont(weight="bold")).pack(pady=(10, 0))
+        # Configurar columnas del contenedor principal
+        container.grid_columnconfigure(0, weight=1)  # Columna izquierda (Héroe/Logo/Tips)
+        container.grid_columnconfigure(1, minsize=1)  # Línea divisoria
+        container.grid_columnconfigure(2, weight=1)  # Columna derecha (Configuración/Acciones)
+        container.grid_rowconfigure(0, weight=1)
+
+        # --- PANEL IZQUIERDO (Branding & Info Hero) ---
+        left_panel = ctk.CTkFrame(container, fg_color="transparent")
+        left_panel.grid(row=0, column=0, sticky="nsew", padx=(25, 15), pady=20)
         
-        self.lbl_folder = ctk.CTkLabel(container, text=self.config_data["output_dir"], text_color="gray")
-        self.lbl_folder.pack(pady=5)
+        # Cargar logo de Chihuahua / LiveAudio
+        logo_path = os.path.join(os.path.dirname(__file__), "LiveAudio-Fran.png")
+        if os.path.exists(logo_path):
+            try:
+                pil_img = Image.open(logo_path)
+                logo_img = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(100, 100))
+                lbl_logo = ctk.CTkLabel(left_panel, image=logo_img, text="")
+                lbl_logo.pack(pady=(15, 5))
+            except Exception as e:
+                print(f"[UI] Error al cargar logo en bienvenida: {e}")
+                
+        ctk.CTkLabel(
+            left_panel, 
+            text=t("welcome_title"), 
+            font=ctk.CTkFont(size=34, weight="bold", family="Outfit"), 
+            text_color="#3c9e66"
+        ).pack(pady=(0, 2))
+        
+        lbl_by = ctk.CTkLabel(
+            left_panel, 
+            text=t("welcome_by"), 
+            font=ctk.CTkFont(size=12, weight="bold", family="Outfit"), 
+            text_color="#AEB8BC", 
+            cursor="hand2"
+        )
+        lbl_by.pack(pady=(0, 15))
+        lbl_by.bind("<Button-1>", lambda e: webbrowser.open_new("https://github.com/plynte-labs/LiveAudio"))
 
-        btn_folder = ctk.CTkButton(container, text="Cambiar Carpeta", fg_color="transparent", border_width=1, command=self.change_folder)
-        btn_folder.pack(pady=10)
+        # Tarjeta de tips estilizada
+        tips_card = ctk.CTkFrame(left_panel, fg_color="#0a1214", corner_radius=12, border_width=1, border_color="#18272c")
+        tips_card.pack(fill="both", expand=True, padx=5, pady=(0, 10))
+        
+        tips_header = "💡 Configuración / Tips" if get_language() == "es" else "💡 Configuration / Tips"
+        ctk.CTkLabel(
+            tips_card, 
+            text=tips_header, 
+            font=ctk.CTkFont(size=13, weight="bold", family="Segoe UI"), 
+            text_color="#3c9e66"
+        ).pack(anchor="w", padx=15, pady=(12, 6))
 
-        btn_continue = ctk.CTkButton(container, text="CONTINUAR", height=45, font=ctk.CTkFont(weight="bold"), command=self.go_to_main)
-        btn_continue.pack(pady=(30, 30))
+        tips_text = t("tips_text")
+        if tips_text.startswith("💡"):
+            tips_text = tips_text[1:].strip()
+            
+        ctk.CTkLabel(
+            tips_card, 
+            text=tips_text, 
+            justify="left", 
+            wraplength=310, 
+            font=ctk.CTkFont(size=12, family="Segoe UI"), 
+            text_color="#AEB8BC"
+        ).pack(anchor="w", padx=15, pady=(0, 12))
+
+        # --- DIVISOR CENTRAL ---
+        divider = ctk.CTkFrame(container, width=1, fg_color="#1f2d33")
+        divider.grid(row=0, column=1, sticky="ns", pady=40)
+
+        # --- PANEL DERECHO (Configuración inicial) ---
+        right_panel = ctk.CTkFrame(container, fg_color="transparent")
+        right_panel.grid(row=0, column=2, sticky="nsew", padx=(15, 25), pady=20)
+
+        setup_title = "Ajustes de Inicio" if get_language() == "es" else "Initial Setup"
+        ctk.CTkLabel(
+            right_panel, 
+            text=setup_title, 
+            font=ctk.CTkFont(size=22, weight="bold", family="Outfit"), 
+            text_color="#E8E8E8"
+        ).pack(anchor="w", padx=10, pady=(15, 12))
+
+        # Segmento: Carpeta de Sesiones
+        folder_frame = ctk.CTkFrame(right_panel, fg_color="#0a1214", corner_radius=10, border_width=1, border_color="#18272c")
+        folder_frame.pack(fill="x", padx=10, pady=5)
+        
+        ctk.CTkLabel(
+            folder_frame, 
+            text=t("current_sessions_folder"), 
+            font=ctk.CTkFont(size=11, weight="bold", family="Segoe UI"), 
+            text_color="#AEB8BC"
+        ).pack(anchor="w", padx=12, pady=(8, 2))
+        
+        self.lbl_folder = ctk.CTkLabel(
+            folder_frame, 
+            text=self.config_data["output_dir"], 
+            font=ctk.CTkFont(size=11, family="Consolas"), 
+            text_color="gray", 
+            wraplength=280, 
+            justify="left"
+        )
+        self.lbl_folder.pack(anchor="w", padx=12, pady=(0, 8))
+        
+        btn_folder = ctk.CTkButton(
+            folder_frame, 
+            text=t("change_folder"), 
+            height=24, 
+            font=ctk.CTkFont(size=11, weight="bold", family="Segoe UI"), 
+            fg_color="transparent", 
+            border_width=1, 
+            command=self.change_folder
+        )
+        btn_folder.pack(anchor="w", padx=12, pady=(0, 10))
+
+        # Segmento: Diseño del menú
+        ctk.CTkLabel(
+            right_panel, 
+            text=t("settings_layout"), 
+            font=ctk.CTkFont(size=11, weight="bold", family="Segoe UI"), 
+            text_color="#AEB8BC"
+        ).pack(anchor="w", padx=15, pady=(8, 2))
+        
+        nav_choices = [t("tabs_horizontal"), t("dropdown_menu")]
+        current_nav = t("tabs_horizontal") if self.config_data.get("settings_navigation_mode", "tabs") == "tabs" else t("dropdown_menu")
+        
+        self.var_welcome_nav_mode = ctk.StringVar(value=current_nav)
+        self.opt_welcome_nav_mode = self._create_premium_option_menu(
+            right_panel,
+            values=nav_choices,
+            variable=self.var_welcome_nav_mode,
+            command=self._on_welcome_nav_mode_change,
+            width=290
+        )
+        self.opt_welcome_nav_mode.pack(fill="x", padx=10, pady=(0, 8))
+
+        # Segmento: Selector de Idioma
+        ctk.CTkLabel(
+            right_panel, 
+            text=t("welcome_lang_label"), 
+            font=ctk.CTkFont(size=11, weight="bold", family="Segoe UI"), 
+            text_color="#AEB8BC"
+        ).pack(anchor="w", padx=15, pady=(8, 2))
+        
+        lang_values = ["Español", "English"]
+        current_lang_display = "Español" if get_language() == "es" else "English"
+        
+        self.var_welcome_lang = ctk.StringVar(value=current_lang_display)
+        self.opt_welcome_lang = self._create_premium_option_menu(
+            right_panel,
+            values=lang_values,
+            variable=self.var_welcome_lang,
+            command=self._on_language_change,
+            width=290
+        )
+        self.opt_welcome_lang.pack(fill="x", padx=10, pady=(0, 20))
+
+        # Botón de Continuar
+        btn_continue = ctk.CTkButton(
+            right_panel, 
+            text=t("continue").upper(), 
+            height=44, 
+            font=ctk.CTkFont(size=14, weight="bold", family="Segoe UI"), 
+            fg_color="#2d7a4d", 
+            hover_color="#3c9e66", 
+            command=self.go_to_main
+        )
+        btn_continue.pack(fill="x", padx=10, pady=(5, 10))
 
     def change_folder(self):
         folder = filedialog.askdirectory(title="Selecciona dónde guardar las sesiones")
@@ -238,6 +560,14 @@ class LiveASRApp(ctk.CTk):
                 self.update_session_label()
 
     def go_to_main(self):
+        # Destruir y reconstruir la pantalla principal para aplicar el diseño elegido inmediatamente
+        if hasattr(self, "screen_main") and self.screen_main:
+            self.screen_main.destroy()
+        
+        self.screen_main = ctk.CTkFrame(self, fg_color="transparent")
+        self._ui_ready = False
+        self.build_main_screen()
+        
         self.screen_welcome.grid_forget() # Ocultar bienvenida
         self.screen_main.grid(row=0, column=0, sticky="nsew") # Mostrar principal
 
@@ -250,31 +580,60 @@ class LiveASRApp(ctk.CTk):
         frame_izq = ctk.CTkScrollableFrame(self.screen_main, width=320, corner_radius=0)
         frame_izq.grid(row=0, column=0, sticky="nsew")
         
-        ctk.CTkLabel(frame_izq, text="Ajustes", font=ctk.CTkFont(size=20, weight="bold")).pack(pady=20, padx=20)
+        ctk.CTkLabel(frame_izq, text=t("settings"), font=ctk.CTkFont(size=20, weight="bold")).pack(pady=20, padx=20)
 
-        tabs = ctk.CTkTabview(frame_izq)
-        tabs.pack(fill="both", expand=True, padx=10, pady=(0, 10))
-        tab_profiles = tabs.add("Perfiles")
-        tab_audio = tabs.add("Audio/VAD")
-        tab_model = tabs.add("Rendimiento")
-        tab_subtitulos = tabs.add("Subtítulos")
-        tab_advanced = tabs.add("Avanzado")
+        # Cargar el modo de navegación configurado ("tabs" o "dropdown")
+        nav_mode = self.config_data.get("settings_navigation_mode", "tabs")
+        
+        cat_audio = t("audio_vad")
+        cat_model = t("performance")
+        cat_subtitles = t("subtitles")
+        cat_advanced = t("advanced")
 
-        # === SECCIÓN: Perfiles ===
-        ctk.CTkLabel(tab_profiles, text="Perfil de configuración:", font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=10, pady=(10, 0))
-        current_profile_id = self.config_data.get("selected_profile_id", "custom")
-        current_profile_label = PROFILE_PRESETS.get(current_profile_id, {}).get("label", "Personalizado")
-        profile_values = [profile["label"] for profile in PROFILE_PRESETS.values()] + ["Personalizado"]
-        self.var_profile = ctk.StringVar(value=current_profile_label)
-        self.opt_profile = ctk.CTkOptionMenu(tab_profiles, values=profile_values, variable=self.var_profile, command=self.on_profile_select)
-        self.opt_profile.pack(fill="x", padx=10, pady=(0, 6))
-        self.lbl_profile_desc = ctk.CTkLabel(tab_profiles, text="", justify="left", wraplength=240, text_color="#AEB8BC")
-        self.lbl_profile_desc.pack(fill="x", padx=10, pady=(0, 8))
-        self.lbl_pending = ctk.CTkLabel(tab_profiles, text="Configuración activa", text_color="#8BC34A")
-        self.lbl_pending.pack(fill="x", padx=10, pady=(0, 12))
+        if nav_mode == "tabs":
+            self.settings_tabview = ctk.CTkTabview(frame_izq)
+            self.settings_tabview.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+            
+            tab_audio = self.settings_tabview.add(cat_audio)
+            tab_model = self.settings_tabview.add(cat_model)
+            tab_subtitulos = self.settings_tabview.add(cat_subtitles)
+            tab_advanced = self.settings_tabview.add(cat_advanced)
+        else:
+            # Título indicador para el dropdown
+            ctk.CTkLabel(frame_izq, text=t("settings_section"), font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=15, pady=(0, 5))
+            
+            # Selector de categorías por Dropdown
+            self.var_nav_category = ctk.StringVar(value=cat_audio)
+            self.opt_nav_category = self._create_premium_option_menu(
+                frame_izq,
+                values=[cat_audio, cat_model, cat_subtitles, cat_advanced],
+                variable=self.var_nav_category,
+                command=self._on_nav_category_change
+            )
+            self.opt_nav_category.pack(fill="x", padx=10, pady=(0, 15))
+            
+            # Contenedor principal de ajustes
+            self.settings_container = ctk.CTkFrame(frame_izq, fg_color="transparent")
+            self.settings_container.pack(fill="both", expand=True)
+            
+            # Sub-frames equivalentes a las pestañas
+            tab_audio = ctk.CTkFrame(self.settings_container, fg_color="transparent")
+            tab_model = ctk.CTkFrame(self.settings_container, fg_color="transparent")
+            tab_subtitulos = ctk.CTkFrame(self.settings_container, fg_color="transparent")
+            tab_advanced = ctk.CTkFrame(self.settings_container, fg_color="transparent")
+            
+            self._nav_frames = {
+                cat_audio: tab_audio,
+                cat_model: tab_model,
+                cat_subtitles: tab_subtitulos,
+                cat_advanced: tab_advanced
+            }
+            
+            # Mostrar por defecto solo la primera sección
+            tab_audio.pack(fill="both", expand=True, padx=5)
 
         # === SECCIÓN: Dispositivo de Audio ===
-        ctk.CTkLabel(tab_audio, text="Dispositivo de Audio:", font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=10, pady=(10, 0))
+        ctk.CTkLabel(tab_audio, text=t("audio_device_label"), font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=10, pady=(10, 0))
         
         # Frame para el selector + botón refresh
         frame_device = ctk.CTkFrame(tab_audio, fg_color="transparent")
@@ -282,7 +641,7 @@ class LiveASRApp(ctk.CTk):
         frame_device.grid_columnconfigure(0, weight=1)
         
         self._audio_devices = []
-        self._device_display_list = ["🔄 Por defecto del sistema"]
+        self._device_display_list = [t("system_default")]
         self._refresh_device_list()
         
         # Determinar selección actual
@@ -294,7 +653,7 @@ class LiveASRApp(ctk.CTk):
                 current_device_display = saved_name
         
         self.var_device = ctk.StringVar(value=current_device_display)
-        self.opt_device = ctk.CTkOptionMenu(
+        self.opt_device = self._create_premium_option_menu(
             frame_device, 
             values=self._device_display_list, 
             variable=self.var_device, 
@@ -311,14 +670,14 @@ class LiveASRApp(ctk.CTk):
         btn_refresh.grid(row=0, column=1, padx=(5, 0))
 
         # === SECCIÓN: Hardware ===
-        ctk.CTkLabel(tab_model, text="Hardware:", font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=10, pady=(10, 0))
+        ctk.CTkLabel(tab_model, text=t("hardware"), font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=10, pady=(10, 0))
         self.var_hw = ctk.StringVar(value=self.config_data["device"])
         self.opt_hw = ctk.CTkSegmentedButton(tab_model, values=["cpu", "cuda"], variable=self.var_hw, command=self.on_setting_change)
         self.opt_hw.pack(fill="x", padx=10, pady=(0, 15))
 
         # CPU Threads
         total_cores = mp.cpu_count()
-        ctk.CTkLabel(tab_model, text=f"Hilos CPU (Max {total_cores}):").pack(anchor="w", padx=10)
+        ctk.CTkLabel(tab_model, text=t("cpu_threads", total_cores)).pack(anchor="w", padx=10)
         self.slider_threads = ctk.CTkSlider(tab_model, from_=1, to=total_cores, number_of_steps=total_cores-1, command=self.on_setting_change)
         self.slider_threads.set(self.config_data["cpu_threads"])
         self.slider_threads.pack(fill="x", padx=10, pady=(0, 15))
@@ -333,66 +692,108 @@ class LiveASRApp(ctk.CTk):
         # Asegurar que el modelo guardado exista en la lista visual
         current_model = next((m for m in modelos_desc if m.startswith(self.config_data["model_size"].split()[0])), modelos_desc[2])
         
-        ctk.CTkLabel(tab_model, text="Tamaño del Modelo:").pack(anchor="w", padx=10)
+        ctk.CTkLabel(tab_model, text=t("model_size")).pack(anchor="w", padx=10)
         self.var_model = ctk.StringVar(value=current_model)
-        self.opt_model = ctk.CTkOptionMenu(tab_model, values=modelos_desc, variable=self.var_model, command=self.on_setting_change)
+        self.opt_model = self._create_premium_option_menu(tab_model, values=modelos_desc, variable=self.var_model, command=self.on_setting_change)
         self.opt_model.pack(fill="x", padx=10, pady=(0, 15))
 
-        # Contexto para Whisper (initial_prompt)
-        ctk.CTkLabel(tab_model, text="Contexto para Whisper (opcional):").pack(anchor="w", padx=10)
+        # Selector de idioma de voz (ASR) — independiente del idioma de UI
+        ctk.CTkLabel(tab_model, text=t("spoken_language_label")).pack(anchor="w", padx=10)
+        asr_lang_values = ["Español", "English"]
+        current_asr = self.config_data.get("asr_language", "es")
+        current_asr_display = "Español" if current_asr == "es" else "English"
+        self.var_asr_lang = ctk.StringVar(value=current_asr_display)
+        self.opt_asr_lang = self._create_premium_option_menu(
+            tab_model, values=asr_lang_values, variable=self.var_asr_lang,
+            command=self._on_asr_language_change
+        )
+        self.opt_asr_lang.pack(fill="x", padx=10, pady=(0, 15))
+
+        # Contexto para Whisper (initial_prompt) — carga el prompt del idioma de voz activo
+        ctk.CTkLabel(tab_model, text=t("whisper_context")).pack(anchor="w", padx=10)
         self.text_whisper_prompt = ctk.CTkTextbox(tab_model, height=60)
-        self.text_whisper_prompt.insert("0.0", self.config_data.get("whisper_context_prompt", ""))
+        prompt_key = f"whisper_context_prompt_{current_asr}"
+        self.text_whisper_prompt.insert("0.0", self.config_data.get(prompt_key, ""))
         self.text_whisper_prompt.pack(fill="x", padx=10, pady=(0, 15))
         self.text_whisper_prompt.bind("<FocusOut>", lambda e: self.on_setting_change())
-        ctk.CTkLabel(
+        help_key = f"whisper_context_help_{current_asr}"
+        self.lbl_whisper_context_help = ctk.CTkLabel(
             tab_model,
-            text="Ayuda a reducir alucinaciones. Ej: 'Stream de tecnología, el host habla de Python y gaming'.",
+            text=t(help_key),
             wraplength=260,
             justify="left",
             font=ctk.CTkFont(size=10),
             text_color="#AEB8BC",
-        ).pack(anchor="w", padx=10, pady=(0, 0))
+        )
+        self.lbl_whisper_context_help.pack(anchor="w", padx=10, pady=(0, 0))
 
         # --- Sliders de Latencia ---
-        ctk.CTkLabel(tab_audio, text="Control de Latencia (Ritmo):", font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=10, pady=(10, 0))
+        ctk.CTkLabel(tab_audio, text=t("latency_control"), font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=10, pady=(10, 0))
         
         # Slider Silencio
-        self.lbl_silence = ctk.CTkLabel(tab_audio, text=f"Detección de Silencio: {self.config_data['silence_timeout']}s")
+        self.lbl_silence = ctk.CTkLabel(tab_audio, text=t("silence_detection", self.config_data['silence_timeout']))
         self.lbl_silence.pack(anchor="w", padx=10)
         self.slider_silence = ctk.CTkSlider(tab_audio, from_=0.3, to=2.0, command=self.on_setting_change)
         self.slider_silence.set(self.config_data["silence_timeout"])
         self.slider_silence.pack(fill="x", padx=10, pady=(0, 10))
 
         # Slider Guillotina
-        self.lbl_max_dur = ctk.CTkLabel(tab_audio, text=f"Duración máxima de frase: {self.config_data['max_chunk_duration']}s")
+        self.lbl_max_dur = ctk.CTkLabel(tab_audio, text=t("max_phrase_duration", self.config_data['max_chunk_duration']))
         self.lbl_max_dur.pack(anchor="w", padx=10)
         self.slider_max_dur = ctk.CTkSlider(tab_audio, from_=2.0, to=15.0, command=self.on_setting_change)
         self.slider_max_dur.set(self.config_data["max_chunk_duration"])
         self.slider_max_dur.pack(fill="x", padx=10, pady=(0, 15))
 
+        # === SECCIÓN: Perfiles ===
+        ctk.CTkLabel(tab_advanced, text=t("config_profile"), font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=10, pady=(10, 0))
+        current_profile_id = self.config_data.get("selected_profile_id", "custom")
+        
+        # Traducir los presets en la UI
+        preset_labels = {
+            "fast": t("profile_preset_fast_label"),
+            "balanced": t("profile_preset_balanced_label"),
+            "quality": t("profile_preset_quality_label"),
+            "stable_streaming": t("profile_preset_stable_label"),
+            "custom": t("custom")
+        }
+        current_profile_label = preset_labels.get(current_profile_id, t("custom"))
+        profile_values = [preset_labels[pid] for pid in ["fast", "balanced", "quality", "stable_streaming"]] + [t("custom")]
+        
+        self.var_profile = ctk.StringVar(value=current_profile_label)
+        self.opt_profile = self._create_premium_option_menu(tab_advanced, values=profile_values, variable=self.var_profile, command=self.on_profile_select)
+        self.opt_profile.pack(fill="x", padx=10, pady=(0, 6))
+        self.lbl_profile_desc = ctk.CTkLabel(tab_advanced, text="", justify="left", wraplength=240, text_color="#AEB8BC")
+        self.lbl_profile_desc.pack(fill="x", padx=10, pady=(0, 8))
+        self.lbl_pending = ctk.CTkLabel(tab_advanced, text=t("active_config"), text_color="#8BC34A")
+        self.lbl_pending.pack(fill="x", padx=10, pady=(0, 12))
+
+        # Divisor visual sutil para separar Perfiles de Ajustes Avanzados
+        divider_profiles = ctk.CTkFrame(tab_advanced, height=2, fg_color="#18272c")
+        divider_profiles.pack(fill="x", padx=10, pady=(5, 15))
+
         # Toggle de Sesión
         self.var_session = ctk.BooleanVar(value=self.config_data["continuous_session"])
-        self.check_session = ctk.CTkSwitch(tab_advanced, text="Mantener la misma sesión al reiniciar motor", variable=self.var_session, command=self.on_setting_change)
+        self.check_session = ctk.CTkSwitch(tab_advanced, text=t("session_persistence"), variable=self.var_session, command=self.on_setting_change)
         self.check_session.pack(anchor="w", padx=10, pady=(10, 15))
 
         # === TAB: Subtítulos ===
 
         # --- Sección: Preview ---
-        ctk.CTkLabel(tab_subtitulos, text="Preview del estilo:", font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=10, pady=(10, 0))
+        ctk.CTkLabel(tab_subtitulos, text=t("style_preview"), font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=10, pady=(10, 0))
         self.frame_preview = ctk.CTkFrame(tab_subtitulos, corner_radius=8)
         self.frame_preview.pack(fill="x", padx=10, pady=(0, 8))
         self.lbl_preview_sample = ctk.CTkLabel(
             self.frame_preview,
-            text=PREVIEW_SAMPLE_TEXT,
+            text=t("preview_sample_text"),
             wraplength=260,
             font=ctk.CTkFont(size=16, weight="normal"),
         )
         self.lbl_preview_sample.pack(padx=12, pady=10)
 
         # Style selector — MUST be before _update_preview()
-        ctk.CTkLabel(tab_subtitulos, text="Estilo Visual:").pack(anchor="w", padx=10, pady=(10, 0))
+        ctk.CTkLabel(tab_subtitulos, text=t("visual_style")).pack(anchor="w", padx=10, pady=(10, 0))
         self.var_style = ctk.StringVar(value=self.config_data.get("subtitle_style", "default"))
-        self.opt_style = ctk.CTkOptionMenu(
+        self.opt_style = self._create_premium_option_menu(
             tab_subtitulos,
             values=["default", "karaoke", "neon", "minimal", "bold", "rgb", "typewriter"],
             variable=self.var_style,
@@ -406,7 +807,7 @@ class LiveASRApp(ctk.CTk):
         self.var_obs_enabled = ctk.BooleanVar(value=self.config_data.get("obs_enabled", True))
         self.switch_obs_enabled = ctk.CTkSwitch(
             tab_subtitulos,
-            text="Enviar subtítulos a OBS",
+            text=t("send_to_obs"),
             variable=self.var_obs_enabled,
             command=self._on_obs_toggle,
         )
@@ -417,19 +818,13 @@ class LiveASRApp(ctk.CTk):
         self.frame_obs_guide.pack(fill="x", padx=10, pady=(0, 10))
         ctk.CTkLabel(
             self.frame_obs_guide,
-            text="📺 Cómo agregar en OBS:",
+            text=t("how_to_add_obs"),
             font=ctk.CTkFont(weight="bold", size=13),
             text_color="#64B5F6",
         ).pack(anchor="w", padx=14, pady=(10, 4))
-        guide_steps = (
-            "1. En OBS, agrega una fuente: «Navegador» (Browser)\n"
-            "2. Marca «Archivo local» y selecciona:\n"
-            f"   {os.path.abspath('subtitulos_obs.html')}\n"
-            "3. Ancho: 1920 | Alto: 200 (o mas segun estilo)\n"
-            "4. En la URL, agrega el puerto si no es 8765:\n"
-            "   file:///.../subtitulos_obs.html?port=8765\n"
-            "5. Listo! Los subtitulos apareceran en vivo."
-        )
+        
+        guide_steps = t("obs_guide_steps", html_path=os.path.abspath('subtitulos_obs.html'))
+        
         ctk.CTkLabel(
             self.frame_obs_guide,
             text=guide_steps,
@@ -440,12 +835,18 @@ class LiveASRApp(ctk.CTk):
         ).pack(anchor="w", padx=14, pady=(0, 10))
 
         # OBS backlog policy (basic)
-        ctk.CTkLabel(tab_subtitulos, text="Atraso en OBS:").pack(anchor="w", padx=10)
-        current_backlog_policy = BACKLOG_POLICY_BY_VALUE.get(self.config_data.get("subtitle_backlog_policy", "auto"), "Auto (recomendado)")
+        ctk.CTkLabel(tab_subtitulos, text=t("obs_backlog")).pack(anchor="w", padx=10)
+        
+        backlog_labels = {
+            t("backlog_auto"): "auto",
+            t("backlog_live_only"): "live_only",
+            t("backlog_send_all"): "send_all",
+        }
+        current_backlog_policy = next((lbl for lbl, val in backlog_labels.items() if val == self.config_data.get("subtitle_backlog_policy", "auto")), t("backlog_auto"))
         self.var_backlog_policy = ctk.StringVar(value=current_backlog_policy)
-        self.opt_backlog_policy = ctk.CTkOptionMenu(
+        self.opt_backlog_policy = self._create_premium_option_menu(
             tab_subtitulos,
-            values=list(BACKLOG_POLICY_LABELS.keys()),
+            values=list(backlog_labels.keys()),
             variable=self.var_backlog_policy,
             command=self.on_setting_change,
         )
@@ -458,21 +859,20 @@ class LiveASRApp(ctk.CTk):
 
         self.btn_toggle_subtitle_advanced = ctk.CTkButton(
             tab_subtitulos,
-            text="▼ Configuración avanzada",
+            text=t("advanced_sub_config"),
             fg_color="transparent",
             border_width=1,
             command=self._toggle_advanced_subtitles,
         )
         self.btn_toggle_subtitle_advanced.pack(fill="x", padx=10, pady=(0, 8))
 
-        ctk.CTkLabel(self.frame_subtitle_advanced, text=f"Max atraso live: {self.config_data['subtitle_max_live_delay_sec']}s").pack(anchor="w", padx=10)
-        self.lbl_max_live_delay = ctk.CTkLabel(self.frame_subtitle_advanced, text=f"Max atraso live: {self.config_data['subtitle_max_live_delay_sec']}s")
+        self.lbl_max_live_delay = ctk.CTkLabel(self.frame_subtitle_advanced, text=t("max_live_delay", self.config_data['subtitle_max_live_delay_sec']))
         self.lbl_max_live_delay.pack(anchor="w", padx=10)
         self.slider_max_live_delay = ctk.CTkSlider(self.frame_subtitle_advanced, from_=1.0, to=120.0, command=self.on_setting_change)
         self.slider_max_live_delay.set(self.config_data["subtitle_max_live_delay_sec"])
         self.slider_max_live_delay.pack(fill="x", padx=10, pady=(0, 8))
 
-        self.lbl_catchup_interval = ctk.CTkLabel(self.frame_subtitle_advanced, text=f"Pacing catch-up: {self.config_data['subtitle_catchup_interval_sec']}s")
+        self.lbl_catchup_interval = ctk.CTkLabel(self.frame_subtitle_advanced, text=t("catchup_pacing", self.config_data['subtitle_catchup_interval_sec']))
         self.lbl_catchup_interval.pack(anchor="w", padx=10)
         self.slider_catchup_interval = ctk.CTkSlider(self.frame_subtitle_advanced, from_=0.0, to=10.0, command=self.on_setting_change)
         self.slider_catchup_interval.set(self.config_data["subtitle_catchup_interval_sec"])
@@ -490,12 +890,26 @@ class LiveASRApp(ctk.CTk):
         frame_bottom = ctk.CTkFrame(self.screen_main, fg_color="transparent", height=80)
         frame_bottom.grid(row=1, column=0, sticky="ew")
 
-        self.btn_apply = ctk.CTkButton(frame_bottom, text="APLICAR CAMBIOS", height=34, fg_color="#7A4B00", hover_color="#9A6100", command=self.apply_pending_settings)
+        self.btn_apply = ctk.CTkButton(frame_bottom, text=t("apply_changes"), height=34, fg_color="#7A4B00", hover_color="#9A6100", command=self.apply_pending_settings)
         self.btn_apply.pack(fill="x", padx=20, pady=(10, 4))
-        self.btn_discard = ctk.CTkButton(frame_bottom, text="Descartar cambios", height=28, fg_color="transparent", border_width=1, command=self.discard_pending_settings)
+        self.btn_discard = ctk.CTkButton(frame_bottom, text=t("discard_changes"), height=28, fg_color="transparent", border_width=1, command=self.discard_pending_settings)
         self.btn_discard.pack(fill="x", padx=20, pady=(0, 6))
-        self.btn_power = ctk.CTkButton(frame_bottom, text="INICIAR SISTEMA", height=46, font=ctk.CTkFont(size=16, weight="bold"), command=self.toggle_system)
+        self.btn_power = ctk.CTkButton(frame_bottom, text=t("start_system"), height=46, font=ctk.CTkFont(size=16, weight="bold"), command=self.toggle_system)
         self.btn_power.pack(fill="x", padx=20, pady=(0, 10))
+        self.btn_diagnostics = ctk.CTkButton(
+            frame_bottom,
+            text="Export diagnostics",
+            height=28,
+            fg_color="transparent",
+            border_width=1,
+            command=self.export_diagnostics_report,
+        )
+        self.btn_diagnostics.pack(fill="x", padx=20, pady=(0, 8))
+
+        # --- CRÉDITOS ---
+        lbl_credit = ctk.CTkLabel(frame_bottom, text="LiveAudio by Plynte", text_color="#AEB8BC", cursor="hand2", font=ctk.CTkFont(size=11, weight="bold"))
+        lbl_credit.pack(side="bottom", pady=(0, 5))
+        lbl_credit.bind("<Button-1>", lambda e: webbrowser.open_new("https://github.com/plynte-labs/LiveAudio"))
 
         # Panel Derecho (estado principal, preview y debug avanzado)
         frame_der = ctk.CTkFrame(self.screen_main)
@@ -503,7 +917,7 @@ class LiveASRApp(ctk.CTk):
         frame_der.grid_columnconfigure(0, weight=1)
         frame_der.grid_rowconfigure(3, weight=1)
 
-        ctk.CTkLabel(frame_der, text="Panel en vivo", font=ctk.CTkFont(size=22, weight="bold")).grid(row=0, column=0, sticky="w", padx=14, pady=(12, 4))
+        ctk.CTkLabel(frame_der, text=t("live_panel"), font=ctk.CTkFont(size=22, weight="bold")).grid(row=0, column=0, sticky="w", padx=14, pady=(12, 4))
 
         frame_status = ctk.CTkFrame(frame_der, fg_color="transparent")
         frame_status.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 8))
@@ -528,7 +942,7 @@ class LiveASRApp(ctk.CTk):
         frame_privacy.grid_columnconfigure(0, weight=1)
         self.lbl_privacy = ctk.CTkLabel(
             frame_privacy,
-            text="Privacidad: ASR local. Los subtítulos se guardan en disco y se emiten por WebSocket local.",
+            text=t("privacy_notice"),
             justify="left",
             wraplength=760,
             text_color="#D0D7DA",
@@ -536,7 +950,7 @@ class LiveASRApp(ctk.CTk):
         self.lbl_privacy.grid(row=0, column=0, sticky="ew", padx=12, pady=(10, 2))
         self.lbl_session = ctk.CTkLabel(
             frame_privacy,
-            text=f"Carpeta de salida: {self.config_data['output_dir']}",
+            text=t("output_folder", self.config_data['output_dir']),
             justify="left",
             wraplength=760,
             text_color="#AEB8BC",
@@ -547,22 +961,22 @@ class LiveASRApp(ctk.CTk):
         frame_preview.grid(row=3, column=0, sticky="nsew", padx=10, pady=(0, 8))
         frame_preview.grid_columnconfigure(0, weight=1)
         frame_preview.grid_rowconfigure(1, weight=1)
-        ctk.CTkLabel(frame_preview, text="Ultimo subtitulo enviado", font=ctk.CTkFont(size=16, weight="bold")).grid(row=0, column=0, sticky="w", padx=12, pady=(10, 4))
+        ctk.CTkLabel(frame_preview, text=t("last_subtitle_sent"), font=ctk.CTkFont(size=16, weight="bold")).grid(row=0, column=0, sticky="w", padx=12, pady=(10, 4))
         self.preview_text = ctk.CTkTextbox(frame_preview, height=170, font=ctk.CTkFont(size=22, weight="bold"), wrap="word")
         self.preview_text.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
-        self.preview_text.insert("0.0", "Sin transcripciones todavia.")
+        self.preview_text.insert("0.0", t("no_transcripts_yet"))
         self.preview_text.configure(state="disabled")
 
         frame_advanced_toggle = ctk.CTkFrame(frame_der, fg_color="transparent")
         frame_advanced_toggle.grid(row=4, column=0, sticky="ew", padx=10, pady=(0, 4))
         self.var_advanced = ctk.BooleanVar(value=False)
-        self.switch_advanced = ctk.CTkSwitch(frame_advanced_toggle, text="Mostrar logs y diagnostico avanzado", variable=self.var_advanced, command=self.toggle_advanced_logs)
+        self.switch_advanced = ctk.CTkSwitch(frame_advanced_toggle, text=t("show_advanced_logs"), variable=self.var_advanced, command=self.toggle_advanced_logs)
         self.switch_advanced.pack(anchor="w", padx=4, pady=4)
 
         self.frame_logs = ctk.CTkFrame(frame_der)
         self.frame_logs.grid_columnconfigure(0, weight=1)
         self.frame_logs.grid_rowconfigure(1, weight=1)
-        ctk.CTkLabel(self.frame_logs, text="Logs tecnicos (ultimas 300 lineas)", font=ctk.CTkFont(weight="bold")).grid(row=0, column=0, sticky="w", padx=8, pady=(8, 2))
+        ctk.CTkLabel(self.frame_logs, text=t("technical_logs"), font=ctk.CTkFont(weight="bold")).grid(row=0, column=0, sticky="w", padx=8, pady=(8, 2))
         
         self.consola = ctk.CTkTextbox(self.frame_logs, state="disabled", font=ctk.CTkFont(family="Consolas", size=13), height=180)
         self.consola.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
@@ -571,12 +985,12 @@ class LiveASRApp(ctk.CTk):
         self._ui_ready = True
         self.refresh_profile_status()
         self.update_ui_state()
-        self.set_status("audio", "Audio: listo", "idle")
-        self.set_status("vad", "VAD: inactivo", "idle")
-        self.set_status("asr", "ASR: detenido", "idle")
-        self.set_status("ws", "WS: detenido", "idle")
-        self.set_status("obs", "OBS: 0 clientes", "idle")
-        self.set_status("session", "Sesion: sin iniciar", "idle")
+        self.set_status("audio", t("status_audio_ready"), "idle")
+        self.set_status("vad", t("status_vad_idle"), "idle")
+        self.set_status("asr", t("status_asr_stopped"), "idle")
+        self.set_status("ws", t("status_ws_stopped"), "idle")
+        self.set_status("obs", "OBS: 0 clientes" if get_language() == "es" else "OBS: 0 clients", "idle")
+        self.set_status("session", t("session_not_started"), "idle")
 
     # --- LÓGICA DE DISPOSITIVOS DE AUDIO ---
     def _refresh_device_list(self):
@@ -586,7 +1000,7 @@ class LiveASRApp(ctk.CTk):
         except Exception:
             self._audio_devices = []
         
-        self._device_display_list = ["🔄 Por defecto del sistema"]
+        self._device_display_list = [t("system_default")]
         for dev in self._audio_devices:
             self._device_display_list.append(dev["display"])
 
@@ -609,9 +1023,31 @@ class LiveASRApp(ctk.CTk):
         draft["continuous_session"] = self.var_session.get()
         draft["blacklist"] = self.text_blacklist.get("0.0", "end").strip()
         draft["subtitle_style"] = self.var_style.get()
-        draft["subtitle_backlog_policy"] = BACKLOG_POLICY_LABELS.get(self.var_backlog_policy.get(), "auto")
+        
+        # Mapear de forma dinámica las políticas de backlog traducidas a valores internos
+        backlog_val = "auto"
+        for lbl_key, val in [("backlog_auto", "auto"), ("backlog_live_only", "live_only"), ("backlog_send_all", "send_all")]:
+            if self.var_backlog_policy.get() == t(lbl_key):
+                backlog_val = val
+                break
+        draft["subtitle_backlog_policy"] = backlog_val
+        
         draft["obs_enabled"] = self.var_obs_enabled.get()
-        draft["whisper_context_prompt"] = self.text_whisper_prompt.get("0.0", "end").strip()
+        # Preservar prompts de ambos idiomas desde draft_config (acumula cambios),
+        # luego sobrescribir el del idioma activo con el contenido actual de la UI
+        draft["whisper_context_prompt_es"] = self.draft_config.get(
+            "whisper_context_prompt_es",
+            self.config_data.get("whisper_context_prompt_es", "")
+        )
+        draft["whisper_context_prompt_en"] = self.draft_config.get(
+            "whisper_context_prompt_en",
+            self.config_data.get("whisper_context_prompt_en", "")
+        )
+        asr_lang = self.draft_config.get("asr_language", self.config_data.get("asr_language", "es"))
+        prompt_key = f"whisper_context_prompt_{asr_lang}"
+        draft[prompt_key] = self.text_whisper_prompt.get("0.0", "end").strip()
+        draft["asr_language"] = asr_lang
+        draft["settings_navigation_mode"] = self.config_data.get("settings_navigation_mode", "tabs")
         return draft
 
     def _load_ui_from_config(self, config):
@@ -631,14 +1067,29 @@ class LiveASRApp(ctk.CTk):
         self.slider_max_dur.set(config["max_chunk_duration"])
         self.var_session.set(config["continuous_session"])
         self.var_style.set(config.get("subtitle_style", "default"))
-        self.var_backlog_policy.set(BACKLOG_POLICY_BY_VALUE.get(config.get("subtitle_backlog_policy", "auto"), "Auto (recomendado)"))
+        
+        # Mapear de forma dinámica el valor interno a la etiqueta de backlog traducida
+        backlog_val = config.get("subtitle_backlog_policy", "auto")
+        backlog_lbl = t("backlog_auto")
+        for lbl_key, val in [("backlog_auto", "auto"), ("backlog_live_only", "live_only"), ("backlog_send_all", "send_all")]:
+            if backlog_val == val:
+                backlog_lbl = t(lbl_key)
+                break
+        self.var_backlog_policy.set(backlog_lbl)
+        
         self.slider_max_live_delay.set(config["subtitle_max_live_delay_sec"])
         self.slider_catchup_interval.set(config["subtitle_catchup_interval_sec"])
         self.text_blacklist.delete("0.0", "end")
         self.text_blacklist.insert("0.0", config.get("blacklist", ""))
         self.var_obs_enabled.set(config.get("obs_enabled", True))
+        # Cargar el prompt según el idioma de voz activo
+        asr_lang = config.get("asr_language", "es")
+        self.var_asr_lang.set("Español" if asr_lang == "es" else "English")
+        prompt_key = f"whisper_context_prompt_{asr_lang}"
         self.text_whisper_prompt.delete("0.0", "end")
-        self.text_whisper_prompt.insert("0.0", config.get("whisper_context_prompt", ""))
+        self.text_whisper_prompt.insert("0.0", config.get(prompt_key, ""))
+        help_key = f"whisper_context_help_{asr_lang}"
+        self.lbl_whisper_context_help.configure(text=t(help_key))
         self._ui_ready = True
         self.on_setting_change()
 
@@ -654,33 +1105,39 @@ class LiveASRApp(ctk.CTk):
         draft = self._read_ui_config()
         profile_id = self._profile_id_for_current_values(draft)
         if profile_id != "custom":
-            self.var_profile.set(PROFILE_PRESETS[profile_id]["label"])
-            self.lbl_profile_desc.configure(text=PROFILE_PRESETS[profile_id]["description"])
-        elif self.var_profile.get() != "Personalizado":
-            self.lbl_profile_desc.configure(text="Perfil modificado: se aplicará como Personalizado.")
+            self.var_profile.set(t(f"profile_preset_{profile_id}_label"))
+            self.lbl_profile_desc.configure(text=t(f"profile_preset_{profile_id}_desc"))
+        elif self.var_profile.get() != t("custom"):
+            self.lbl_profile_desc.configure(text=t("modified_profile_desc"))
         else:
-            self.lbl_profile_desc.configure(text="Ajustes manuales avanzados.")
+            self.lbl_profile_desc.configure(text=t("advanced_manual_desc"))
 
         has_pending = any(draft.get(key) != self.config_data.get(key) for key in draft.keys())
         if has_pending:
-            self.lbl_pending.configure(text="Cambios pendientes: pulsa Aplicar cambios", text_color="#FFC107")
+            self.lbl_pending.configure(text=t("pending_changes_btn"), text_color="#FFC107")
             self.btn_apply.configure(state="normal")
             self.btn_discard.configure(state="normal")
         else:
-            self.lbl_pending.configure(text="Configuración activa", text_color="#8BC34A")
+            self.lbl_pending.configure(text=t("active_config"), text_color="#8BC34A")
             self.btn_apply.configure(state="disabled")
             self.btn_discard.configure(state="disabled")
 
     def on_profile_select(self, selected):
-        if not self._ui_ready or selected == "Personalizado":
+        if not self._ui_ready or selected == t("custom"):
             return
         current_draft = self._read_ui_config()
         has_pending = any(current_draft.get(key) != self.config_data.get(key) for key in current_draft.keys())
-        if has_pending and not messagebox.askyesno("Cambios pendientes", "Cambiar de perfil descartará los cambios pendientes. ¿Continuar?"):
+        if has_pending and not messagebox.askyesno(t("profile_change_warning_title"), t("profile_change_warning_msg")):
             self.refresh_profile_status()
             return
 
-        profile_id = PROFILE_LABEL_TO_ID.get(selected)
+        # Encontrar de forma dinámica el profile_id que corresponde al texto traducido
+        profile_id = None
+        for pid in ["fast", "balanced", "quality", "stable_streaming"]:
+            if selected == t(f"profile_preset_{pid}_label"):
+                profile_id = pid
+                break
+
         if not profile_id:
             return
         draft = copy.deepcopy(self.config_data)
@@ -703,6 +1160,38 @@ class LiveASRApp(ctk.CTk):
                 self.draft_config["audio_device"] = device
         self.refresh_profile_status()
 
+    def _on_asr_language_change(self, selected):
+        """Callback cuando cambia el idioma de voz (ASR)."""
+        if not self._ui_ready:
+            return
+
+        new_lang_code = "es" if selected == "Español" else "en"
+        prev_lang_code = self.draft_config.get("asr_language", "es")
+
+        if new_lang_code == prev_lang_code:
+            return
+
+        # 1. Guardar el prompt actual en la clave del idioma anterior
+        current_prompt = self.text_whisper_prompt.get("0.0", "end").strip()
+        prev_prompt_key = f"whisper_context_prompt_{prev_lang_code}"
+        self.draft_config[prev_prompt_key] = current_prompt
+
+        # 2. Cambiar idioma ASR
+        self.draft_config["asr_language"] = new_lang_code
+
+        # 3. Cargar el prompt del nuevo idioma en la caja de texto
+        new_prompt_key = f"whisper_context_prompt_{new_lang_code}"
+        new_prompt = self.draft_config.get(new_prompt_key, "")
+        self.text_whisper_prompt.delete("0.0", "end")
+        self.text_whisper_prompt.insert("0.0", new_prompt)
+
+        # 4. Actualizar texto de ayuda
+        help_key = f"whisper_context_help_{new_lang_code}"
+        self.lbl_whisper_context_help.configure(text=t(help_key))
+
+        # 5. Disparar cambio para guardar config y notificar al motor
+        self.on_setting_change()
+
     # --- LÓGICA DE CONTROL ---
     def update_ui_state(self):
         """Bloquea o desbloquea elementos de la UI según la selección"""
@@ -716,10 +1205,10 @@ class LiveASRApp(ctk.CTk):
             return
         self.update_ui_state()
 
-        self.lbl_silence.configure(text=f"Detección de Silencio: {self.slider_silence.get():.1f}s")
-        self.lbl_max_dur.configure(text=f"Duración máxima de frase: {self.slider_max_dur.get():.1f}s")
-        self.lbl_max_live_delay.configure(text=f"Max atraso live: {self.slider_max_live_delay.get():.1f}s")
-        self.lbl_catchup_interval.configure(text=f"Pacing catch-up: {self.slider_catchup_interval.get():.1f}s")
+        self.lbl_silence.configure(text=t("silence_detection", self.slider_silence.get()))
+        self.lbl_max_dur.configure(text=t("max_phrase_duration", self.slider_max_dur.get()))
+        self.lbl_max_live_delay.configure(text=t("max_live_delay", self.slider_max_live_delay.get()))
+        self.lbl_catchup_interval.configure(text=t("catchup_pacing", self.slider_catchup_interval.get()))
         self.refresh_profile_status()
 
     def _on_style_change(self, *args):
@@ -727,15 +1216,40 @@ class LiveASRApp(ctk.CTk):
         self._update_preview()
         self.on_setting_change()
 
+    def _on_nav_category_change(self, selected_category):
+        """Maneja el cambio de categoría de ajustes en modo dropdown."""
+        if hasattr(self, "_nav_frames"):
+            for frame in self._nav_frames.values():
+                frame.pack_forget()
+            if selected_category in self._nav_frames:
+                self._nav_frames[selected_category].pack(fill="both", expand=True, padx=5)
+
+    def _on_welcome_nav_mode_change(self, selected_mode):
+        """Maneja el cambio del modo de diseño desde la pantalla de bienvenida."""
+        new_mode = "tabs" if selected_mode == t("tabs_horizontal") else "dropdown"
+        self.config_data["settings_navigation_mode"] = new_mode
+        save_config(self.config_data)
+        self.shared_config["settings_navigation_mode"] = new_mode
+
+    def _rebuild_main_screen_dynamic(self):
+        """Reconstruye la pantalla principal de forma dinámica en tiempo de ejecución."""
+        self._ui_ready = False
+        if hasattr(self, "screen_main") and self.screen_main:
+            self.screen_main.destroy()
+        
+        self.screen_main = ctk.CTkFrame(self, fg_color="transparent")
+        self.build_main_screen()
+        self.screen_main.grid(row=0, column=0, sticky="nsew")
+
     def _toggle_advanced_subtitles(self):
         """Toggle visibility of advanced subtitle settings (progressive disclosure)."""
         self._subtitle_advanced_visible = not self._subtitle_advanced_visible
         if self._subtitle_advanced_visible:
             self.frame_subtitle_advanced.pack(fill="x", padx=10, pady=(0, 8))
-            self.btn_toggle_subtitle_advanced.configure(text="▲ Ocultar configuración avanzada")
+            self.btn_toggle_subtitle_advanced.configure(text=t("hide_advanced_sub_config"))
         else:
             self.frame_subtitle_advanced.pack_forget()
-            self.btn_toggle_subtitle_advanced.configure(text="▼ Configuración avanzada")
+            self.btn_toggle_subtitle_advanced.configure(text=t("advanced_sub_config"))
 
     def _on_obs_toggle(self, *args):
         """Handle OBS enable/disable toggle change."""
@@ -767,10 +1281,20 @@ class LiveASRApp(ctk.CTk):
             return
         draft = self._read_ui_config()
         profile_id = self._profile_id_for_current_values(draft)
-        if profile_id == "custom" and self.var_profile.get() != "Personalizado":
+        
+        # Traducir los presets en la UI
+        preset_labels = {
+            "fast": t("profile_preset_fast_label"),
+            "balanced": t("profile_preset_balanced_label"),
+            "quality": t("profile_preset_quality_label"),
+            "stable_streaming": t("profile_preset_stable_label"),
+            "custom": t("custom")
+        }
+
+        if profile_id == "custom" and self.var_profile.get() != t("custom"):
             response = messagebox.askyesnocancel(
-                "Perfil modificado",
-                "Modificaste un perfil integrado.\n\nSí: aplicar como Personalizado.\nNo: descartar cambios.\nCancelar: seguir editando.",
+                t("profile_modified_title"),
+                t("profile_modified_msg"),
             )
             if response is None:
                 return
@@ -786,8 +1310,8 @@ class LiveASRApp(ctk.CTk):
         needs_asr_restart, needs_audio_restart = self._pending_restart_flags(draft)
         if self.is_running and (needs_asr_restart or needs_audio_restart):
             if not messagebox.askyesno(
-                "Aplicar cambios en vivo",
-                "Algunos cambios requieren hot-swap del motor. Puede haber un corte breve y perderse la frase actual. ¿Aplicar ahora?",
+                t("apply_changes"),
+                t("hot_swap_confirm_msg"),
             ):
                 return
 
@@ -807,29 +1331,38 @@ class LiveASRApp(ctk.CTk):
                 self.shared_config[k] = v
 
             if self.is_running and (needs_asr_restart or needs_audio_restart):
-                self.print_log("\n[Sistema] Aplicando cambios con hot-swap en vivo...")
-                self.set_status("asr", "ASR: aplicando cambios", "warn")
-                self.set_status("vad", "VAD: aplicando cambios", "warn")
+                self.print_log(t("log_hot_swap"))
+                self.set_status("asr", t("status_asr_applying"), "warn")
+                self.set_status("vad", t("status_vad_applying"), "warn")
                 if not self.shared_config["continuous_session"]:
                     timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
                     self.current_session_dir = os.path.join(self.shared_config["output_dir"], f"session_{timestamp}")
                     self.update_session_label()
                 if not self.hot_swap_engine():
-                    raise RuntimeError("El hot-swap no pudo arrancar los procesos de audio/ASR.")
+                    raise RuntimeError(t("log_hot_swap_failed"))
+
+            if previous_config.get("settings_navigation_mode") != self.config_data.get("settings_navigation_mode"):
+                # Reconstruir de forma diferida para evitar warnings de destrucción durante el propio callback del botón
+                self.after(50, self._rebuild_main_screen_dynamic)
+
+            # Si el idioma cambió en la config, reconstruir la UI completa
+            if previous_config.get("language") != self.config_data.get("language"):
+                set_language(self.config_data.get("language") or autodetect_language())
+                self.after(50, self._rebuild_ui)
 
             save_config(self.config_data)
             self.draft_config = copy.deepcopy(self.config_data)
-            self.var_profile.set(PROFILE_PRESETS.get(self.config_data.get("selected_profile_id"), {}).get("label", "Personalizado"))
+            self.var_profile.set(preset_labels.get(self.config_data.get("selected_profile_id"), t("custom")))
             self.refresh_profile_status()
-            self.print_log("[Sistema] Configuración aplicada y guardada.")
+            self.print_log(t("log_config_applied"))
         except Exception as e:
             self.config_data = previous_config
             for k, v in self.config_data.items():
                 self.shared_config[k] = v
             if self.is_running and (needs_asr_restart or needs_audio_restart):
                 self.hot_swap_engine()
-            messagebox.showerror("Error al aplicar", f"No se pudieron aplicar los cambios:\n{e}")
-            self.print_log(f"[Sistema] Error al aplicar cambios: {e}")
+            messagebox.showerror(t("error_applying_title"), t("error_applying_msg", e))
+            self.print_log(t("log_config_error", e))
         finally:
             self._applying_settings = False
             self.refresh_profile_status()
@@ -846,13 +1379,21 @@ class LiveASRApp(ctk.CTk):
         self._log_lines.append(msg)
         if len(self._log_lines) > LOG_MAX_LINES:
             self._log_lines = self._log_lines[-LOG_MAX_LINES:]
-        self.consola.configure(state="normal")
-        self.consola.delete("0.0", "end")
-        self.consola.insert("end", "\n".join(self._log_lines) + "\n")
-        self.consola.see("end")
-        self.consola.configure(state="disabled")
+        
+        if not self._ui_ready or not hasattr(self, "consola") or not self.consola.winfo_exists():
+            return
+        try:
+            self.consola.configure(state="normal")
+            self.consola.delete("0.0", "end")
+            self.consola.insert("end", "\n".join(self._log_lines) + "\n")
+            self.consola.see("end")
+            self.consola.configure(state="disabled")
+        except Exception:
+            pass
 
     def set_status(self, key, text, state="idle"):
+        if not self._ui_ready or not hasattr(self, "status_labels"):
+            return
         colors = {
             "idle": "#263238",
             "ok": "#1B5E20",
@@ -861,17 +1402,26 @@ class LiveASRApp(ctk.CTk):
             "error": "#7F1D1D",
         }
         label = self.status_labels.get(key)
-        if label:
-            label.configure(text=text, fg_color=colors.get(state, colors["idle"]))
+        if label and label.winfo_exists():
+            try:
+                label.configure(text=text, fg_color=colors.get(state, colors["idle"]))
+            except Exception:
+                pass
 
     def set_preview(self, text):
         clean_text = " ".join(str(text).split())
         if len(clean_text) > PREVIEW_MAX_CHARS:
             clean_text = clean_text[:PREVIEW_MAX_CHARS].rstrip() + "..."
-        self.preview_text.configure(state="normal")
-        self.preview_text.delete("0.0", "end")
-        self.preview_text.insert("0.0", clean_text or "Sin transcripciones todavia.")
-        self.preview_text.configure(state="disabled")
+        
+        if not self._ui_ready or not hasattr(self, "preview_text") or not self.preview_text.winfo_exists():
+            return
+        try:
+            self.preview_text.configure(state="normal")
+            self.preview_text.delete("0.0", "end")
+            self.preview_text.insert("0.0", clean_text or t("no_transcripts_yet"))
+            self.preview_text.configure(state="disabled")
+        except Exception:
+            pass
 
     def _update_preview(self):
         """Update static preview panel based on selected style from PRESET_STYLES."""
@@ -881,18 +1431,18 @@ class LiveASRApp(ctk.CTk):
             self.frame_preview.configure(fg_color=style["fg_color"])
         if hasattr(self, "lbl_preview_sample"):
             self.lbl_preview_sample.configure(
-                text=PREVIEW_SAMPLE_TEXT,
+                text=t("preview_sample_text"),
                 text_color=style["text_color"],
                 font=ctk.CTkFont(size=18, weight=style["font_weight"], family=style["font_family"]),
             )
 
     def update_session_label(self):
         if self.current_session_dir:
-            text = f"Sesion activa: {self.current_session_dir}"
-            self.set_status("session", "Sesion: guardando", "ok")
+            text = t("active_session", self.current_session_dir)
+            self.set_status("session", t("session_saving"), "ok")
         else:
-            text = f"Carpeta de salida: {self.config_data['output_dir']}"
-            self.set_status("session", "Sesion: sin iniciar", "idle")
+            text = t("output_folder", self.config_data['output_dir'])
+            self.set_status("session", t("session_not_started"), "idle")
         self.lbl_session.configure(text=text)
 
     def toggle_advanced_logs(self):
@@ -905,13 +1455,39 @@ class LiveASRApp(ctk.CTk):
     def handle_event(self, event):
         event_type = event.get("type")
         if event_type == "status":
-            self.set_status(event.get("key"), event.get("text", ""), event.get("state", "idle"))
+            raw_text = event.get("text", "")
+            status_key = event.get("key")
+            state = event.get("state", "idle")
+            
+            # Buscar dinámicamente la traducción correspondiente en el diccionario español
+            from utils.i18n import TRANSLATIONS
+            found_key = None
+            for t_key, t_val in TRANSLATIONS["es"].items():
+                if t_key.startswith("status_") and t_val == raw_text:
+                    found_key = t_key
+                    break
+            
+            # Mapeos especiales fuera del prefijo status_
+            if not found_key:
+                if raw_text == "Sesion: guardando":
+                    found_key = "session_saving"
+                elif raw_text == "Sesion: sin iniciar":
+                    found_key = "session_not_started"
+                elif raw_text in ("Audio: dispositivo listo", "Audio: dispositivo por defecto", "Audio: loopback WASAPI"):
+                    found_key = "status_audio_listening"
+                    
+            translated_text = t(found_key) if found_key else raw_text
+            self.set_status(status_key, translated_text, state)
+            
         elif event_type == "transcript":
             latency = event.get("latency")
             total_delay = event.get("total_delay")
             obs_emitted = event.get("obs_emitted", True)
+            
+            # El preview local en la UI siempre debe mostrarse para dar feedback
+            self.set_preview(event.get("text", ""))
+            
             if obs_emitted:
-                self.set_preview(event.get("text", ""))
                 if latency is not None and total_delay is not None:
                     self.print_log(f"[IA] Subtitulo enviado a OBS ({latency:.2f}s ASR, {total_delay:.1f}s total). Texto oculto en logs por privacidad.")
                 elif latency is not None:
@@ -939,6 +1515,34 @@ class LiveASRApp(ctk.CTk):
                 break
         self.after(100, self.process_logs)
 
+    def _collect_runtime_diagnostics(self):
+        statuses = {key: label.cget("text") for key, label in self.status_labels.items()}
+        queue_sizes = {
+            "audio": _safe_queue_size(self.audio_queue),
+            "text": _safe_queue_size(self.text_queue),
+            "log": _safe_queue_size(self.log_queue),
+        }
+        return build_app_runtime_summary(
+            {
+                "is_running": self.is_running,
+                "session_dir": self.current_session_dir,
+                "statuses": statuses,
+                "processes": {
+                    "audio": self.p_audio,
+                    "asr": self.p_ia,
+                    "ws": self.p_ws,
+                },
+                "queues": queue_sizes,
+            }
+        )
+
+    def export_diagnostics_report(self):
+        export_dir = self.config_data.get("diagnostics_export_dir") or self.config_data.get("output_dir")
+        report = build_diagnostics_report(runtime_health=self._collect_runtime_diagnostics())
+        file_path = export_local_diagnostics_report(report, export_dir)
+        self.print_log(f"[Diagnostics] Local-only report exported: {file_path}")
+        messagebox.showinfo("Diagnostics", f"Local diagnostics exported to:\n{file_path}")
+
     def _stop_process(self, proc, name="proceso", timeout=3):
         """Apagado limpio de un proceso: espera con timeout, luego mata."""
         if proc is None or not proc.is_alive():
@@ -957,6 +1561,10 @@ class LiveASRApp(ctk.CTk):
             pass
 
     def hot_swap_engine(self):
+        # Guard de seguridad para prevenir spawn no deseado de procesos en segundo plano
+        if not self.is_running:
+            return False
+
         # --- DEFENSA 4: Anti-Corrupción de Pipes ---
         # Si matamos la IA mientras lee, rompemos la tubería. 
         # La solución es reiniciar a ambos (IA y Productor) con una NUEVA cola.
@@ -989,7 +1597,7 @@ class LiveASRApp(ctk.CTk):
             draft = self._read_ui_config()
             has_pending = any(draft.get(key) != self.config_data.get(key) for key in draft.keys())
             if has_pending:
-                response = messagebox.askyesnocancel("Cambios pendientes", "Hay cambios pendientes antes de iniciar.\n\nSí: aplicar e iniciar.\nNo: iniciar sin aplicar.\nCancelar: volver.")
+                response = messagebox.askyesnocancel(t("pending_changes_title"), t("welcome_pending_msg"))
                 if response is None:
                     return
                 if response is True:
@@ -999,7 +1607,7 @@ class LiveASRApp(ctk.CTk):
                         return
         if not self.is_running:
             self.is_running = True
-            self.btn_power.configure(text="DETENER SISTEMA", fg_color="darkred", hover_color="red")
+            self.btn_power.configure(text=t("stop_system"), fg_color="darkred", hover_color="red")
             
             # Limpiar consola (habilitar → borrar → deshabilitar)
             self._log_lines = []
@@ -1007,12 +1615,12 @@ class LiveASRApp(ctk.CTk):
             self.consola.delete("0.0", "end")
             self.consola.configure(state="disabled")
             
-            self.print_log("[Sistema] Iniciando servicios base...")
-            self.set_status("audio", "Audio: iniciando", "active")
-            self.set_status("vad", "VAD: cargando", "active")
-            self.set_status("asr", "ASR: cargando", "active")
-            self.set_status("ws", "WS: iniciando", "active")
-            self.set_status("obs", "OBS: 0 clientes", "idle")
+            self.print_log(t("log_base_init"))
+            self.set_status("audio", t("status_audio_init"), "active")
+            self.set_status("vad", t("status_vad_loading"), "active")
+            self.set_status("asr", t("status_asr_loading"), "active")
+            self.set_status("ws", t("status_ws_initiating"), "active")
+            self.set_status("obs", "OBS: 0 clientes" if get_language() == "es" else "OBS: 0 clients", "idle")
             
             # Generar carpeta principal de la sesión
             timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
@@ -1029,13 +1637,13 @@ class LiveASRApp(ctk.CTk):
             self.hot_swap_engine()
         else:
             self.is_running = False
-            self.btn_power.configure(text="INICIAR SISTEMA", fg_color=["#3B8ED0", "#1F6AA5"], hover_color=["#36719F", "#144870"])
-            self.print_log("[Sistema] Apagando todos los servicios...")
-            self.set_status("audio", "Audio: detenido", "idle")
-            self.set_status("vad", "VAD: inactivo", "idle")
-            self.set_status("asr", "ASR: detenido", "idle")
-            self.set_status("ws", "WS: detenido", "idle")
-            self.set_status("obs", "OBS: 0 clientes", "idle")
+            self.btn_power.configure(text=t("start_system"), fg_color=["#3B8ED0", "#1F6AA5"], hover_color=["#36719F", "#144870"])
+            self.print_log(t("log_base_stopping"))
+            self.set_status("audio", t("status_audio_stopped"), "idle")
+            self.set_status("vad", t("status_vad_idle"), "idle")
+            self.set_status("asr", t("status_asr_stopped"), "idle")
+            self.set_status("ws", t("status_ws_stopped"), "idle")
+            self.set_status("obs", "OBS: 0 clientes" if get_language() == "es" else "OBS: 0 clients", "idle")
             
             # Apagado limpio con señal → join → terminate
             if self.p_ia and self.p_ia.is_alive():
@@ -1066,7 +1674,7 @@ class LiveASRApp(ctk.CTk):
             draft = self._read_ui_config()
             has_pending = any(draft.get(key) != self.config_data.get(key) for key in draft.keys())
             if has_pending:
-                response = messagebox.askyesnocancel("Cambios pendientes", "Hay cambios pendientes.\n\nSí: aplicar y cerrar.\nNo: descartar y cerrar.\nCancelar: volver.")
+                response = messagebox.askyesnocancel(t("pending_changes_title"), t("closing_pending_msg"))
                 if response is None:
                     return
                 if response is True:

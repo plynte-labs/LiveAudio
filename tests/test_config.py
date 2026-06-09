@@ -18,6 +18,7 @@ from utils.config import (
     VALID_MODELS,
     VALID_SUBTITLE_STYLES,
     VALID_BACKLOG_POLICIES,
+    VALID_DIAGNOSTICS_LEVELS,
 )
 
 
@@ -288,6 +289,37 @@ class TestConfigValidation(unittest.TestCase):
         config["subtitle_catchup_interval_sec"] = -1.0
         result, updated = _normalize_config(config)
         self.assertGreaterEqual(result["subtitle_catchup_interval_sec"], 0.0)
+
+    def test_diagnostics_defaults_exist(self):
+        """DEFAULT_CONFIG should expose diagnostics defaults."""
+        self.assertIn("diagnostics_enabled", DEFAULT_CONFIG)
+        self.assertIn("diagnostics_level", DEFAULT_CONFIG)
+        self.assertIn("diagnostics_export_dir", DEFAULT_CONFIG)
+        self.assertIn(DEFAULT_CONFIG["diagnostics_level"], VALID_DIAGNOSTICS_LEVELS)
+
+    def test_normalizes_invalid_diagnostics_level(self):
+        """Invalid diagnostics level should be reset to default."""
+        config = DEFAULT_CONFIG.copy()
+        config["diagnostics_level"] = "ultra"
+        result, updated = _normalize_config(config)
+        self.assertEqual(result["diagnostics_level"], DEFAULT_CONFIG["diagnostics_level"])
+        self.assertTrue(updated)
+
+    def test_normalizes_diagnostics_export_dir(self):
+        """Diagnostics export dir should normalize to an absolute path."""
+        config = DEFAULT_CONFIG.copy()
+        config["diagnostics_export_dir"] = "reports/diagnostics"
+        result, updated = _normalize_config(config)
+        self.assertTrue(os.path.isabs(result["diagnostics_export_dir"]))
+        self.assertTrue(updated)
+
+    def test_rejects_non_string_diagnostics_export_dir(self):
+        """Non-string diagnostics export dir should reset to None."""
+        config = DEFAULT_CONFIG.copy()
+        config["diagnostics_export_dir"] = 123
+        result, updated = _normalize_config(config)
+        self.assertIsNone(result["diagnostics_export_dir"])
+        self.assertTrue(updated)
 
 
 class TestLoadSaveConfig(unittest.TestCase):

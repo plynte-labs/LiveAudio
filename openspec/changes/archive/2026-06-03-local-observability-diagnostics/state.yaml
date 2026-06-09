@@ -1,0 +1,9 @@
+﻿change: local-observability-diagnostics
+mode: hybrid
+phase: archive
+status: completed
+execution_mode: interactive
+delivery_strategy: ask-on-risk
+chain_strategy: feature-branch-chain
+strict_tdd: true
+next_recommended: none
