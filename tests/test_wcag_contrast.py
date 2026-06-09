@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: MIT
 """WCAG AA contrast verification for all 7 subtitle presets (T7)."""
 
 import unittest

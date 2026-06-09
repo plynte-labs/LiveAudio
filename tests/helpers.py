@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: MIT
 """Common test helpers and mocks for LiveAudio test suite."""
 
 import multiprocessing as mp

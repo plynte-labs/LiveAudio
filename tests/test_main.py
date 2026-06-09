@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: MIT
 """Tests for main.py UI components (subtitle-style-system-v2)."""
 
 import unittest

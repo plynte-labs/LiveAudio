@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: MIT
 """Tests for memory leak fix in subtitle HTML (REQ-1)."""
 
 import unittest

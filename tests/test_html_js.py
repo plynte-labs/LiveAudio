@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: MIT
 """Tests for JavaScript subtitle rendering logic (T3-T6 — subtitle-style-system-v2)."""
 
 import unittest

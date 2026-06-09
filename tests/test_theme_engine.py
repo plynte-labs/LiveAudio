@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: MIT
 """Tests for CSS custom properties theme engine (REQ-3)."""
 
 import unittest
