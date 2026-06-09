@@ -33,6 +33,20 @@ LiveAudio is a real-time automatic speech recognition (ASR) engine designed for 
 | **GPU** | NVIDIA with CUDA (optional but recommended for larger models) |
 | **RAM** | 8 GB minimum, 16 GB recommended |
 | **Microphone** | Any audio input device |
+| **Internet** | Required on first run only (model download) |
+
+### Running in a Virtual Machine
+
+LiveAudio works in VMs with the following considerations:
+
+| VM setup | Result |
+|---|---|
+| VM without GPU passthrough (VirtualBox, VMware default) | ✅ Works on CPU — slow but functional |
+| VM with GPU passthrough (VMware vGPU, Proxmox) | ✅ Works with CUDA |
+| Cloud VM without GPU (EC2, GCP) | ✅ CPU only — good for testing, not live streaming |
+| VM without audio device exposed to guest | ❌ `sounddevice` won't find devices — expose the audio host adapter first |
+
+For CPU-only VMs, set `"device": "cpu"` in `config.json` before starting.
 
 ---
 
@@ -65,6 +79,14 @@ cd LiveAudio
    ```bash
    python main.py
    ```
+
+   > **First run — internet required:** LiveAudio downloads two models automatically on startup:
+   > - **Silero VAD** (~2 MB) — voice activity detection, from GitHub
+   > - **Whisper model** — size depends on your choice: `tiny` ~150 MB · `base` ~300 MB · `small` ~480 MB · `turbo` ~1.5 GB (from Hugging Face)
+   >
+   > After the first run, the app works fully **offline**.
+
+   > **No GPU? Use CPU mode:** Open `config.json.example`, copy it to `config.json`, and set `"device": "cpu"` before starting. The default config assumes CUDA — on a CPU-only machine it falls back automatically, but setting it explicitly avoids a startup delay.
 
 ---
 
