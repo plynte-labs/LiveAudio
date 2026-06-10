@@ -40,11 +40,17 @@ def check_for_updates_async(callback):
             return
             
         try:
+            import ssl
+            context = ssl._create_unverified_context()
+        except Exception:
+            context = None
+
+        try:
             req = urllib.request.Request(
                 GITHUB_RELEASES_URL,
                 headers={"User-Agent": "Plynte-LiveAudio-Client"}
             )
-            with urllib.request.urlopen(req, timeout=5) as response:
+            with urllib.request.urlopen(req, timeout=5, context=context) as response:
                 if response.status == 200:
                     data = json.loads(response.read().decode('utf-8'))
                     latest_tag = data.get("tag_name", "v0.0.0")

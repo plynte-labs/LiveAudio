@@ -144,7 +144,10 @@ def _validate_output_dir(path):
     if not path:
         return False, "La carpeta de salida no esta configurada."
     if not os.path.exists(path):
-        return False, f"La carpeta no existe: {path}"
+        try:
+            os.makedirs(path, exist_ok=True)
+        except Exception as e:
+            return False, f"La carpeta no existe y no pudo ser creada: {e}"
     if not os.path.isdir(path):
         return False, f"La ruta no es una carpeta: {path}"
     try:
@@ -1318,13 +1321,13 @@ class LiveASRApp(ctk.CTk):
         self._applying_settings = True
         self.btn_apply.configure(state="disabled")
         try:
+            previous_config = copy.deepcopy(self.config_data)
             # Validate output_dir writability before applying
             output_dir = draft.get("output_dir", "")
             is_valid, error_msg = _validate_output_dir(output_dir)
             if not is_valid:
                 raise ValueError(error_msg)
 
-            previous_config = copy.deepcopy(self.config_data)
             self._validate_draft_config(draft)
             self.config_data = copy.deepcopy(draft)
             for k, v in self.config_data.items():

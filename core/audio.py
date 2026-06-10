@@ -151,6 +151,13 @@ def _resolve_device_settings(config):
 
 
 def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = None, diagnostics_store=None):
+    import sys
+    import io
+    if sys.stdout is None:
+        sys.stdout = io.StringIO()
+    if sys.stderr is None:
+        sys.stderr = io.StringIO()
+
     """
     Proceso dedicado a la captura de audio y VAD.
     Vive en su propio núcleo y no bloquea el hilo principal.
@@ -193,14 +200,43 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
     try:
         hub_dir = torch.hub.get_dir()
         ruta_local_vad = os.path.join(hub_dir, 'snakers4_silero-vad_master')
-        model, utils = torch.hub.load(
-            repo_or_dir=ruta_local_vad,
-            model='silero_vad',
-            source='local',
-            force_reload=False,
-            onnx=False,
-            trust_repo=True
-        )
+        
+        # Si la carpeta local o el archivo hubconf no existen, descargar de GitHub de forma segura
+        if not os.path.exists(ruta_local_vad) or not os.path.exists(os.path.join(ruta_local_vad, 'hubconf.py')):
+            _log("[Productor] Caché de Silero VAD no encontrado. Descargando automáticamente desde GitHub...")
+            
+            # Desactivar verificación de certificados SSL temporalmente para evitar fallos en Windows limpio sin certificados actualizados
+            import ssl
+            orig_context = getattr(ssl, '_create_default_https_context', None)
+            try:
+                ssl._create_default_https_context = ssl._create_unverified_context
+            except Exception:
+                pass
+                
+            try:
+                model, utils = torch.hub.load(
+                    repo_or_dir='snakers4/silero-vad',
+                    model='silero_vad',
+                    source='github',
+                    force_reload=False,
+                    onnx=False,
+                    trust_repo=True
+                )
+            finally:
+                if orig_context is not None:
+                    try:
+                        ssl._create_default_https_context = orig_context
+                    except Exception:
+                        pass
+        else:
+            model, utils = torch.hub.load(
+                repo_or_dir=ruta_local_vad,
+                model='silero_vad',
+                source='local',
+                force_reload=False,
+                onnx=False,
+                trust_repo=True
+            )
         _status("vad", "VAD: listo", "ok")
     except Exception as e:
         _log(f"[Productor] ERROR cargando modelo VAD: {e}. Verifica conexion a internet o descarga manualmente Silero VAD.")

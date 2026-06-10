@@ -64,7 +64,72 @@ class Launcher {
     static void Main() {
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
+
+        if (!IsVCRedistInstalled()) {
+            DialogResult result = MessageBox.Show(
+                "LiveAudio requiere Microsoft Visual C++ Redistributable para ejecutar los modelos de Inteligencia Artificial.\n\n¿Desea descargarlo e instalarlo de manera automática ahora mismo? (Requiere conexión a Internet)",
+                "Componente requerido - LiveAudio",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Question
+            );
+
+            if (result == DialogResult.Yes) {
+                MessageBox.Show("Comenzará la descarga. Por favor, espere a que finalice el proceso de instalación en segundo plano.", "Descarga en curso", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                if (InstallVCRedist()) {
+                    MessageBox.Show("Microsoft Visual C++ Redistributable se instaló con éxito.\n\nPor favor, vuelva a abrir LiveAudio.", "Instalación Exitosa", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                } else {
+                    MessageBox.Show("No se pudo completar la instalación. Puede instalarlo manualmente descargándolo de: https://aka.ms/vs/16/release/vc_redist.x64.exe", "Fallo de Instalación", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            }
+            return;
+        }
+
         Application.Run(new SplashForm());
+    }
+
+    static bool IsVCRedistInstalled() {
+        try {
+            string systemPath = Environment.GetFolderPath(Environment.SpecialFolder.System);
+            string dllPath = Path.Combine(systemPath, "msvcp140.dll");
+            return File.Exists(dllPath);
+        } catch {
+            return false;
+        }
+    }
+
+    static bool InstallVCRedist() {
+        string tempPath = Path.Combine(Path.GetTempPath(), "vc_redist.x64.exe");
+        try {
+            // Habilitar TLS 1.2 explicitamente para evitar fallos de conexión SSL/TLS en Windows limpio
+            System.Net.ServicePointManager.SecurityProtocol = (System.Net.SecurityProtocolType)3072 | (System.Net.SecurityProtocolType)768;
+
+            using (System.Net.WebClient client = new System.Net.WebClient()) {
+                client.DownloadFile("https://aka.ms/vs/16/release/vc_redist.x64.exe", tempPath);
+            }
+
+            ProcessStartInfo startInfo = new ProcessStartInfo();
+            startInfo.FileName = tempPath;
+            startInfo.Arguments = "/passive /norestart";
+            startInfo.UseShellExecute = true;
+            startInfo.Verb = "runas";
+
+            Process proc = Process.Start(startInfo);
+            if (proc != null) {
+                proc.WaitForExit();
+                return proc.ExitCode == 0 || proc.ExitCode == 3010;
+            }
+            return false;
+        } catch (Exception ex) {
+            MessageBox.Show("Fallo en la descarga o instalación automática:\n\n" + ex.Message + "\n\nSe abrirá el navegador para descarga manual.", "Error - LiveAudio", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            try {
+                Process.Start("https://aka.ms/vs/16/release/vc_redist.x64.exe");
+            } catch {}
+            return false;
+        } finally {
+            if (File.Exists(tempPath)) {
+                try { File.Delete(tempPath); } catch {}
+            }
+        }
     }
 }
 
@@ -278,7 +343,11 @@ def main():
     
     if os.path.exists(APP_DIR):
         print(f"\n[!] ATENCIÓN: La carpeta de destino {APP_DIR} ya existe.")
-        res = input("¿Desea eliminarla y realizar una instalación limpia? (s/n): ").strip().lower()
+        if "--clean" in sys.argv or "--cpu" in sys.argv or "--cuda" in sys.argv:
+            res = 's'
+        else:
+            res = input("¿Desea eliminarla y realizar una instalación limpia? (s/n): ").strip().lower()
+            
         if res == 's':
             print("Eliminando instalación anterior...")
             shutil.rmtree(APP_DIR)
@@ -338,6 +407,13 @@ def main():
     print("  [2] CPU-Only (Estándar): Menor tamaño de descarga. Adecuado para pruebas o PCs sin gráfica NVIDIA.")
     
     hw_choice = ""
+    if "--cpu" in sys.argv:
+        print("[INFO] Usando flag --cpu (CPU-Only)")
+        hw_choice = "2"
+    elif "--cuda" in sys.argv:
+        print("[INFO] Usando flag --cuda (CUDA)")
+        hw_choice = "1"
+        
     while hw_choice not in ["1", "2"]:
         hw_choice = input("Seleccione una opción (1 o 2): ").strip()
         
@@ -392,7 +468,7 @@ def main():
         ("main.py", False),
         ("LiveAudio-Fran.png", False),
         ("logger.py", False),
-        ("config.json", False),
+        ("config.json.example", False),
         ("opencode.json", False),
         ("subtitulos_obs.html", False),
         ("core", True),

@@ -36,7 +36,7 @@ class TestMITHeadersInSourceFiles(unittest.TestCase):
         for root, dirs, files in os.walk(self.project_root):
             dirs[:] = [
                 d for d in dirs
-                if not d.startswith(".") and d not in ("__pycache__", "legacy", "sessions")
+                if not d.startswith(".") and d not in ("__pycache__", "legacy", "sessions", "dist")
             ]
             for f in files:
                 if f.endswith(".py"):

@@ -243,5 +243,49 @@ class TestConfigFloat(unittest.TestCase):
         self.assertEqual(result, 1.0)
 
 
+class TestInterceptingWriter(unittest.TestCase):
+    """Tests for InterceptingWriter redirects and tqdm parsing."""
+
+    def test_intercepts_simple_line(self):
+        import queue
+        from core.engine import InterceptingWriter
+        q = queue.Queue()
+        writer = InterceptingWriter(q, prefix="[TEST]")
+        writer.write("Hello world\n")
+        
+        self.assertFalse(q.empty())
+        msg = q.get_nowait()
+        self.assertEqual(msg, {"type": "log", "message": "[TEST] Hello world"})
+
+    def test_intercepts_tqdm_progress(self):
+        import queue
+        from core.engine import InterceptingWriter
+        q = queue.Queue()
+        writer = InterceptingWriter(q, prefix="[TEST]")
+        
+        # Simulates a tqdm carriage return update
+        writer.write(" 45%|██████████          | 185.0M/480.0M [00:05<00:07, 39.8MB/s]\r")
+        
+        self.assertFalse(q.empty())
+        msg = q.get_nowait()
+        self.assertEqual(msg, {"type": "log", "message": "[TEST] Descargando Whisper: 45% (185.0M/480.0M) @ 39.8MB/s"})
+
+    def test_handles_errors_and_warnings(self):
+        import queue
+        from core.engine import InterceptingWriter
+        q = queue.Queue()
+        writer = InterceptingWriter(q, prefix="[TEST]")
+        
+        writer.write("An error occurred during loading\n")
+        writer.write("A warning was issued by PyTorch\n")
+        
+        self.assertFalse(q.empty())
+        msg1 = q.get_nowait()
+        self.assertEqual(msg1, {"type": "log", "message": "[IA ERROR] An error occurred during loading"})
+        
+        msg2 = q.get_nowait()
+        self.assertEqual(msg2, {"type": "log", "message": "[IA ADVERTENCIA] A warning was issued by PyTorch"})
+
+
 if __name__ == "__main__":
     unittest.main()

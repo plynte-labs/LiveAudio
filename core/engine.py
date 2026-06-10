@@ -276,7 +276,122 @@ def _transcribe_with_timeout(model, audio_chunk, timeout_sec=ASR_TRANSCRIBE_TIME
         })
         return None, None
 
+class InterceptingWriter:
+    """Redirects stdout/stderr writes to the UI log queue, parsing tqdm progress bars."""
+    def __init__(self, log_queue, original_stream=None, prefix="[IA]"):
+        self.log_queue = log_queue
+        self.original_stream = original_stream
+        self.prefix = prefix
+        self.buffer = ""
+
+    def write(self, data):
+        if self.original_stream:
+            try:
+                self.original_stream.write(data)
+            except Exception:
+                pass
+        if not data:
+            return
+        self.buffer += data
+        while True:
+            r_idx = self.buffer.find('\r')
+            n_idx = self.buffer.find('\n')
+            if r_idx == -1 and n_idx == -1:
+                break
+            if r_idx != -1 and (n_idx == -1 or r_idx < n_idx):
+                line = self.buffer[:r_idx]
+                self.buffer = self.buffer[r_idx+1:]
+                self._handle_progress(line)
+            else:
+                line = self.buffer[:n_idx]
+                self.buffer = self.buffer[n_idx+1:]
+                self._handle_line(line)
+
+    def _handle_progress(self, line):
+        line = line.strip()
+        if not line:
+            return
+        if "%" in line and "|" in line:
+            parts = line.split('|')
+            if len(parts) >= 3:
+                percent = parts[0].strip()
+                stats_raw = parts[2].strip()
+                stats = stats_raw.split('[')[0].strip()
+                speed = ""
+                if ',' in stats_raw:
+                    speed = stats_raw.split(',')[-1].replace(']', '').strip()
+                msg = f"{self.prefix} Descargando Whisper: {percent}"
+                if stats:
+                    msg += f" ({stats})"
+                if speed:
+                    msg += f" @ {speed}"
+                self._emit(msg)
+            else:
+                self._emit(f"{self.prefix} {line}")
+        else:
+            low = line.lower()
+            if any(k in low for k in ("fetching", "download", "model", "progress")):
+                self._emit(f"{self.prefix} {line}")
+
+    def _handle_line(self, line):
+        line = line.strip()
+        if not line:
+            return
+        if "%" in line and "|" in line:
+            self._handle_progress(line)
+            return
+        low = line.lower()
+        if "error" in low or "exception" in low or "fail" in low:
+            self._emit(f"[IA ERROR] {line}")
+        elif "warning" in low or "warn" in low:
+            self._emit(f"[IA ADVERTENCIA] {line}")
+        else:
+            self._emit(f"{self.prefix} {line}")
+
+    def _emit(self, msg):
+        try:
+            self.log_queue.put_nowait({"type": "log", "message": msg})
+        except Exception:
+            pass
+
+    def flush(self):
+        if self.original_stream:
+            try:
+                self.original_stream.flush()
+            except Exception:
+                pass
+
+    @property
+    def encoding(self):
+        if self.original_stream and hasattr(self.original_stream, "encoding"):
+            return self.original_stream.encoding
+        return "utf-8"
+
+    def isatty(self):
+        if self.original_stream and hasattr(self.original_stream, "isatty"):
+            try:
+                return self.original_stream.isatty()
+            except Exception:
+                pass
+        return False
+
+
 def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queue, shared_config: dict, session_dir: str, diagnostics_store=None):
+    import sys
+    import io
+    
+    # Redirigir stdout/stderr para capturar el progreso de descarga y advertencias en el log de la UI
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
+    sys.stdout = InterceptingWriter(log_queue, original_stream=original_stdout, prefix="[IA]")
+    sys.stderr = InterceptingWriter(log_queue, original_stream=original_stderr, prefix="[IA]")
+
+    import ssl
+    try:
+        ssl._create_default_https_context = ssl._create_unverified_context
+    except Exception:
+        pass
+
     session_writer = None
     shutdown_started_at = None
     try:
