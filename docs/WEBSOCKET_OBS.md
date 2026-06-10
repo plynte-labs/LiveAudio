@@ -128,7 +128,7 @@ Opciones de `config.json`:
 
 ### Paso 4: Iniciar LiveAudio
 
-1. Abre `main.py` y pulsa **INICIAR SISTEMA**.
+1. Abre LiveAudio (con el launcher instalado, o `uv run liveaudio` en desarrollo) y pulsa **INICIAR SISTEMA**.
 2. Vuelve a OBS: los subtítulos aparecerán automáticamente cuando hables.
 
 ---

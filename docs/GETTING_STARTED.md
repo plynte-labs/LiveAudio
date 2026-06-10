@@ -1,6 +1,6 @@
 # Guía de inicio rápido para nuevos usuarios
 
-Este documento explica paso a paso cómo preparar tu entorno, instalar dependencias y poner en marcha **LiveAudio** por primera vez.
+Este documento explica paso a paso cómo instalar y poner en marcha **LiveAudio** por primera vez.
 
 ---
 
@@ -8,77 +8,62 @@ Este documento explica paso a paso cómo preparar tu entorno, instalar dependenc
 
 Antes de empezar, asegúrate de tener:
 
-- **Windows 10/11**, **Linux** o **macOS**.
-- **Python 3.10 o superior** instalado.
-  - Para verificar: `python --version`
+- **Windows 10/11** o **Linux x86_64**.
 - (Opcional pero recomendado) **GPU NVIDIA** con drivers actualizados.
+- Conexión a internet para la primera ejecución (descarga de dependencias y modelos).
+
+No necesitas Python instalado: el instalador aprovisiona su propio Python 3.11.
 
 ---
 
-## 2. Crear el entorno virtual
+## 2. Instalar LiveAudio
 
-Es **altamente recomendable** usar un entorno aislado para evitar conflictos entre librerías.
+### Opción A: Instalador (recomendado para usuarios)
 
-### Opción A: Conda (recomendado para PyTorch)
+1. Descarga la última versión desde [GitHub Releases](https://github.com/plynte-labs/LiveAudio/releases):
+   - **Windows:** `LiveAudio-Setup-X.Y.Z.exe`
+   - **Linux:** `LiveAudio-X.Y.Z-linux-x64.tar.gz` (extrae y ejecuta `./liveaudio-launcher`)
+2. Ejecútalo. La **primera ejecución** descarga Python y todas las dependencias (~400 MB en CPU, ~2.5 GB con CUDA) y detecta tu GPU automáticamente. Las siguientes ejecuciones arrancan al instante.
 
-```bash
-# Crear entorno
-conda create -n liveaudio python=3.11
+### Opción B: Desde el código fuente (desarrolladores)
 
-# Activar entorno
-conda activate liveaudio
-
-# Instalar dependencias
-pip install -r requirements.txt
-```
-
-### Opción B: venv (entorno nativo de Python)
+Requiere [uv](https://docs.astral.sh/uv/):
 
 ```bash
-# Windows
-python -m venv venv
-venv\Scripts\activate
+git clone https://github.com/plynte-labs/LiveAudio.git
+cd LiveAudio
 
-# Linux / macOS
-python3 -m venv venv
-source venv/bin/activate
+# Solo CPU (la opción más liviana, funciona en cualquier equipo)
+uv sync --extra cpu
 
-# Instalar dependencias
-pip install -r requirements.txt
+# O con NVIDIA CUDA
+uv sync --extra cu121
 ```
 
 ---
 
 ## 3. Verificar instalación
 
-Después de instalar, comprueba que las librerías principales están disponibles:
+- **Instalador:** ejecuta el launcher con `--self-test` para ver las rutas resueltas y el dispositivo detectado.
+- **Desarrolladores:** comprueba que las librerías principales están disponibles:
 
 ```bash
-python -c "import torch; print('PyTorch:', torch.__version__)"
-python -c "import faster_whisper; print('Faster Whisper OK')"
-python -c "import sounddevice; print('Sounddevice OK')"
-python -c "import websockets; print('Websockets OK')"
-python -c "import customtkinter; print('CustomTkinter OK')"
-```
-
-Si alguna falla, reinstálala individualmente:
-
-```bash
-pip install <nombre-de-la-libreria>
+uv run python -c "import torch; print('PyTorch:', torch.__version__)"
+uv run python -c "import faster_whisper; print('Faster Whisper OK')"
 ```
 
 ---
 
 ## 4. Ejecutar LiveAudio
 
-Con el entorno activado:
+- **Instalador:** abre LiveAudio desde el acceso directo o ejecutando de nuevo el launcher.
+- **Desarrolladores:**
 
 ```bash
-python main.py
+uv run liveaudio
 ```
 
-
-Al iniciar por primera vez, se creará automáticamente un archivo `config.json` con valores predeterminados.
+Al iniciar por primera vez, se creará automáticamente un archivo `config.json` con valores predeterminados en la carpeta de datos: `%LOCALAPPDATA%\LiveAudio\data` (Windows) o `~/.local/share/liveaudio/data` (Linux) en instalaciones con launcher; `%APPDATA%\LiveAudio` o `~/.config/liveaudio` en ejecuciones de desarrollo. Puedes cambiar la ubicación con la variable de entorno `LIVEAUDIO_HOME`.
 
 ### Detección automática de GPU
 
@@ -196,7 +181,8 @@ sessions/
 
 ### Error: `No module named 'torch'`
 
-Tu entorno virtual no está activado. Asegúrate de hacer `conda activate liveaudio` o `venv\Scripts\activate` antes de ejecutar.
+- **Instalador:** la primera instalación quedó incompleta. Ejecuta el launcher con `--reinstall`.
+- **Desarrolladores:** falta el extra de torch. Ejecuta `uv sync --extra cpu` (o `--extra cu121`) y lanza la app con `uv run liveaudio`.
 
 ### Error: `CUDA out of memory`
 

@@ -4,6 +4,37 @@ Todos los cambios notables de LiveAudio se documentan aquí.
 
 ---
 
+## [1.1.0] — 2026-06-10 (sin publicar)
+
+### Nuevo sistema de empaquetado y distribución
+
+Reemplazo completo del workflow de distribución portable (Python embebido + launcher C# + PyInstaller) por un instalador liviano basado en [uv](https://docs.astral.sh/uv/).
+
+- **Instalador bootstrapper** — `LiveAudio-Setup-X.Y.Z.exe` (Windows) y `LiveAudio-X.Y.Z-linux-x64.tar.gz` (Linux), ~25-45 MB. En el primer arranque detecta GPU NVIDIA automáticamente (driver ≥525, VRAM ≥4 GB) y descarga Python 3.11 + dependencias con el backend correcto de torch (`cpu` o `cu121`). Arranques posteriores son instantáneos.
+- **Reestructura a paquete** — `main.py`, `core/` y `utils/` se movieron al paquete `liveaudio/` con `pyproject.toml` (hatchling) y `uv.lock`. Entry point: `liveaudio = "liveaudio.app:main"`. Versión única en `liveaudio/__init__.py`.
+- **Extras de torch en conflicto** — `uv sync --extra cpu` o `--extra cu121`; los índices de PyTorch se enrutan por extra vía `tool.uv.sources`. Cada release publica `requirements-cpu.txt` / `requirements-cu121.txt` como alternativa pip.
+- **Datos de usuario en ubicación estándar** — config y sesiones viven en `%APPDATA%\LiveAudio` / `~/.config/liveaudio` (override con `LIVEAUDIO_HOME`); migración automática del `config.json` legacy. Modo portable con `portable.marker`.
+- **Actualizaciones in-app** — botón "Update now" que delega en el launcher (`--update`): descarga solo el código nuevo, reutiliza torch cacheado, verifica SHA256.
+- **CI/CD** — `ci.yml` (ruff + pytest + self-test del launcher en Windows y Ubuntu) y `release.yml` (tag `v*` → draft release con instaladores, wheel, src zip y `SHA256SUMS.txt`).
+- **Carga de DLLs robusta** — el hack de `PATH` para `torch\lib` se reemplazó por `os.add_dll_directory` + prepend de PATH en `liveaudio/utils/dllpath.py`, aplicado también en el proceso hijo de ASR.
+- **SSL verificado en el updater** — primero contexto verificado; fallback no verificado solo ante `SSLCertVerificationError`, con warning en log.
+
+### Eliminado
+
+- `build_portable.py`, `compile_portable.bat`, `compile_pyinstaller.bat`, `LiveAudio.spec`, `setup_linux.sh` — reemplazados por el bootstrapper y CI.
+- Launcher C# compilado con `csc.exe`, parcheo de `python310._pth` y `tkinter-embed` — ya no son necesarios.
+
+### Documentación
+
+- `docs/EMPAQUETADO_Y_ACTUALIZACION.md` → `docs/PACKAGING_AND_UPDATES.md` (doc canónico de packaging, en inglés).
+- README y CONTRIBUTING actualizados al flujo nuevo (instalador para usuarios, `uv sync` para desarrollo).
+
+### Tests
+
+- 384 tests (69 nuevos: launcher, updater, pinning contra pyproject.toml).
+
+---
+
 ## [Unreleased] — 2026-05-09
 
 ### Public Launch Readiness
