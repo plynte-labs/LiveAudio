@@ -11,6 +11,7 @@ import sounddevice as sd
 import torch
 import warnings
 from liveaudio.core.diagnostics import create_store_from_config
+from liveaudio.utils.streams import make_streams_encoding_safe
 
 # Suprimir solo advertencias de PyTorch/UserWarning, no todas
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -157,6 +158,9 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
         sys.stdout = io.StringIO()
     if sys.stderr is None:
         sys.stderr = io.StringIO()
+    # Log messages contain non-ASCII ('→', '🎤'); a legacy-codepage console
+    # or pipe (cp1252) must never kill this child with UnicodeEncodeError.
+    make_streams_encoding_safe()
 
     """
     Proceso dedicado a la captura de audio y VAD.
