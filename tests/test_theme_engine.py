@@ -11,7 +11,7 @@ class TestCSSThemeEngine(unittest.TestCase):
 
     def setUp(self):
         """Load subtitulos_obs.html."""
-        html_path = os.path.join(os.path.dirname(__file__), "..", "subtitulos_obs.html")
+        html_path = os.path.join(os.path.dirname(__file__), "..", "liveaudio", "assets", "subtitulos_obs.html")
         with open(html_path, "r", encoding="utf-8") as f:
             self.html_content = f.read()
 
@@ -66,8 +66,8 @@ class TestThemeValidationPython(unittest.TestCase):
     """Tests for theme token validation in Python."""
 
     def setUp(self):
-        """Load core/engine.py."""
-        engine_path = os.path.join(os.path.dirname(__file__), "..", "core", "engine.py")
+        """Load liveaudio/core/engine.py."""
+        engine_path = os.path.join(os.path.dirname(__file__), "..", "liveaudio", "core", "engine.py")
         with open(engine_path, "r", encoding="utf-8") as f:
             self.engine_content = f.read()
 
@@ -87,7 +87,7 @@ class TestNewPresetCSSClasses(unittest.TestCase):
 
     def setUp(self):
         """Load subtitulos_obs.html."""
-        html_path = os.path.join(os.path.dirname(__file__), "..", "subtitulos_obs.html")
+        html_path = os.path.join(os.path.dirname(__file__), "..", "liveaudio", "assets", "subtitulos_obs.html")
         with open(html_path, "r", encoding="utf-8") as f:
             self.html_content = f.read()
 

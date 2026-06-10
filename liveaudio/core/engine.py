@@ -7,9 +7,16 @@ import queue
 import traceback
 import threading
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+from liveaudio.utils.dllpath import ensure_torch_dlls
+
+# The ASR consumer runs in a spawned child process which re-imports this
+# module fresh, so torch DLL directories must be registered here before
+# faster_whisper/ctranslate2 load their native libraries.
+ensure_torch_dlls()
+
 from faster_whisper import WhisperModel
 import torch
-from core.diagnostics import create_store_from_config
+from liveaudio.core.diagnostics import create_store_from_config
 
 VALID_SUBTITLE_STYLES = {"default", "karaoke", "neon", "minimal", "bold", "rgb", "typewriter"}
 VALID_BACKLOG_POLICIES = {"auto", "live_only", "send_all"}

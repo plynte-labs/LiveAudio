@@ -4,7 +4,7 @@ import json
 import queue
 
 from websockets.asyncio.server import serve, broadcast
-from core.diagnostics import create_store_from_config
+from liveaudio.core.diagnostics import create_store_from_config
 
 
 def _emit(log_queue, event):

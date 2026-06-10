@@ -15,7 +15,7 @@ class TestAudioPipelineMocks(unittest.TestCase):
     def test_ring_buffer_capacity(self):
         """Ring buffer should not exceed maximum chunk capacity."""
         from collections import deque
-        from core.audio import RING_BUFFER_MAX_CHUNKS
+        from liveaudio.core.audio import RING_BUFFER_MAX_CHUNKS
 
         buffer = deque(maxlen=RING_BUFFER_MAX_CHUNKS)
         for i in range(RING_BUFFER_MAX_CHUNKS + 100):
@@ -24,18 +24,18 @@ class TestAudioPipelineMocks(unittest.TestCase):
 
     def test_vad_threshold_constant(self):
         """VAD threshold should be between 0 and 1."""
-        from core.audio import VAD_THRESHOLD
+        from liveaudio.core.audio import VAD_THRESHOLD
         self.assertGreaterEqual(VAD_THRESHOLD, 0.0)
         self.assertLessEqual(VAD_THRESHOLD, 1.0)
 
     def test_sample_rate_constant(self):
         """Sample rate should be 16000 for Whisper compatibility."""
-        from core.audio import SAMPLE_RATE
+        from liveaudio.core.audio import SAMPLE_RATE
         self.assertEqual(SAMPLE_RATE, 16000)
 
     def test_chunk_size_constant(self):
         """Chunk size should be positive and reasonable."""
-        from core.audio import CHUNK_SIZE
+        from liveaudio.core.audio import CHUNK_SIZE
         self.assertGreater(CHUNK_SIZE, 0)
         self.assertLess(CHUNK_SIZE, 10000)
 
@@ -86,19 +86,19 @@ class TestAudioQueueBackpressure(unittest.TestCase):
 class TestAudioDeviceResolution(unittest.TestCase):
     """Tests for audio device resolution logic."""
 
-    @patch("core.audio.sd")
+    @patch("liveaudio.core.audio.sd")
     def test_resolve_default_device(self, mock_sd):
         """None audio_device should return default device."""
-        from core.audio import _resolve_device_settings
+        from liveaudio.core.audio import _resolve_device_settings
         config = {"audio_device": None}
         device_index, extra_settings = _resolve_device_settings(config)
         self.assertIsNone(device_index)
         self.assertIsNone(extra_settings)
 
-    @patch("core.audio.sd")
+    @patch("liveaudio.core.audio.sd")
     def test_resolve_specific_device(self, mock_sd):
         """Valid audio_device dict should return device index."""
-        from core.audio import _resolve_device_settings
+        from liveaudio.core.audio import _resolve_device_settings
         config = {
             "audio_device": {
                 "index": 5,
@@ -109,11 +109,11 @@ class TestAudioDeviceResolution(unittest.TestCase):
         device_index, extra_settings = _resolve_device_settings(config)
         self.assertEqual(device_index, 5)
 
-    @patch("core.audio.sd")
+    @patch("liveaudio.core.audio.sd")
     def test_resolve_loopback_device(self, mock_sd):
         """Loopback device should return WasapiSettings on Windows."""
         import sys
-        from core.audio import _resolve_device_settings
+        from liveaudio.core.audio import _resolve_device_settings
         with patch.object(sys, "platform", "win32"):
             config = {
                 "audio_device": {
@@ -126,10 +126,10 @@ class TestAudioDeviceResolution(unittest.TestCase):
             self.assertEqual(device_index, 3)
             self.assertIsNotNone(extra_settings)
 
-    @patch("core.audio.sd")
+    @patch("liveaudio.core.audio.sd")
     def test_resolve_invalid_device_fallback(self, mock_sd):
         """Invalid device config should fallback to None."""
-        from core.audio import _resolve_device_settings
+        from liveaudio.core.audio import _resolve_device_settings
         config = {"audio_device": "not_a_dict"}
         device_index, extra_settings = _resolve_device_settings(config)
         self.assertIsNone(device_index)
@@ -141,25 +141,25 @@ class TestVadThresholdEnforcement(unittest.TestCase):
 
     def test_vad_probability_above_threshold(self):
         """VAD probability above threshold should be considered speech."""
-        from core.audio import VAD_THRESHOLD
+        from liveaudio.core.audio import VAD_THRESHOLD
         prob = 0.8
         self.assertGreaterEqual(prob, VAD_THRESHOLD)
 
     def test_vad_probability_below_threshold(self):
         """VAD probability below threshold should be considered silence."""
-        from core.audio import VAD_THRESHOLD
+        from liveaudio.core.audio import VAD_THRESHOLD
         prob = 0.2
         self.assertLess(prob, VAD_THRESHOLD)
 
     def test_vad_probability_at_threshold(self):
         """VAD probability at threshold should be considered speech."""
-        from core.audio import VAD_THRESHOLD
+        from liveaudio.core.audio import VAD_THRESHOLD
         prob = VAD_THRESHOLD
         self.assertGreaterEqual(prob, VAD_THRESHOLD)
 
     def test_silence_produces_no_transcription(self):
         """Silence (VAD below threshold) should produce no transcription output."""
-        from core.audio import VAD_THRESHOLD
+        from liveaudio.core.audio import VAD_THRESHOLD
         # Simulate VAD output for silence
         vad_prob = 0.1
         is_speech = vad_prob >= VAD_THRESHOLD
@@ -167,7 +167,7 @@ class TestVadThresholdEnforcement(unittest.TestCase):
 
     def test_noise_below_threshold_produces_no_output(self):
         """Noise below VAD threshold should produce no transcription."""
-        from core.audio import VAD_THRESHOLD
+        from liveaudio.core.audio import VAD_THRESHOLD
         # Simulate VAD output for low-level noise
         vad_prob = 0.3
         is_speech = vad_prob >= VAD_THRESHOLD

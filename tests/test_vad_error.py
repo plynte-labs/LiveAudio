@@ -5,14 +5,14 @@ import unittest
 from unittest.mock import patch, MagicMock
 import queue
 
-from core.audio import audio_producer
+from liveaudio.core.audio import audio_producer
 
 
 class TestVADErrorHandling(unittest.TestCase):
     """Tests for VAD model loading error handling."""
 
-    @patch("core.audio.torch.hub.load")
-    @patch("core.audio.sd.InputStream")
+    @patch("liveaudio.core.audio.torch.hub.load")
+    @patch("liveaudio.core.audio.sd.InputStream")
     def test_vad_load_failure_emits_error(self, mock_stream, mock_load):
         """VAD load failure should emit error status and clear log message."""
         mock_load.side_effect = RuntimeError("Failed to download VAD model")
@@ -44,7 +44,7 @@ class TestVADErrorHandling(unittest.TestCase):
         )
         self.assertTrue(error_found, f"Expected error status, got: {messages}")
 
-    @patch("core.audio.torch.hub.load")
+    @patch("liveaudio.core.audio.torch.hub.load")
     def test_vad_load_failure_logs_clear_message(self, mock_load):
         """VAD load failure should log a clear message about the issue."""
         mock_load.side_effect = RuntimeError("Network error")

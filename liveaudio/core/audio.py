@@ -10,7 +10,7 @@ import numpy as np
 import sounddevice as sd
 import torch
 import warnings
-from core.diagnostics import create_store_from_config
+from liveaudio.core.diagnostics import create_store_from_config
 
 # Suprimir solo advertencias de PyTorch/UserWarning, no todas
 warnings.filterwarnings("ignore", category=UserWarning)

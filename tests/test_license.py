@@ -66,7 +66,7 @@ class TestMITHeadersInSourceFiles(unittest.TestCase):
 
     def test_subtitulos_obs_html_contains_mit_header(self):
         """subtitulos_obs.html should contain SPDX-License-Identifier: MIT."""
-        html_path = os.path.join(self.project_root, "subtitulos_obs.html")
+        html_path = os.path.join(self.project_root, "liveaudio", "assets", "subtitulos_obs.html")
         self.assertTrue(os.path.isfile(html_path), "subtitulos_obs.html should exist")
 
         with open(html_path, "r", encoding="utf-8") as f:

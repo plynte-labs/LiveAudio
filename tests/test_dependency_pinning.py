@@ -1,65 +1,104 @@
 # SPDX-License-Identifier: MIT
-"""Tests for dependency version pinning (REQ-6)."""
+"""Tests for dependency version pinning (REQ-6), now sourced from pyproject.toml."""
 
-import unittest
 import os
 import re
+import unittest
+
+try:
+    import tomllib
+except ImportError:  # Python < 3.11
+    import tomli as tomllib
+
+PYPROJECT_PATH = os.path.join(os.path.dirname(__file__), "..", "pyproject.toml")
+
+
+def _has_lower_bound(spec):
+    return ">=" in spec or "==" in spec or "~=" in spec
+
+
+def _has_upper_bound(spec):
+    return "<" in spec or "~=" in spec or "==" in spec
+
+
+def _strip_marker(requirement):
+    return requirement.split(";")[0].strip()
 
 
 class TestDependencyPinning(unittest.TestCase):
-    """Tests that requirements.txt has upper bounds pinned."""
+    """Tests that pyproject.toml dependencies have lower and upper bounds."""
 
-    def setUp(self):
-        """Load requirements.txt."""
-        req_path = os.path.join(os.path.dirname(__file__), "..", "requirements.txt")
-        with open(req_path, "r") as f:
-            self.requirements = f.read().strip().splitlines()
+    @classmethod
+    def setUpClass(cls):
+        with open(PYPROJECT_PATH, "rb") as f:
+            cls.pyproject = tomllib.load(f)
+        cls.dependencies = cls.pyproject["project"]["dependencies"]
+        cls.extras = cls.pyproject["project"].get("optional-dependencies", {})
 
-    def test_all_deps_have_upper_bounds(self):
-        """All dependencies should have upper version bounds."""
-        for req in self.requirements:
-            req = req.strip()
-            if not req or req.startswith("#"):
-                continue
-            # Should contain both >= and < or ~=
-            has_lower = ">=" in req or "==" in req or "~=" in req
-            has_upper = "<" in req or "~=" in req
-            self.assertTrue(has_upper, f"Missing upper bound: {req}")
+    def _find(self, requirements, name):
+        pattern = re.compile(rf"^{re.escape(name)}\s*[><=~!\[;]", re.IGNORECASE)
+        matches = [r for r in requirements if pattern.match(_strip_marker(r) + ";")]
+        self.assertTrue(matches, f"{name} not found in {requirements}")
+        return _strip_marker(matches[0])
+
+    def test_all_runtime_deps_have_bounds(self):
+        """Every runtime dependency should have lower and upper version bounds."""
+        for req in self.dependencies:
+            spec = _strip_marker(req)
+            self.assertTrue(_has_lower_bound(spec), f"Missing lower bound: {req}")
+            self.assertTrue(_has_upper_bound(spec), f"Missing upper bound: {req}")
+
+    def test_all_extra_deps_have_bounds(self):
+        """Every optional (extra) dependency should have lower and upper bounds."""
+        for extra, requirements in self.extras.items():
+            for req in requirements:
+                spec = _strip_marker(req)
+                self.assertTrue(_has_lower_bound(spec), f"[{extra}] missing lower bound: {req}")
+                self.assertTrue(_has_upper_bound(spec), f"[{extra}] missing upper bound: {req}")
 
     def test_websockets_pinned(self):
-        """websockets should be pinned to known compatible range."""
-        websockets_req = [r for r in self.requirements if "websockets" in r.lower()]
-        self.assertTrue(websockets_req, "websockets not found in requirements")
-        req = websockets_req[0]
-        self.assertIn("<", req, "websockets should have upper bound")
-
-    def test_torch_pinned(self):
-        """torch should be pinned to known compatible range."""
-        torch_req = [r for r in self.requirements if "torch" in r.lower() and "faster" not in r.lower()]
-        self.assertTrue(torch_req, "torch not found in requirements")
-        req = torch_req[0]
-        self.assertIn("<", req, "torch should have upper bound")
+        """websockets should be pinned to a known compatible range."""
+        spec = self._find(self.dependencies, "websockets")
+        self.assertIn("<", spec, "websockets should have upper bound")
 
     def test_faster_whisper_pinned(self):
-        """faster-whisper should be pinned to known compatible range."""
-        fw_req = [r for r in self.requirements if "faster-whisper" in r.lower()]
-        self.assertTrue(fw_req, "faster-whisper not found in requirements")
-        req = fw_req[0]
-        self.assertIn("<", req, "faster-whisper should have upper bound")
+        """faster-whisper should be pinned to a known compatible range."""
+        spec = self._find(self.dependencies, "faster-whisper")
+        self.assertIn("<", spec, "faster-whisper should have upper bound")
 
     def test_numpy_pinned(self):
-        """numpy should be pinned to known compatible range."""
-        numpy_req = [r for r in self.requirements if "numpy" in r.lower()]
-        self.assertTrue(numpy_req, "numpy not found in requirements")
-        req = numpy_req[0]
-        self.assertIn("<", req, "numpy should have upper bound")
+        """numpy should be pinned to a known compatible range."""
+        spec = self._find(self.dependencies, "numpy")
+        self.assertIn("<", spec, "numpy should have upper bound")
 
     def test_sounddevice_pinned(self):
-        """sounddevice should be pinned to known compatible range."""
-        sd_req = [r for r in self.requirements if "sounddevice" in r.lower()]
-        self.assertTrue(sd_req, "sounddevice not found in requirements")
-        req = sd_req[0]
-        self.assertIn("<", req, "sounddevice should have upper bound")
+        """sounddevice should be pinned to a known compatible range."""
+        spec = self._find(self.dependencies, "sounddevice")
+        self.assertIn("<", spec, "sounddevice should have upper bound")
+
+    def test_torch_pinned_per_extra(self):
+        """torch and torchaudio should be pinned in both backend extras."""
+        for extra in ("cpu", "cu121"):
+            self.assertIn(extra, self.extras, f"Missing '{extra}' extra")
+            for name in ("torch", "torchaudio"):
+                spec = self._find(self.extras[extra], name)
+                self.assertTrue(_has_lower_bound(spec), f"[{extra}] {name} missing lower bound")
+                self.assertIn("<", spec, f"[{extra}] {name} should have upper bound")
+
+    def test_cu121_torch_range_supports_cudnn9(self):
+        """cu121 extra must require torch>=2.4 (cuDNN 9 for ctranslate2>=4.5) and <2.6."""
+        spec = self._find(self.extras["cu121"], "torch")
+        self.assertIn(">=2.4", spec)
+        self.assertIn("<2.6", spec)
+
+    def test_torch_backend_extras_declared_conflicting(self):
+        """uv must treat the cpu and cu121 extras as mutually exclusive."""
+        conflicts = self.pyproject["tool"]["uv"]["conflicts"]
+        flattened = [
+            {entry.get("extra") for entry in conflict_set}
+            for conflict_set in conflicts
+        ]
+        self.assertIn({"cpu", "cu121"}, flattened)
 
 
 if __name__ == "__main__":
