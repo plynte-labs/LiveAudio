@@ -1221,8 +1221,13 @@ def _fast_path_gui(version, install_root, portable):
         return 0 if launch_app(install_root, portable) else 1
 
     def worker():
-        reporter.status("Starting LiveAudio...")
-        popen = launch_app(install_root, portable, notify=reporter.notify) or None
+        try:
+            reporter.status("Starting LiveAudio...")
+            popen = launch_app(install_root, portable, notify=reporter.notify) or None
+        except Exception:
+            LOG.exception("Fast-path launch failed")
+            reporter.report_error(APP_START_FAILED_MESSAGE)
+            return
         if popen is None:
             reporter.report_error(APP_START_FAILED_MESSAGE)
             return

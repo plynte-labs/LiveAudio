@@ -28,5 +28,7 @@ def make_streams_encoding_safe():
         if stream is not None and hasattr(stream, "reconfigure"):
             try:
                 stream.reconfigure(errors="replace")
-            except (OSError, ValueError):
+            except Exception:
+                # Best-effort by contract: a stream that cannot be
+                # reconfigured must never abort the child process.
                 pass
