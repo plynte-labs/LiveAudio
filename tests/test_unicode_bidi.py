@@ -3,7 +3,7 @@
 
 import unittest
 
-from core.engine import _sanitize_text
+from liveaudio.core.engine import _sanitize_text
 
 
 class TestUnicodeBidiStrip(unittest.TestCase):

@@ -17,16 +17,16 @@ def _read_project_file(*parts):
 
 
 class TestPublicLaunchReadiness(unittest.TestCase):
-    def test_pillow_declared_in_requirements(self):
-        requirements = _read_project_file("requirements.txt").lower()
-        self.assertIn("pillow", requirements)
+    def test_pillow_declared_in_dependencies(self):
+        pyproject = _read_project_file("pyproject.toml").lower()
+        self.assertIn("pillow", pyproject)
 
-    def test_pillow_installed_by_portable_builder(self):
-        builder = _read_project_file("build_portable.py").lower()
-        self.assertIn("pillow", builder)
+    def test_pillow_pinned_in_lockfile(self):
+        lockfile = _read_project_file("uv.lock").lower()
+        self.assertIn('name = "pillow"', lockfile)
 
     def test_public_repo_references_use_canonical_target(self):
-        checked_files = ("main.py", "README.md", "CHANGELOG.md")
+        checked_files = (os.path.join("liveaudio", "app.py"), "README.md", "CHANGELOG.md")
         legacy_hits = []
         canonical_hits = []
 

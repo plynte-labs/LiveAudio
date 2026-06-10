@@ -8,7 +8,7 @@ import tempfile
 import shutil
 from unittest.mock import patch
 
-from utils.config import (
+from liveaudio.utils.config import (
     _clamp_number,
     _normalize_config,
     load_config,
@@ -326,14 +326,20 @@ class TestLoadSaveConfig(unittest.TestCase):
     """Tests for load_config() and save_config() functions."""
 
     def setUp(self):
-        """Create a temporary directory for config files."""
+        """Create a temporary directory used as both CWD and data home."""
         self.test_dir = tempfile.mkdtemp()
         self.original_cwd = os.getcwd()
+        self.original_home = os.environ.get("LIVEAUDIO_HOME")
+        os.environ["LIVEAUDIO_HOME"] = self.test_dir
         os.chdir(self.test_dir)
 
     def tearDown(self):
-        """Clean up temporary directory."""
+        """Clean up temporary directory and restore the data home."""
         os.chdir(self.original_cwd)
+        if self.original_home is None:
+            os.environ.pop("LIVEAUDIO_HOME", None)
+        else:
+            os.environ["LIVEAUDIO_HOME"] = self.original_home
         shutil.rmtree(self.test_dir)
 
     def test_load_config_creates_default_if_missing(self):
@@ -375,7 +381,7 @@ class TestLoadSaveConfig(unittest.TestCase):
             
         open("config.json.lock", "w").close()
         
-        with patch("utils.config.torch") as mock_torch:
+        with patch("liveaudio.utils.config.torch") as mock_torch:
             mock_torch.cuda.is_available.return_value = True
             config = load_config()
             

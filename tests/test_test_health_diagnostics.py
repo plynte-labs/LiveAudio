@@ -51,7 +51,7 @@ class TestTestHealthHelpers(unittest.TestCase):
 
 class TestMainDiagnosticsExports(unittest.TestCase):
     def test_build_app_runtime_summary_includes_process_and_queue_state(self):
-        from main import build_app_runtime_summary
+        from liveaudio.app import build_app_runtime_summary
 
         summary = build_app_runtime_summary(
             {
@@ -68,7 +68,7 @@ class TestMainDiagnosticsExports(unittest.TestCase):
         self.assertTrue(summary["processes"]["audio"])
 
     def test_export_local_diagnostics_report_writes_json_locally(self):
-        from main import export_local_diagnostics_report
+        from liveaudio.app import export_local_diagnostics_report
 
         with tempfile.TemporaryDirectory() as temp_dir:
             path = export_local_diagnostics_report(

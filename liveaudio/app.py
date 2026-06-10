@@ -5,30 +5,35 @@ import json
 import datetime
 import copy
 import multiprocessing as mp
+from importlib import resources
+
 import customtkinter as ctk
 import torch
 import webbrowser
 from PIL import Image, ImageTk
 from tkinter import filedialog, messagebox
 
-torch_lib_path = os.path.join(os.path.dirname(torch.__file__), "lib")
-os.environ["PATH"] = f"{torch_lib_path};{os.environ.get('PATH', '')}"
+from liveaudio.utils.dllpath import ensure_torch_dlls
 
-from utils.config import load_config, save_config
-from utils.i18n import t, set_language, autodetect_language, get_language
-from utils.crash_handler import install_crash_handler
-from utils.updater import check_for_updates_async, APP_VERSION
+ensure_torch_dlls()
 
-# Instalar el manejador de crashes lo antes posible
-install_crash_handler()
+from liveaudio.utils.config import load_config, save_config
+from liveaudio.utils.i18n import t, set_language, autodetect_language, get_language
+from liveaudio.utils.crash_handler import install_crash_handler
+from liveaudio.utils.updater import check_for_updates_async, start_update, APP_VERSION
 
-from core.engine import asr_consumer
-from core.audio import audio_producer, list_audio_devices
-from core.network import run_ws_server
-from core.diagnostics import build_diagnostics_report, normalize_export_dir
+from liveaudio.core.engine import asr_consumer
+from liveaudio.core.audio import audio_producer, list_audio_devices
+from liveaudio.core.network import run_ws_server
+from liveaudio.core.diagnostics import build_diagnostics_report, normalize_export_dir
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("green")
+
+
+def _asset_path(name: str) -> str:
+    """Resolve a bundled asset to a filesystem path."""
+    return os.fspath(resources.files("liveaudio.assets") / name)
 
 # Límite de colas IPC para prevenir OOM en sesiones largas
 QUEUE_MAXSIZE = 100
@@ -236,8 +241,8 @@ class LiveASRApp(ctk.CTk):
 
         try:
             # 2. Generar el archivo .ico al vuelo desde el .png de forma dinámica si no existe
-            png_path = os.path.join(os.path.dirname(__file__), "LiveAudio-Fran.png")
-            ico_path = os.path.join(os.path.dirname(__file__), "LiveAudio-Fran.ico")
+            png_path = _asset_path("LiveAudio-Fran.png")
+            ico_path = _asset_path("LiveAudio-Fran.ico")
             
             if os.path.exists(png_path) and not os.path.exists(ico_path):
                 img = Image.open(png_path)
@@ -312,17 +317,47 @@ class LiveASRApp(ctk.CTk):
         
         lbl_msg = ctk.CTkLabel(
             self.frame_update_banner,
-            text=f"✨ ¡Nueva versión {latest_tag} disponible! Haz clic aquí para descargar.",
+            text=t("update_available_banner", latest_tag),
             font=ctk.CTkFont(size=12, weight="bold", family="Segoe UI"),
             text_color="#FFFFFF",
             cursor="hand2"
         )
-        lbl_msg.pack(fill="both", expand=True)
-        
+        lbl_msg.pack(side="left", fill="both", expand=True, padx=(12, 0))
+
         def open_releases(e):
             webbrowser.open_new("https://github.com/plynte-labs/LiveAudio/releases")
-            
+
         lbl_msg.bind("<Button-1>", open_releases)
+
+        btn_update = ctk.CTkButton(
+            self.frame_update_banner,
+            text=t("update_now"),
+            font=ctk.CTkFont(size=12, weight="bold", family="Segoe UI"),
+            fg_color="#2e7d32",
+            hover_color="#388e3c",
+            text_color="#FFFFFF",
+            width=140,
+            height=24,
+            corner_radius=6,
+            command=lambda: self.start_in_app_update(latest_tag)
+        )
+        btn_update.pack(side="right", padx=10, pady=5)
+
+    def start_in_app_update(self, latest_tag):
+        """Hands the update off to the launcher and shuts the app down.
+
+        The graceful-shutdown confirmation runs FIRST: the launcher is only
+        spawned once closing is irreversible, so it never swaps app/ while
+        the app keeps running because the user cancelled the close prompt.
+        When the launcher is not available (dev run via `uv run liveaudio`,
+        or the app was started without the bootstrapper), falls back to
+        opening the releases page in the browser before closing.
+        """
+        if not self._confirm_close():
+            return
+        if not start_update(latest_tag):
+            webbrowser.open_new("https://github.com/plynte-labs/LiveAudio/releases")
+        self._shutdown()
 
     def _create_premium_option_menu(self, master, values, variable, command=None, width=140, **kwargs):
         """Crea un CTkOptionMenu con un estilo premium personalizado y coherente con el tema verde."""
@@ -398,7 +433,7 @@ class LiveASRApp(ctk.CTk):
         left_panel.grid(row=0, column=0, sticky="nsew", padx=(25, 15), pady=20)
         
         # Cargar logo de Chihuahua / LiveAudio
-        logo_path = os.path.join(os.path.dirname(__file__), "LiveAudio-Fran.png")
+        logo_path = _asset_path("LiveAudio-Fran.png")
         if os.path.exists(logo_path):
             try:
                 pil_img = Image.open(logo_path)
@@ -826,7 +861,7 @@ class LiveASRApp(ctk.CTk):
             text_color="#64B5F6",
         ).pack(anchor="w", padx=14, pady=(10, 4))
         
-        guide_steps = t("obs_guide_steps", html_path=os.path.abspath('subtitulos_obs.html'))
+        guide_steps = t("obs_guide_steps", html_path=_asset_path("subtitulos_obs.html"))
         
         ctk.CTkLabel(
             self.frame_obs_guide,
@@ -1463,7 +1498,7 @@ class LiveASRApp(ctk.CTk):
             state = event.get("state", "idle")
             
             # Buscar dinámicamente la traducción correspondiente en el diccionario español
-            from utils.i18n import TRANSLATIONS
+            from liveaudio.utils.i18n import TRANSLATIONS
             found_key = None
             for t_key, t_val in TRANSLATIONS["es"].items():
                 if t_key.startswith("status_") and t_val == raw_text:
@@ -1671,20 +1706,31 @@ class LiveASRApp(ctk.CTk):
             self.current_session_dir = None
             self.update_session_label()
 
+    def _confirm_close(self):
+        """Pending-changes prompt; returns False when the user cancels closing."""
+        if not self._ui_ready:
+            return True
+        draft = self._read_ui_config()
+        has_pending = any(draft.get(key) != self.config_data.get(key) for key in draft.keys())
+        if has_pending:
+            response = messagebox.askyesnocancel(t("pending_changes_title"), t("closing_pending_msg"))
+            if response is None:
+                return False
+            if response is True:
+                self.apply_pending_settings()
+                draft = self._read_ui_config()
+                if any(draft.get(key) != self.config_data.get(key) for key in draft.keys()):
+                    return False
+        return True
+
     def on_closing(self):
         """Maneja el evento de cerrar la ventana (X) para evitar procesos zombies"""
-        if self._ui_ready:
-            draft = self._read_ui_config()
-            has_pending = any(draft.get(key) != self.config_data.get(key) for key in draft.keys())
-            if has_pending:
-                response = messagebox.askyesnocancel(t("pending_changes_title"), t("closing_pending_msg"))
-                if response is None:
-                    return
-                if response is True:
-                    self.apply_pending_settings()
-                    draft = self._read_ui_config()
-                    if any(draft.get(key) != self.config_data.get(key) for key in draft.keys()):
-                        return
+        if not self._confirm_close():
+            return
+        self._shutdown()
+
+    def _shutdown(self):
+        """Irreversible teardown: stop workers, drain queues, destroy the window."""
         self.is_running = False
         
         # Señal de apagado limpio al servidor WebSocket
@@ -1704,7 +1750,13 @@ class LiveASRApp(ctk.CTk):
         self.destroy()
 
 
-if __name__ == '__main__':
+def main():
+    """Application entry point (also used by the `liveaudio` GUI script)."""
     mp.freeze_support()
+    install_crash_handler()
     app = LiveASRApp()
     app.mainloop()
+
+
+if __name__ == '__main__':
+    main()

@@ -46,7 +46,7 @@ class TestWebSocketConnectionLifecycle(unittest.TestCase):
 
     def test_connection_accepted_from_localhost(self):
         """Connections from 127.0.0.1 should be accepted."""
-        from core.network import _handle_client
+        from liveaudio.core.network import _handle_client
         clients = set()
         log_queue = MockQueue()
 
@@ -66,7 +66,7 @@ class TestWebSocketConnectionLifecycle(unittest.TestCase):
 
     def test_connection_rejected_from_external(self):
         """Connections from external IPs should be rejected."""
-        from core.network import _handle_client
+        from liveaudio.core.network import _handle_client
         clients = set()
         log_queue = MockQueue()
 
@@ -83,7 +83,7 @@ class TestWebSocketConnectionLifecycle(unittest.TestCase):
 
     def test_connection_removed_on_disconnect(self):
         """Client should be removed from clients set on disconnect."""
-        from core.network import _handle_client
+        from liveaudio.core.network import _handle_client
         clients = set()
         log_queue = MockQueue()
 
@@ -107,7 +107,7 @@ class TestPortConfiguration(unittest.TestCase):
         # The port is hardcoded in network.py line 105
         # This test documents the current behavior
         import inspect
-        from core.network import run_ws_server
+        from liveaudio.core.network import run_ws_server
         source = inspect.getsource(run_ws_server)
         self.assertIn("8765", source)
 
@@ -135,7 +135,7 @@ class TestPortConflictDetection(unittest.TestCase):
 
     def test_error_logged_on_failure(self):
         """Error should be logged when server fails to start."""
-        from core.network import run_ws_server
+        from liveaudio.core.network import run_ws_server
         import inspect
         source = inspect.getsource(run_ws_server)
         self.assertIn("Error fatal", source)
@@ -146,21 +146,21 @@ class TestMessageRouting(unittest.TestCase):
 
     def test_broadcast_formats_as_json(self):
         """Messages should be formatted as JSON before broadcast."""
-        from core.network import _poll_queue
+        from liveaudio.core.network import _poll_queue
         import inspect
         source = inspect.getsource(_poll_queue)
         self.assertIn("json.dumps", source)
 
     def test_replay_buffer_handles_catchup_interval(self):
         """Replay buffer should respect catchup_interval_sec."""
-        from core.network import _poll_queue
+        from liveaudio.core.network import _poll_queue
         import inspect
         source = inspect.getsource(_poll_queue)
         self.assertIn("catchup_interval_sec", source)
 
     def test_none_sentinel_stops_polling(self):
         """None sentinel should stop the polling loop."""
-        from core.network import _poll_queue
+        from liveaudio.core.network import _poll_queue
         import inspect
         source = inspect.getsource(_poll_queue)
         self.assertIn("msg is None", source)
@@ -197,13 +197,13 @@ class TestWebSocketLocalhostBinding(unittest.TestCase):
     def test_server_binds_to_localhost(self):
         """Server should bind to 127.0.0.1 only."""
         import inspect
-        from core.network import run_ws_server
+        from liveaudio.core.network import run_ws_server
         source = inspect.getsource(run_ws_server)
         self.assertIn('"127.0.0.1"', source)
 
     def test_handler_rejects_non_localhost(self):
         """Handler should reject connections from non-localhost IPs."""
-        from core.network import _handle_client
+        from liveaudio.core.network import _handle_client
         import inspect
         source = inspect.getsource(_handle_client)
         self.assertIn("127.0.0.1", source)

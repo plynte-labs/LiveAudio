@@ -1,0 +1,264 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  UV_VERSION: "0.11.6"
+
+jobs:
+  build-src:
+    name: Build source zip + wheel
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      src_url: ${{ steps.version.outputs.src_url }}
+      src_sha256: ${{ steps.zip.outputs.src_sha256 }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+
+      - name: Verify tag matches liveaudio.__version__
+        id: version
+        run: |
+          python3 - "$GITHUB_REF_NAME" <<'EOF'
+          import os
+          import re
+          import sys
+
+          tag = sys.argv[1]
+          tag_version = tag[1:] if tag.startswith("v") else tag
+          text = open("liveaudio/__init__.py", encoding="utf-8").read()
+          pkg_version = re.search(
+              r"__version__\s*=\s*[\"']([^\"']+)[\"']", text
+          ).group(1)
+          if tag_version != pkg_version:
+              sys.exit(
+                  "Tag %s does not match liveaudio.__version__ == %s"
+                  % (tag, pkg_version)
+              )
+          url = (
+              "https://github.com/plynte-labs/LiveAudio/releases/download/"
+              "v%s/liveaudio-src-%s.zip" % (pkg_version, pkg_version)
+          )
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write("version=%s\n" % pkg_version)
+              fh.write("src_url=%s\n" % url)
+          print("Release version: %s" % pkg_version)
+          EOF
+
+      - name: Build wheel
+        run: uv build --wheel --out-dir build_artifacts
+
+      - name: Create source zip
+        id: zip
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          ZIP="build_artifacts/liveaudio-src-${VERSION}.zip"
+          zip -r "$ZIP" pyproject.toml uv.lock README.md LICENSE liveaudio \
+            -x "*__pycache__*" -x "*.pyc"
+          SHA="$(python3 -c "import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" "$ZIP")"
+          echo "src_sha256=$SHA" >> "$GITHUB_OUTPUT"
+          echo "Source zip SHA256: $SHA"
+
+      - name: Export pinned requirements (no-uv escape hatch)
+        run: |
+          uv export --locked --extra cpu --no-dev --no-emit-project \
+            -o build_artifacts/requirements-cpu.txt
+          uv export --locked --extra cu121 --no-dev --no-emit-project \
+            -o build_artifacts/requirements-cu121.txt
+
+      - name: Upload source artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: src-dist
+          path: build_artifacts/*
+          if-no-files-found: error
+
+  build-launchers:
+    name: Build launcher (${{ matrix.os }})
+    needs: build-src
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: launcher-windows
+          - os: ubuntu-22.04
+            artifact: launcher-linux
+    runs-on: ${{ matrix.os }}
+    env:
+      # Use the setup-python interpreter (best-supported by PyInstaller)
+      # instead of a uv-managed build.
+      UV_PYTHON_PREFERENCE: only-system
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Tcl/Tk runtime (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libtcl8.6 libtk8.6
+
+      - name: Install Python 3.11
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+
+      - name: Vendor pinned uv binary into packaging/vendor/
+        run: |
+          python - <<'EOF'
+          import io
+          import os
+          import sys
+          import tarfile
+          import urllib.request
+          import zipfile
+
+          version = os.environ["UV_VERSION"]
+          win = sys.platform == "win32"
+          asset = (
+              "uv-x86_64-pc-windows-msvc.zip"
+              if win
+              else "uv-x86_64-unknown-linux-gnu.tar.gz"
+          )
+          url = "https://github.com/astral-sh/uv/releases/download/%s/%s" % (
+              version,
+              asset,
+          )
+          data = urllib.request.urlopen(url).read()
+          exe = "uv.exe" if win else "uv"
+          os.makedirs(os.path.join("packaging", "vendor"), exist_ok=True)
+          target = os.path.join("packaging", "vendor", exe)
+          if win:
+              with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                  member = next(n for n in zf.namelist() if n.endswith(exe))
+                  with zf.open(member) as src, open(target, "wb") as dst:
+                      dst.write(src.read())
+          else:
+              with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tf:
+                  member = next(
+                      m
+                      for m in tf.getmembers()
+                      if m.name == "uv" or m.name.endswith("/uv")
+                  )
+                  with open(target, "wb") as dst:
+                      dst.write(tf.extractfile(member).read())
+              os.chmod(target, 0o755)
+          print("Vendored %s (uv %s)" % (target, version))
+          EOF
+
+      - name: Generate release metadata
+        run: |
+          python packaging/build_release_meta.py \
+            --version "${{ needs.build-src.outputs.version }}" \
+            --url "${{ needs.build-src.outputs.src_url }}" \
+            --sha256 "${{ needs.build-src.outputs.src_sha256 }}"
+
+      - name: Install build tooling (PyInstaller)
+        run: uv sync --locked --only-group build
+
+      - name: Build launcher executable
+        run: |
+          uv run --no-sync pyinstaller packaging/launcher.spec \
+            --noconfirm \
+            --distpath build_artifacts/launcher \
+            --workpath build_artifacts/pyi-build
+
+      - name: Collect Windows asset
+        if: runner.os == 'Windows'
+        run: |
+          VERSION="${{ needs.build-src.outputs.version }}"
+          mkdir -p release_assets
+          mv build_artifacts/launcher/LiveAudio-Setup.exe \
+            "release_assets/LiveAudio-Setup-${VERSION}.exe"
+
+      - name: Collect Linux asset (tarball)
+        if: runner.os == 'Linux'
+        run: |
+          VERSION="${{ needs.build-src.outputs.version }}"
+          STAGE="stage/LiveAudio-${VERSION}"
+          mkdir -p "$STAGE" release_assets
+          cp build_artifacts/launcher/liveaudio-launcher "$STAGE/"
+          cp liveaudio/assets/LiveAudio-Fran.png "$STAGE/"
+          cp packaging/liveaudio.desktop "$STAGE/"
+          tee "$STAGE/README.linux" >/dev/null <<EOF
+          LiveAudio ${VERSION} - Linux launcher
+          =====================================
+
+          1. Extract this archive anywhere and run:
+
+                 ./liveaudio-launcher
+
+             The first run downloads the application and its dependencies
+             (internet connection required). Later runs start instantly.
+
+          2. Optional: install an applications-menu entry with:
+
+                 ./liveaudio-launcher --install-desktop-entry
+
+          Requirements: x86_64 Linux (glibc) and the PortAudio runtime for
+          audio capture:
+
+              sudo apt install libportaudio2
+
+          More information: https://github.com/plynte-labs/LiveAudio
+          EOF
+          tar -czf "release_assets/LiveAudio-${VERSION}-linux-x64.tar.gz" \
+            -C stage "LiveAudio-${VERSION}"
+
+      - name: Upload launcher artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: release_assets/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish draft release
+    needs: [build-src, build-launchers]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: release_assets
+          merge-multiple: true
+
+      - name: Generate SHA256SUMS.txt
+        working-directory: release_assets
+        run: |
+          sha256sum * > SHA256SUMS.txt
+          tee /dev/stderr < SHA256SUMS.txt >/dev/null
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft \
+            --title "LiveAudio $GITHUB_REF_NAME" \
+            --generate-notes \
+            release_assets/*

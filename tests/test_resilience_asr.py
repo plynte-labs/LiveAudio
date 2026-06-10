@@ -13,10 +13,10 @@ from tests.helpers import MockQueue, make_shared_config, make_mock_transcribe_re
 class TestAsrTimeoutRecovery(unittest.TestCase):
     """Tests for ASR transcribe timeout and recovery."""
 
-    @patch("core.engine.ThreadPoolExecutor")
+    @patch("liveaudio.core.engine.ThreadPoolExecutor")
     def test_transcribe_timeout_triggers_after_limit(self, mock_executor_class):
         """Transcribe timeout should trigger after 15s for a 5s chunk."""
-        from core.engine import _transcribe_with_timeout
+        from liveaudio.core.engine import _transcribe_with_timeout
         log_queue = MockQueue()
 
         # Mock the executor to raise TimeoutError
@@ -36,10 +36,10 @@ class TestAsrTimeoutRecovery(unittest.TestCase):
         self.assertIsNone(info)
         mock_future.result.assert_called_once_with(timeout=15.0)
 
-    @patch("core.engine.ThreadPoolExecutor")
+    @patch("liveaudio.core.engine.ThreadPoolExecutor")
     def test_timeout_emits_warning_status(self, mock_executor_class):
         """Timeout should emit warning status to log_queue."""
-        from core.engine import _transcribe_with_timeout
+        from liveaudio.core.engine import _transcribe_with_timeout
         log_queue = MockQueue()
 
         mock_future = MagicMock()
@@ -57,10 +57,10 @@ class TestAsrTimeoutRecovery(unittest.TestCase):
         status_items = [item for item in log_queue.items if item.get("type") == "status"]
         self.assertTrue(any(s.get("key") == "asr" and s.get("state") == "warn" for s in status_items))
 
-    @patch("core.engine.ThreadPoolExecutor")
+    @patch("liveaudio.core.engine.ThreadPoolExecutor")
     def test_timeout_continues_to_next_item(self, mock_executor_class):
         """After timeout, processing should return None to allow continuation."""
-        from core.engine import _transcribe_with_timeout
+        from liveaudio.core.engine import _transcribe_with_timeout
         log_queue = MockQueue()
 
         mock_future = MagicMock()
@@ -78,10 +78,10 @@ class TestAsrTimeoutRecovery(unittest.TestCase):
         self.assertIsNone(segments)
         self.assertIsNone(info)
 
-    @patch("core.engine.torch")
+    @patch("liveaudio.core.engine.torch")
     def test_cuda_empty_cache_called_after_transcribe(self, mock_torch):
         """torch.cuda.empty_cache() should be called after transcribe on CUDA."""
-        from core.engine import _transcribe_with_timeout
+        from liveaudio.core.engine import _transcribe_with_timeout
         log_queue = MockQueue()
 
         mock_model = MagicMock()
@@ -93,7 +93,7 @@ class TestAsrTimeoutRecovery(unittest.TestCase):
 
     def test_structured_error_event_sent_on_failure(self):
         """Structured error event should be sent to log_queue on failure."""
-        from core.engine import _transcribe_with_timeout
+        from liveaudio.core.engine import _transcribe_with_timeout
         log_queue = MockQueue()
 
         mock_model = MagicMock()
@@ -112,7 +112,7 @@ class TestAsrErrorHandling(unittest.TestCase):
 
     def test_error_event_contains_exception_type(self):
         """Error event should include exception type for debugging."""
-        from core.engine import _transcribe_with_timeout
+        from liveaudio.core.engine import _transcribe_with_timeout
         log_queue = MockQueue()
 
         mock_model = MagicMock()
@@ -125,7 +125,7 @@ class TestAsrErrorHandling(unittest.TestCase):
 
     def test_error_event_contains_traceback_summary(self):
         """Error event should include a summary of the traceback."""
-        from core.engine import _transcribe_with_timeout
+        from liveaudio.core.engine import _transcribe_with_timeout
         log_queue = MockQueue()
 
         mock_model = MagicMock()
@@ -138,7 +138,7 @@ class TestAsrErrorHandling(unittest.TestCase):
 
     def test_asr_consumer_exits_gracefully_on_fatal_error(self):
         """ASR consumer should emit final error status before exiting."""
-        from core.engine import _transcribe_with_timeout
+        from liveaudio.core.engine import _transcribe_with_timeout
         log_queue = MockQueue()
 
         mock_model = MagicMock()

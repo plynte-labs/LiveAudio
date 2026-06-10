@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
-[![Platform: Windows](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)](https://github.com/plynte-labs/LiveAudio)
+[![Platform: Windows | Linux](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux-lightgrey.svg)](https://github.com/plynte-labs/LiveAudio)
 
 LiveAudio is a real-time automatic speech recognition (ASR) engine designed for streamers and content creators. It captures audio from your microphone or system, transcribes it locally using **Whisper** (OpenAI), and sends subtitles to **OBS Studio** via **WebSocket**.
 
@@ -28,12 +28,13 @@ LiveAudio is a real-time automatic speech recognition (ASR) engine designed for 
 
 | Component | Recommended |
 |---|---|
-| **OS** | Windows 10/11 (WASAPI Loopback), Linux, or macOS |
-| **Python** | 3.10 or higher |
+| **OS** | Windows 10/11 (WASAPI Loopback) or Linux x86_64 |
+| **Python** | Not required for users — the installer provisions its own Python 3.11 |
 | **GPU** | NVIDIA with CUDA (optional but recommended for larger models) |
 | **RAM** | 8 GB minimum, 16 GB recommended |
+| **Disk** | ~400 MB (CPU) / ~2.5 GB (CUDA) for the app + dependencies, plus model storage |
 | **Microphone** | Any audio input device |
-| **Internet** | Required on first run only (model download) |
+| **Internet** | Required on first run only (dependency + model download) |
 
 ### Running in a Virtual Machine
 
@@ -46,47 +47,59 @@ LiveAudio works in VMs with the following considerations:
 | Cloud VM without GPU (EC2, GCP) | ✅ CPU only — good for testing, not live streaming |
 | VM without audio device exposed to guest | ❌ `sounddevice` won't find devices — expose the audio host adapter first |
 
-For CPU-only VMs, set `"device": "cpu"` in `config.json` before starting.
+For CPU-only VMs, run the launcher once with `--device cpu`.
 
 ---
 
-## Quick Start
+## Installation (Users)
+
+1. Download the latest release from [GitHub Releases](https://github.com/plynte-labs/LiveAudio/releases):
+   - **Windows:** `LiveAudio-Setup-X.Y.Z.exe`
+   - **Linux:** `LiveAudio-X.Y.Z-linux-x64.tar.gz` (extract, then run `./liveaudio-launcher`)
+2. Run it. The **first run** downloads Python and all dependencies (**~400 MB** on CPU, **~2.5 GB** with CUDA) and **auto-detects your GPU** — no manual setup. Later runs start instantly.
+
+> **First transcription — internet required:** LiveAudio also downloads two models on first use (unchanged from previous versions):
+> - **Silero VAD** (~2 MB) — voice activity detection, from GitHub
+> - **Whisper model** — size depends on your choice: `tiny` ~150 MB · `base` ~300 MB · `small` ~480 MB · `turbo` ~1.5 GB (from Hugging Face)
+>
+> After that, the app works fully **offline**.
+
+> **Windows SmartScreen:** the installer is not code-signed (signing certificates are expensive for an open-source project), so Windows may show a SmartScreen warning. Click **More info → Run anyway**. You can verify the download against `SHA256SUMS.txt` published with each release.
+
+**Options:**
+
+- **Force a backend:** run the launcher with `--device cpu` or `--device cuda` to override GPU auto-detection. The choice is remembered for future runs.
+- **Portable mode:** create an empty file named `portable.marker` next to the launcher executable. Everything (app, dependencies, config, sessions, models) is then stored in a `data/` folder next to the launcher — nothing touches your user profile. Ideal for USB drives.
+- **Linux audio:** the PortAudio runtime is required for capture: `sudo apt install libportaudio2`.
+- **Linux desktop entry:** `./liveaudio-launcher --install-desktop-entry` adds an applications-menu entry.
+- **Updates:** the app checks GitHub Releases and offers a one-click update button; you can also run the launcher with `--update` manually. Already-downloaded PyTorch wheels are reused, so updates are small.
+
+---
+
+## Installation (Developers)
+
+LiveAudio uses [uv](https://docs.astral.sh/uv/) for dependency management:
 
 ```bash
 git clone https://github.com/plynte-labs/LiveAudio.git
 cd LiveAudio
+
+# CPU-only (smallest, works everywhere)
+uv sync --extra cpu
+
+# Or with NVIDIA CUDA
+uv sync --extra cu121
+
+# Run the app
+uv run liveaudio
+
+# Run the tests
+uv run pytest
 ```
 
-1. **Create and activate a virtual environment (recommended):**
-   ```bash
-   # With conda (recommended for PyTorch/CUDA)
-   conda create -n liveaudio python=3.11
-   conda activate liveaudio
+Exactly one torch extra (`cpu` or `cu121`) must be selected — they route to different PyTorch package indexes. Each release also publishes `requirements-cpu.txt` / `requirements-cu121.txt` as a pip-only escape hatch.
 
-   # Or with venv
-   python -m venv venv
-   venv\Scripts\activate  # Windows
-   ```
-
-2. **Install dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-   > **Note:** If you use an NVIDIA GPU, make sure [CUDA drivers](https://developer.nvidia.com/cuda-downloads) are installed. PyTorch will install with CUDA support automatically if your system supports it.
-
-3. **Run:**
-   ```bash
-   python main.py
-   ```
-
-   > **First run — internet required:** LiveAudio downloads two models automatically on startup:
-   > - **Silero VAD** (~2 MB) — voice activity detection, from GitHub
-   > - **Whisper model** — size depends on your choice: `tiny` ~150 MB · `base` ~300 MB · `small` ~480 MB · `turbo` ~1.5 GB (from Hugging Face)
-   >
-   > After the first run, the app works fully **offline**.
-
-   > **No GPU? Use CPU mode:** Open `config.json.example`, copy it to `config.json`, and set `"device": "cpu"` before starting. The default config assumes CUDA — on a CPU-only machine it falls back automatically, but setting it explicitly avoids a startup delay.
+See [docs/PACKAGING_AND_UPDATES.md](docs/PACKAGING_AND_UPDATES.md) for the full packaging and release architecture.
 
 ---
 
@@ -94,21 +107,28 @@ cd LiveAudio
 
 ```
 LiveAudio/
-├── core/
-│   ├── audio.py          # Audio capture, VAD, and automatic reconnection
-│   ├── engine.py         # ASR engine (Whisper) and session saving
-│   └── network.py        # WebSocket server (broadcast)
-├── utils/
-│   └── config.py         # Persistent configuration load/save
+├── liveaudio/
+│   ├── app.py            # GUI (CustomTkinter) and orchestrator
+│   ├── core/
+│   │   ├── audio.py      # Audio capture, VAD, and automatic reconnection
+│   │   ├── engine.py     # ASR engine (Whisper) and session saving
+│   │   └── network.py    # WebSocket server (broadcast)
+│   ├── utils/
+│   │   └── config.py     # Persistent configuration load/save
+│   └── assets/
+│       └── subtitulos_obs.html   # Browser Source for OBS
+├── packaging/
+│   └── launcher.py       # Bootstrapper frozen into the release installers
 ├── docs/
-│   ├── GETTING_STARTED.md    # Detailed guide for new users
-│   └── WEBSOCKET_OBS.md      # OBS Studio integration
-├── main.py               # GUI (CustomTkinter) and orchestrator
-├── config.json.example   # Example configuration (copy to config.json)
-├── requirements.txt      # Python dependencies
-├── subtitulos_obs.html   # Browser Source for OBS
-└── sessions/             # Generated transcriptions (git-ignored)
+│   ├── GETTING_STARTED.md        # Detailed guide for new users
+│   ├── WEBSOCKET_OBS.md          # OBS Studio integration
+│   └── PACKAGING_AND_UPDATES.md  # Packaging / release / update architecture
+├── pyproject.toml        # Project metadata and dependencies (uv)
+├── uv.lock               # Locked dependency versions
+└── config.json.example   # Example configuration
 ```
+
+Launcher installs keep user data (config, sessions) under the install root's `data/` directory: `%LOCALAPPDATA%\LiveAudio\data` on Windows or `~/.local/share/liveaudio/data` on Linux. (Dev runs without the launcher default to `%APPDATA%\LiveAudio` on Windows or `~/.config/liveaudio` on Linux.) Override with the `LIVEAUDIO_HOME` environment variable.
 
 ---
 
@@ -117,7 +137,7 @@ LiveAudio/
 | Library | Version | Purpose |
 |---|---|---|
 | `faster-whisper` | >=1.0.0,<2.0.0 | Optimized Whisper transcription |
-| `torch` | >=2.0.0,<2.7.0 | Inference backend (CPU/CUDA) |
+| `torch` | >=2.0,<2.7 (CPU) / >=2.4,<2.6 (CUDA 12.1) | Inference backend |
 | `sounddevice` | >=0.4.6,<0.5.0 | Real-time audio capture |
 | `numpy` | >=1.24.0,<2.1.0 | Audio buffer manipulation |
 | `customtkinter` | >=5.2.0,<6.0.0 | Modern GUI |
@@ -128,7 +148,7 @@ LiveAudio/
 
 ## Configuration
 
-On first run, a `config.json` file is created from `config.json.example`. You can modify all settings from the GUI or by editing `config.json` directly.
+On first run, a `config.json` file is created automatically with default values in the data home (see locations above). You can modify all settings from the GUI or by editing `config.json` directly.
 
 ```json
 {
@@ -157,7 +177,7 @@ On first run, a `config.json` file is created from `config.json.example`. You ca
 
 ## Basic Usage
 
-1. Run `main.py`.
+1. Start LiveAudio (the installed launcher, or `uv run liveaudio` from a checkout).
 2. On the welcome screen, choose the folder where sessions will be saved.
 3. In the settings panel:
    - Choose a **profile** (`Fast`, `Balanced`, `Quality`, or `Stable Streaming`) to start without manual tuning.
@@ -166,7 +186,7 @@ On first run, a `config.json` file is created from `config.json.example`. You ca
    - Select the **model size** (`tiny`, `base`, `small`, `turbo`).
    - Press **Apply changes** to activate and save settings.
 4. Press **START SYSTEM**.
-5. Open `subtitulos_obs.html` as a **Browser Source** in OBS (see [docs/WEBSOCKET_OBS.md](docs/WEBSOCKET_OBS.md)).
+5. Open `liveaudio/assets/subtitulos_obs.html` as a **Browser Source** in OBS (see [docs/WEBSOCKET_OBS.md](docs/WEBSOCKET_OBS.md)).
 
 ---
 

@@ -27,14 +27,14 @@ class TestAudioQueueBackpressure(unittest.TestCase):
         # Verify that the enqueue_phrase implementation handles queue.Full
         # by checking the source code contains the drop logic
         import inspect
-        from core.audio import audio_producer
+        from liveaudio.core.audio import audio_producer
         source = inspect.getsource(audio_producer)
         self.assertIn("speech_buffer.pop(0)", source)
 
     def test_warning_logged_when_audio_dropped(self):
         """Warning should be logged when audio is dropped due to full queue."""
         import inspect
-        from core.audio import audio_producer
+        from liveaudio.core.audio import audio_producer
         source = inspect.getsource(audio_producer)
         self.assertIn("cola llena", source)
         self.assertIn("Descartando audio antiguo", source)
@@ -42,7 +42,7 @@ class TestAudioQueueBackpressure(unittest.TestCase):
     def test_status_emitted_to_ui_on_backpressure(self):
         """Status should be emitted to UI when backpressure occurs."""
         import inspect
-        from core.audio import audio_producer
+        from liveaudio.core.audio import audio_producer
         source = inspect.getsource(audio_producer)
         self.assertIn('"VAD: cola llena"', source)
         self.assertIn('"warn"', source)
@@ -54,7 +54,7 @@ class TestVadWorkerNonBlocking(unittest.TestCase):
     def test_vad_worker_does_not_block_on_full_queue(self):
         """VAD worker should not block when audio_queue is full."""
         import inspect
-        from core.audio import audio_producer
+        from liveaudio.core.audio import audio_producer
         source = inspect.getsource(audio_producer)
         self.assertIn("put_nowait", source)
         self.assertNotIn("audio_queue.put({", source)  # Should not have blocking put
@@ -62,7 +62,7 @@ class TestVadWorkerNonBlocking(unittest.TestCase):
     def test_speech_buffer_drops_oldest_on_backpressure(self):
         """speech_buffer should drop oldest entries when backpressure occurs."""
         import inspect
-        from core.audio import audio_producer
+        from liveaudio.core.audio import audio_producer
         source = inspect.getsource(audio_producer)
         self.assertIn("speech_buffer.pop(0)", source)
 

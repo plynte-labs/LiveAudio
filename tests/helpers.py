@@ -5,7 +5,7 @@ import threading
 import multiprocessing as mp
 from unittest.mock import MagicMock, patch
 import json
-from core.diagnostics import create_store_from_config
+from liveaudio.core.diagnostics import create_store_from_config
 
 
 class MockQueue:

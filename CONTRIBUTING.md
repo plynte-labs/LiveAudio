@@ -18,9 +18,8 @@ This document covers the contribution workflow, code conventions, and how to get
 
 ### Requirements
 
-- Python 3.10+
+- [uv](https://docs.astral.sh/uv/) — manages Python and all dependencies (no manual venv/conda needed)
 - NVIDIA GPU with CUDA (optional, CPU fallback works)
-- [Conda](https://docs.conda.io/) or `venv`
 
 ### Steps
 
@@ -29,19 +28,18 @@ This document covers the contribution workflow, code conventions, and how to get
 git clone https://github.com/YOUR_USERNAME/LiveAudio.git
 cd LiveAudio
 
-# 2. Create environment
-conda create -n liveaudio python=3.11
-conda activate liveaudio
+# 2. Install dependencies (pick exactly one torch extra)
+uv sync --extra cpu      # CPU-only, smallest
+uv sync --extra cu121    # NVIDIA CUDA 12.1
 
-# 3. Install dependencies
-pip install -r requirements.txt
+# 3. Run the app
+uv run liveaudio
 
-# 4. Copy config example
-cp config.json.example config.json
-
-# 5. Run tests
-pytest tests/ -v
+# 4. Run tests
+uv run pytest
 ```
+
+See [docs/PACKAGING_AND_UPDATES.md](docs/PACKAGING_AND_UPDATES.md) for how releases and the installer work.
 
 ---
 
@@ -58,7 +56,7 @@ pytest tests/ -v
 
 3. **Run tests** before pushing:
    ```bash
-   pytest tests/ -v
+   uv run pytest
    ```
 
 4. **Open a Pull Request** against `main`. Use a clear title and fill out the PR template.

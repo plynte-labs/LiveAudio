@@ -4,7 +4,7 @@
 import unittest
 import numpy as np
 
-from core.engine import _sanitize_text
+from liveaudio.core.engine import _sanitize_text
 from tests.helpers import make_shared_config
 
 
@@ -13,14 +13,14 @@ class TestVadLayerNoiseRejection(unittest.TestCase):
 
     def test_silence_produces_no_transcription(self):
         """Silence (VAD below threshold) should produce no transcription output."""
-        from core.audio import VAD_THRESHOLD
+        from liveaudio.core.audio import VAD_THRESHOLD
         vad_prob = 0.1  # Well below threshold
         is_speech = vad_prob >= VAD_THRESHOLD
         self.assertFalse(is_speech)
 
     def test_noise_below_threshold_produces_no_output(self):
         """Noise below VAD threshold should produce no transcription."""
-        from core.audio import VAD_THRESHOLD
+        from liveaudio.core.audio import VAD_THRESHOLD
         vad_prob = 0.3  # Below threshold
         is_speech = vad_prob >= VAD_THRESHOLD
         self.assertFalse(is_speech)
@@ -34,7 +34,7 @@ class TestVadLayerNoiseRejection(unittest.TestCase):
 
     def test_background_noise_below_threshold(self):
         """Background noise should be below VAD threshold."""
-        from core.audio import VAD_THRESHOLD
+        from liveaudio.core.audio import VAD_THRESHOLD
         # Simulate low-level background noise
         noise = np.random.uniform(-0.01, 0.01, 1600).astype(np.float32)
         rms = np.sqrt(np.mean(noise ** 2))
@@ -141,7 +141,7 @@ class TestCombinedNoiseAndBlacklistProtection(unittest.TestCase):
     def test_noise_with_blacklist_term_double_protection(self):
         """Noisy audio with blacklist term should be caught by both layers."""
         # Layer 1: VAD/Energy should reject noisy audio
-        from core.audio import VAD_THRESHOLD
+        from liveaudio.core.audio import VAD_THRESHOLD
         vad_prob = 0.2  # Below threshold
         is_speech = vad_prob >= VAD_THRESHOLD
         self.assertFalse(is_speech)
@@ -155,7 +155,7 @@ class TestCombinedNoiseAndBlacklistProtection(unittest.TestCase):
     def test_clean_audio_with_blacklist_still_filtered(self):
         """Clean audio with blacklist term should still be filtered."""
         # VAD would pass this (clean audio)
-        from core.audio import VAD_THRESHOLD
+        from liveaudio.core.audio import VAD_THRESHOLD
         vad_prob = 0.9  # Above threshold
         is_speech = vad_prob >= VAD_THRESHOLD
         self.assertTrue(is_speech)
@@ -168,7 +168,7 @@ class TestCombinedNoiseAndBlacklistProtection(unittest.TestCase):
 
     def test_noisy_audio_without_blacklist_rejected_by_vad(self):
         """Noisy audio without blacklist term should be rejected by VAD."""
-        from core.audio import VAD_THRESHOLD
+        from liveaudio.core.audio import VAD_THRESHOLD
         vad_prob = 0.15  # Below threshold
         is_speech = vad_prob >= VAD_THRESHOLD
         self.assertFalse(is_speech)

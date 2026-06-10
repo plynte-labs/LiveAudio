@@ -7,7 +7,7 @@ import tempfile
 import json
 from unittest.mock import MagicMock, patch
 
-from core.engine import (
+from liveaudio.core.engine import (
     _sanitize_text,
     _obs_emit_decision,
     _config_float,
@@ -136,21 +136,21 @@ class TestVttOutputFormat(unittest.TestCase):
 
     def test_vtt_header_format(self):
         """VTT output must start with WEBVTT header."""
-        from core.engine import _format_vtt_time
+        from liveaudio.core.engine import _format_vtt_time
         # The header is written as "WEBVTT\n\n" in engine.py
         # We verify the format function exists and the header pattern
         self.assertTrue(hasattr(_format_vtt_time, '__call__'))
 
     def test_vtt_cue_timestamp_format(self):
         """VTT cues must have HH:MM:SS.mmm --> HH:MM:SS.mmm timestamps."""
-        from core.engine import _format_vtt_time
+        from liveaudio.core.engine import _format_vtt_time
         result = _format_vtt_time(65.123)
         self.assertRegex(result, r"^\d{2}:\d{2}:\d{2}\.\d{3}$")
         self.assertEqual(result, "00:01:05.123")
 
     def test_vtt_cue_index_numbers(self):
         """VTT cues must have sequential index numbers."""
-        from core.engine import _format_vtt_time
+        from liveaudio.core.engine import _format_vtt_time
         # Verify the timestamp function produces valid VTT time format
         # which is required for proper cue formatting
         t1 = _format_vtt_time(0.0)
@@ -180,7 +180,7 @@ class TestObsEnabledGate(unittest.TestCase):
     def test_obs_enabled_true_emits_to_queue(self):
         """When obs_enabled=True, transcript payload should be put to text_queue."""
         import multiprocessing as mp
-        from core.engine import asr_consumer
+        from liveaudio.core.engine import asr_consumer
 
         audio_queue = mp.Queue()
         text_queue = mp.Queue()
@@ -248,7 +248,7 @@ class TestInterceptingWriter(unittest.TestCase):
 
     def test_intercepts_simple_line(self):
         import queue
-        from core.engine import InterceptingWriter
+        from liveaudio.core.engine import InterceptingWriter
         q = queue.Queue()
         writer = InterceptingWriter(q, prefix="[TEST]")
         writer.write("Hello world\n")
@@ -259,7 +259,7 @@ class TestInterceptingWriter(unittest.TestCase):
 
     def test_intercepts_tqdm_progress(self):
         import queue
-        from core.engine import InterceptingWriter
+        from liveaudio.core.engine import InterceptingWriter
         q = queue.Queue()
         writer = InterceptingWriter(q, prefix="[TEST]")
         
@@ -272,7 +272,7 @@ class TestInterceptingWriter(unittest.TestCase):
 
     def test_handles_errors_and_warnings(self):
         import queue
-        from core.engine import InterceptingWriter
+        from liveaudio.core.engine import InterceptingWriter
         q = queue.Queue()
         writer = InterceptingWriter(q, prefix="[TEST]")
         

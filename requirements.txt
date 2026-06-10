@@ -1,7 +1,9 @@
-faster-whisper>=1.0.0,<2.0.0
-torch>=2.0.0,<2.7.0
-sounddevice>=0.4.6,<0.5.0
-numpy>=1.24.0,<2.1.0
-customtkinter>=5.2.0,<6.0.0
-pillow>=10.0.0,<12.0.0
-websockets>=14.0,<17.0
+# LiveAudio dependencies are declared in pyproject.toml (this file is kept
+# only so existing links do not break).
+#
+# Install with uv (https://docs.astral.sh/uv/):
+#   uv sync --extra cpu     # CPU-only PyTorch backend
+#   uv sync --extra cu121   # CUDA 12.1 PyTorch backend
+#
+# To export a pinned requirements file from uv.lock:
+#   uv export --extra cpu --no-hashes -o requirements-cpu.txt

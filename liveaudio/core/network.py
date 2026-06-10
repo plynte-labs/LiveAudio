@@ -4,7 +4,8 @@ import json
 import queue
 
 from websockets.asyncio.server import serve, broadcast
-from core.diagnostics import create_store_from_config
+from liveaudio.core.diagnostics import create_store_from_config
+from liveaudio.utils.streams import make_streams_encoding_safe
 
 
 def _emit(log_queue, event):
@@ -223,6 +224,9 @@ async def _poll_queue(text_queue, server, log_queue, diagnostics_store=None):
 
 def run_ws_server(text_queue, log_queue=None, port=8765, diagnostics_store=None, diagnostics_config=None):
     """Punto de entrada para el multiprocesamiento."""
+    # A legacy-codepage console (cp1252) must not crash this child on
+    # non-ASCII print output; the log_queue path keeps the original text.
+    make_streams_encoding_safe()
     _emit_log(log_queue, f"[WebSocket] Iniciando servidor en ws://127.0.0.1:{port}")
     _emit(log_queue, {"type": "status", "key": "ws", "text": "WS: iniciando", "state": "active"})
     print(f"[WebSocket] Iniciando servidor en ws://127.0.0.1:{port}")

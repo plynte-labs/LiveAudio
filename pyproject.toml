@@ -1,0 +1,97 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "liveaudio"
+dynamic = ["version"]
+description = "Real-time local transcription with OBS subtitle overlay (faster-whisper + Silero VAD)"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "faster-whisper>=1.0.0,<2.0.0",
+    "sounddevice>=0.4.6,<0.5.0",
+    "numpy>=1.24.0,<2.1.0",
+    "customtkinter>=5.2.0,<6.0.0",
+    "pillow>=10.0.0,<12.0.0",
+    "websockets>=14.0,<17.0",
+]
+
+[project.optional-dependencies]
+# Exactly one torch backend extra must be selected (see [tool.uv] conflicts).
+cpu = [
+    "torch>=2.0,<2.7",
+    "torchaudio>=2.0,<2.7",
+]
+# The cu121 index publishes no 2.6 wheels; >=2.4 ships cuDNN 9 as required
+# by ctranslate2>=4.5.
+cu121 = [
+    "torch>=2.4,<2.6",
+    "torchaudio>=2.4,<2.6",
+]
+
+[project.gui-scripts]
+liveaudio = "liveaudio.app:main"
+
+[project.urls]
+Homepage = "https://github.com/plynte-labs/LiveAudio"
+Issues = "https://github.com/plynte-labs/LiveAudio/issues"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.12,<0.13",
+    "tomli>=2.0; python_version < '3.11'",
+]
+# Release-only tooling (PyInstaller launcher builds); kept out of dev so
+# regular development installs stay light.
+build = [
+    "pyinstaller>=6.11,<7",
+]
+
+[tool.hatch.version]
+path = "liveaudio/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["liveaudio"]
+
+[tool.uv]
+conflicts = [
+    [
+        { extra = "cpu" },
+        { extra = "cu121" },
+    ],
+]
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cpu", extra = "cpu" },
+    { index = "pytorch-cu121", extra = "cu121" },
+]
+torchaudio = [
+    { index = "pytorch-cpu", extra = "cpu" },
+    { index = "pytorch-cu121", extra = "cu121" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu121"
+url = "https://download.pytorch.org/whl/cu121"
+explicit = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+# Minimal correctness gate: syntax errors, invalid literals/prints, and
+# undefined names. Style rules are intentionally out of scope for CI.
+select = ["E9", "F63", "F7", "F82"]

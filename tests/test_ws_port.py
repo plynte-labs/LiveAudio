@@ -5,14 +5,14 @@ import unittest
 from unittest.mock import patch, MagicMock, AsyncMock
 import asyncio
 
-from core.network import run_ws_server
+from liveaudio.core.network import run_ws_server
 
 
 class TestWSPortWiring(unittest.TestCase):
     """Tests for WebSocket port reading from config."""
 
-    @patch("core.network.serve")
-    @patch("core.network._poll_queue")
+    @patch("liveaudio.core.network.serve")
+    @patch("liveaudio.core.network._poll_queue")
     def test_default_port_is_8765(self, mock_poll, mock_serve):
         """Default port should be 8765 when not specified."""
         mock_queue = MagicMock()
@@ -36,8 +36,8 @@ class TestWSPortWiring(unittest.TestCase):
         self.assertEqual(call_args[0][1], "127.0.0.1")
         self.assertEqual(call_args[0][2], 8765)
 
-    @patch("core.network.serve")
-    @patch("core.network._poll_queue")
+    @patch("liveaudio.core.network.serve")
+    @patch("liveaudio.core.network._poll_queue")
     def test_custom_port_from_config(self, mock_poll, mock_serve):
         """Custom port should be used when passed."""
         mock_queue = MagicMock()
@@ -56,8 +56,8 @@ class TestWSPortWiring(unittest.TestCase):
         call_args = mock_serve.call_args
         self.assertEqual(call_args[0][2], 9999)
 
-    @patch("core.network.serve")
-    @patch("core.network._poll_queue")
+    @patch("liveaudio.core.network.serve")
+    @patch("liveaudio.core.network._poll_queue")
     def test_port_in_log_message(self, mock_poll, mock_serve):
         """Log message should include the correct port."""
         mock_queue = MagicMock()
@@ -81,8 +81,8 @@ class TestWSPortWiring(unittest.TestCase):
                     break
         self.assertTrue(found_port_log, "Log message should contain port 7777")
 
-    @patch("core.network.serve")
-    @patch("core.network._poll_queue")
+    @patch("liveaudio.core.network.serve")
+    @patch("liveaudio.core.network._poll_queue")
     def test_port_in_status_message(self, mock_poll, mock_serve):
         """Status message should include the correct port."""
         mock_queue = MagicMock()

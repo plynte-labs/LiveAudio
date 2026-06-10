@@ -16,7 +16,7 @@ class TestAudioProducerShutdown(unittest.TestCase):
         """Shutdown event should stop the outer loop."""
         # This test will fail until implementation exists
         import inspect
-        from core.audio import audio_producer
+        from liveaudio.core.audio import audio_producer
         source = inspect.getsource(audio_producer)
         self.assertIn("shutdown_event", source)
 
@@ -24,7 +24,7 @@ class TestAudioProducerShutdown(unittest.TestCase):
         """sd.InputStream should be closed before exit."""
         # This test will fail until implementation exists
         import inspect
-        from core.audio import audio_producer
+        from liveaudio.core.audio import audio_producer
         source = inspect.getsource(audio_producer)
         self.assertIn("stream.close()", source)
 
@@ -32,7 +32,7 @@ class TestAudioProducerShutdown(unittest.TestCase):
         """VAD worker thread should be joined with timeout."""
         # This test will fail until implementation exists
         import inspect
-        from core.audio import audio_producer
+        from liveaudio.core.audio import audio_producer
         source = inspect.getsource(audio_producer)
         self.assertIn("vad_thread.join", source)
 
@@ -40,7 +40,7 @@ class TestAudioProducerShutdown(unittest.TestCase):
         """Process should exit within 3s on shutdown signal."""
         # This test will fail until implementation exists
         import inspect
-        from core.audio import audio_producer
+        from liveaudio.core.audio import audio_producer
         source = inspect.getsource(audio_producer)
         self.assertIn("worker_running.clear()", source)
 

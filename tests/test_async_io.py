@@ -3,7 +3,7 @@ import unittest
 import os
 import tempfile
 import time
-from core.engine import SessionWriter
+from liveaudio.core.engine import SessionWriter
 
 class TestSessionWriter(unittest.TestCase):
     def setUp(self):

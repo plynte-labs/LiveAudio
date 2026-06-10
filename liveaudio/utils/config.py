@@ -9,8 +9,41 @@ except ImportError:
     torch = None
 
 import time
-CONFIG_FILE = "config.json"
-LOCK_FILE = CONFIG_FILE + ".lock"
+
+
+def get_data_home():
+    """Return the LiveAudio data home directory (not created here).
+
+    Resolution order:
+    1. LIVEAUDIO_HOME environment variable (explicit override / tests)
+    2. %APPDATA%\\LiveAudio on Windows
+    3. $XDG_CONFIG_HOME/liveaudio or ~/.config/liveaudio elsewhere
+    """
+    home = os.environ.get("LIVEAUDIO_HOME")
+    if not home:
+        if os.name == "nt":
+            base = os.environ.get("APPDATA") or os.path.expanduser("~")
+            home = os.path.join(base, "LiveAudio")
+        else:
+            base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser(os.path.join("~", ".config"))
+            home = os.path.join(base, "liveaudio")
+    return os.path.normpath(os.path.abspath(home))
+
+
+def _config_file():
+    return os.path.join(get_data_home(), "config.json")
+
+
+def _lock_file():
+    return _config_file() + ".lock"
+
+
+def _ensure_data_home():
+    home = get_data_home()
+    os.makedirs(home, exist_ok=True)
+    return home
+
+
 VALID_DEVICES = {"cpu", "cuda"}
 VALID_MODELS = {
     "tiny (Más rápido, baja precisión)",
@@ -24,7 +57,7 @@ VALID_BACKLOG_POLICIES = {"auto", "live_only", "send_all"}
 VALID_DIAGNOSTICS_LEVELS = {"off", "minimal", "deep"}
 
 DEFAULT_CONFIG = {
-    "output_dir": os.path.abspath("sessions"),  # Usa una carpeta local por defecto
+    "output_dir": os.path.join(get_data_home(), "sessions"),  # Default sessions dir under the data home
     "device": "cuda",
     "cpu_threads": max(1, mp.cpu_count() // 2),
     "model_size": "small (Balance CPU)",  # Nombres descriptivos por defecto
@@ -218,10 +251,11 @@ def _normalize_config(config):
 
 def _acquire_lock(timeout=2.0):
     import time
+    _ensure_data_home()
     start = time.time()
     while time.time() - start < timeout:
         try:
-            fd = os.open(LOCK_FILE, os.O_CREAT | os.O_EXCL | os.O_RDWR)
+            fd = os.open(_lock_file(), os.O_CREAT | os.O_EXCL | os.O_RDWR)
             os.close(fd)
             return True
         except (FileExistsError, OSError):
@@ -230,14 +264,30 @@ def _acquire_lock(timeout=2.0):
 
 def _release_lock():
     try:
-        os.remove(LOCK_FILE)
+        os.remove(_lock_file())
     except OSError:
         pass
 
 def _save_config_no_lock(config):
     import json
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+    _ensure_data_home()
+    with open(_config_file(), "w", encoding="utf-8") as f:
         json.dump(config, f, indent=4, ensure_ascii=False)
+
+def _migrate_legacy_config():
+    """Copy a CWD config.json (legacy portable layout) to the data home once."""
+    config_path = _config_file()
+    legacy_path = os.path.normpath(os.path.abspath("config.json"))
+    if legacy_path == config_path:
+        return
+    if os.path.exists(config_path) or not os.path.exists(legacy_path):
+        return
+    try:
+        import shutil
+        _ensure_data_home()
+        shutil.copyfile(legacy_path, config_path)
+    except OSError:
+        pass
 
 def load_config():
     """
@@ -246,15 +296,16 @@ def load_config():
     Valida que output_dir sea una ruta normalizada.
     Auto-detecta GPU: si CUDA no esta disponible, fuerza device a "cpu".
     """
+    _migrate_legacy_config()
     locked = _acquire_lock()
     try:
-        if not os.path.exists(CONFIG_FILE):
+        if not os.path.exists(_config_file()):
             if locked:
                 _save_config_no_lock(DEFAULT_CONFIG)
             config = DEFAULT_CONFIG.copy()
         else:
             import json
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            with open(_config_file(), "r", encoding="utf-8") as f:
                 config = json.load(f)
         
         config, updated = _normalize_config(config)

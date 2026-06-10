@@ -10,7 +10,7 @@ class TestRGBPerWordColor(unittest.TestCase):
     """Tests for RGB per-word color animation (T3)."""
 
     def setUp(self):
-        html_path = os.path.join(os.path.dirname(__file__), "..", "subtitulos_obs.html")
+        html_path = os.path.join(os.path.dirname(__file__), "..", "liveaudio", "assets", "subtitulos_obs.html")
         with open(html_path, "r", encoding="utf-8") as f:
             self.html_content = f.read()
 
@@ -40,7 +40,7 @@ class TestTypewriterSequentialReveal(unittest.TestCase):
     """Tests for typewriter sequential reveal animation (T4)."""
 
     def setUp(self):
-        html_path = os.path.join(os.path.dirname(__file__), "..", "subtitulos_obs.html")
+        html_path = os.path.join(os.path.dirname(__file__), "..", "liveaudio", "assets", "subtitulos_obs.html")
         with open(html_path, "r", encoding="utf-8") as f:
             self.html_content = f.read()
 
@@ -68,7 +68,7 @@ class TestEntryExitAnimationMirroring(unittest.TestCase):
     """Tests for entry/exit animation mirroring (T5)."""
 
     def setUp(self):
-        html_path = os.path.join(os.path.dirname(__file__), "..", "subtitulos_obs.html")
+        html_path = os.path.join(os.path.dirname(__file__), "..", "liveaudio", "assets", "subtitulos_obs.html")
         with open(html_path, "r", encoding="utf-8") as f:
             self.html_content = f.read()
 
@@ -90,7 +90,7 @@ class TestValidStylesAndURLParams(unittest.TestCase):
     """Tests for VALID_STYLES expansion and URL param parser (T6)."""
 
     def setUp(self):
-        html_path = os.path.join(os.path.dirname(__file__), "..", "subtitulos_obs.html")
+        html_path = os.path.join(os.path.dirname(__file__), "..", "liveaudio", "assets", "subtitulos_obs.html")
         with open(html_path, "r", encoding="utf-8") as f:
             self.html_content = f.read()
 

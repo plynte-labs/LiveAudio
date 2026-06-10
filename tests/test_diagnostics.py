@@ -3,7 +3,7 @@
 
 import unittest
 
-from core.diagnostics import (
+from liveaudio.core.diagnostics import (
     REDACTED,
     DiagnosticsStore,
     build_diagnostics_report,

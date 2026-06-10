@@ -11,7 +11,7 @@ class TestClientBackpressure(unittest.TestCase):
 
     def setUp(self):
         """Load subtitulos_obs.html."""
-        html_path = os.path.join(os.path.dirname(__file__), "..", "subtitulos_obs.html")
+        html_path = os.path.join(os.path.dirname(__file__), "..", "liveaudio", "assets", "subtitulos_obs.html")
         with open(html_path, "r", encoding="utf-8") as f:
             self.html_content = f.read()
 
@@ -53,8 +53,8 @@ class TestNetworkBackpressure(unittest.TestCase):
     """Tests for server-side backpressure in network.py."""
 
     def setUp(self):
-        """Load core/network.py."""
-        network_path = os.path.join(os.path.dirname(__file__), "..", "core", "network.py")
+        """Load liveaudio/core/network.py."""
+        network_path = os.path.join(os.path.dirname(__file__), "..", "liveaudio", "core", "network.py")
         with open(network_path, "r", encoding="utf-8") as f:
             self.network_content = f.read()
 

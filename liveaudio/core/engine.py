@@ -7,9 +7,17 @@ import queue
 import traceback
 import threading
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+from liveaudio.utils.dllpath import ensure_torch_dlls
+from liveaudio.utils.streams import make_streams_encoding_safe
+
+# The ASR consumer runs in a spawned child process which re-imports this
+# module fresh, so torch DLL directories must be registered here before
+# faster_whisper/ctranslate2 load their native libraries.
+ensure_torch_dlls()
+
 from faster_whisper import WhisperModel
 import torch
-from core.diagnostics import create_store_from_config
+from liveaudio.core.diagnostics import create_store_from_config
 
 VALID_SUBTITLE_STYLES = {"default", "karaoke", "neon", "minimal", "bold", "rgb", "typewriter"}
 VALID_BACKLOG_POLICIES = {"auto", "live_only", "send_all"}
@@ -379,7 +387,11 @@ class InterceptingWriter:
 def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queue, shared_config: dict, session_dir: str, diagnostics_store=None):
     import sys
     import io
-    
+
+    # A legacy-codepage console (cp1252) must not crash this child on
+    # non-ASCII output passed through to the original streams.
+    make_streams_encoding_safe()
+
     # Redirigir stdout/stderr para capturar el progreso de descarga y advertencias en el log de la UI
     original_stdout = sys.stdout
     original_stderr = sys.stderr

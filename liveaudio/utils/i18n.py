@@ -107,7 +107,11 @@ TRANSLATIONS = {
         "hot_swap_confirm_msg": "Algunos cambios requieren hot-swap del motor. Puede haber un corte breve y perderse la frase actual. ¿Aplicar ahora?",
         "error_applying_title": "Error al aplicar",
         "error_applying_msg": "No se pudieron aplicar los cambios:\n{}",
-        
+
+        # Updates
+        "update_available_banner": "✨ ¡Nueva versión {} disponible! Haz clic para ver las novedades.",
+        "update_now": "Actualizar ahora",
+
         # Status labels
         "status_audio_init": "Audio: iniciando",
         "status_audio_listening": "Audio: escuchando",
@@ -260,7 +264,11 @@ TRANSLATIONS = {
         "hot_swap_confirm_msg": "Some changes require engine hot-swap. There may be a brief interruption and current phrase might be lost. Apply now?",
         "error_applying_title": "Error applying",
         "error_applying_msg": "Could not apply changes:\n{}",
-        
+
+        # Updates
+        "update_available_banner": "✨ New version {} available! Click to see what's new.",
+        "update_now": "Update now",
+
         # Status labels
         "status_audio_init": "Audio: initiating",
         "status_audio_listening": "Audio: listening",
