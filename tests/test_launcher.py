@@ -9,6 +9,7 @@ subprocesses, no GUI.
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -409,6 +410,99 @@ class TestLaunchAppEnv(unittest.TestCase):
         self.assertTrue(ok)
         env = popen.call_args.kwargs["env"]
         self.assertNotIn("LIVEAUDIO_LAUNCHER", env)
+
+    def test_returns_popen_handle_on_success(self):
+        """The Popen handle feeds proc_alive in wait_for_app_window."""
+        with patch.object(launcher.subprocess, "Popen") as popen:
+            result = launcher.launch_app(self.root, portable=False, environ={}, platform="win32")
+        self.assertIs(result, popen.return_value)
+
+    def test_returns_false_when_exe_missing(self):
+        import shutil
+        empty_root = tempfile.mkdtemp(prefix="liveaudio-empty-")
+        self.addCleanup(shutil.rmtree, empty_root, True)
+        with patch.object(launcher.subprocess, "Popen") as popen:
+            result = launcher.launch_app(
+                empty_root, portable=False, environ={}, platform="win32",
+            )
+        self.assertIs(result, False)
+        popen.assert_not_called()
+
+
+class TestWaitForAppWindow(unittest.TestCase):
+    """Window-detection poll that keeps the splash visible (Windows)."""
+
+    def test_found_immediately_without_sleeping(self):
+        sleep = MagicMock()
+        result = launcher.wait_for_app_window(
+            find_window=MagicMock(return_value=12345),
+            proc_alive=MagicMock(return_value=True),
+            sleep=sleep,
+        )
+        self.assertEqual(result, "found")
+        sleep.assert_not_called()
+
+    def test_found_after_a_few_ticks(self):
+        find = MagicMock(side_effect=[None, None, None, 777])
+        sleep = MagicMock()
+        result = launcher.wait_for_app_window(
+            find_window=find, proc_alive=MagicMock(return_value=True),
+            timeout=120.0, interval=0.5, sleep=sleep,
+        )
+        self.assertEqual(result, "found")
+        self.assertEqual(sleep.call_count, 3)
+
+    def test_process_death_reported_before_window(self):
+        """proc_alive going False is the 'definitely dead' signal."""
+        proc_alive = MagicMock(side_effect=[True, True, False])
+        result = launcher.wait_for_app_window(
+            find_window=MagicMock(return_value=None),
+            proc_alive=proc_alive, sleep=MagicMock(),
+        )
+        self.assertEqual(result, "died")
+
+    def test_timeout_when_window_never_appears(self):
+        sleep = MagicMock()
+        result = launcher.wait_for_app_window(
+            find_window=MagicMock(return_value=None),
+            proc_alive=MagicMock(return_value=True),
+            timeout=2.0, interval=0.5, sleep=sleep,
+        )
+        self.assertEqual(result, "timeout")
+        self.assertEqual(sleep.call_count, 4)  # 2.0s / 0.5s ticks, no real waits
+
+    def test_proc_alive_is_optional(self):
+        """Without a proc_alive callback only found/timeout are possible."""
+        result = launcher.wait_for_app_window(
+            find_window=MagicMock(return_value=None),
+            timeout=1.0, interval=0.5, sleep=MagicMock(),
+        )
+        self.assertEqual(result, "timeout")
+
+    def test_on_tick_called_once_per_poll(self):
+        ticks = MagicMock()
+        launcher.wait_for_app_window(
+            find_window=MagicMock(side_effect=[None, None, 1]),
+            proc_alive=MagicMock(return_value=True),
+            sleep=MagicMock(), on_tick=ticks,
+        )
+        self.assertEqual(ticks.call_count, 2)
+
+
+class TestAppWindowTitleConsistency(unittest.TestCase):
+    """APP_WINDOW_TITLE must stay in sync with the Tk title in app.py."""
+
+    def test_launcher_constant_matches_app_title(self):
+        repo_root = Path(_LAUNCHER_PATH).resolve().parents[1]
+        launcher_src = _LAUNCHER_PATH.read_text(encoding="utf-8")
+        app_src = (repo_root / "liveaudio" / "app.py").read_text(encoding="utf-8")
+        launcher_match = re.search(r'^APP_WINDOW_TITLE\s*=\s*"([^"]+)"', launcher_src, re.M)
+        app_match = re.search(r'self\.title\(\s*"([^"]+)"\s*\)', app_src)
+        self.assertIsNotNone(launcher_match, "APP_WINDOW_TITLE literal not found in launcher.py")
+        self.assertIsNotNone(app_match, "self.title(...) literal not found in app.py")
+        self.assertEqual(launcher_match.group(1), app_match.group(1))
+        # The imported module agrees with the source literal.
+        self.assertEqual(launcher.APP_WINDOW_TITLE, app_match.group(1))
 
 
 class TestInstalledVersionSatisfies(unittest.TestCase):

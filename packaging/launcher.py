@@ -5,7 +5,10 @@ A single-file launcher distributed as a small PyInstaller executable. On first
 run it downloads the application source, provisions a project-local virtual
 environment with ``uv`` (selecting the CPU or CUDA torch extra based on the
 detected hardware), and launches the app. On subsequent runs it goes straight
-to the installed app ("fast path") with no UI at all.
+to the installed app ("fast path"); on Windows a minimal "Starting
+LiveAudio..." splash stays open until the app window appears, because the
+app's module-level torch import can take 60+ seconds on a cold start with no
+feedback of its own.
 
 HARD CONSTRAINT: this module may only use the Python standard library plus
 tkinter. It must NEVER import torch or any third-party package — it runs
@@ -65,9 +68,19 @@ COLOR_FG = "#e8f0ee"
 COLOR_MUTED = "#8fa6a0"
 COLOR_ACCENT = "#3c9e66"
 
+# Must match the Tk title set in liveaudio/app.py (self.title(...)). Window
+# detection by title is how the launcher knows the app is actually visible:
+# the venv entry point is a uv trampoline, so PID-based checks never see the
+# real app process.
+APP_WINDOW_TITLE = "Plynte LiveAudio"
+APP_WINDOW_TIMEOUT = 120.0  # seconds to wait for the app window to appear
+
 GPU_FALLBACK_MESSAGE = (
     "GPU detected but driver too old / insufficient VRAM — installing CPU "
     "version. Update your NVIDIA driver and re-run with --device cuda"
+)
+APP_START_FAILED_MESSAGE = (
+    "LiveAudio failed to start — see bootstrap.log in the install folder"
 )
 PORTAUDIO_MESSAGE = (
     "PortAudio runtime missing — install it with: sudo apt install libportaudio2"
@@ -718,7 +731,13 @@ def check_portaudio(platform=None):
 
 
 def launch_app(install_root, portable, environ=None, platform=None, notify=None):
-    """Start the installed app detached; returns True on success."""
+    """Start the installed app detached.
+
+    Returns the (truthy) Popen handle on success, False when the app
+    executable is missing. NOTE: on Windows the handle is a uv trampoline —
+    the real interpreter runs as a grandchild — so ``poll()`` going non-None
+    is only a "definitely dead" signal, never proof the app window is up.
+    """
     environ = os.environ if environ is None else environ
     platform = platform or sys.platform
     notify = notify or (lambda message: None)
@@ -745,8 +764,44 @@ def launch_app(install_root, portable, environ=None, platform=None, notify=None)
         )
     else:
         kwargs["start_new_session"] = True
-    subprocess.Popen([exe], **kwargs)
-    return True
+    return subprocess.Popen([exe], **kwargs)
+
+
+def _find_app_window():
+    """Truthy when the app's top-level window exists (Windows only)."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+
+        return ctypes.windll.user32.FindWindowW(None, APP_WINDOW_TITLE) or None
+    except Exception:
+        return None
+
+
+def wait_for_app_window(find_window=None, proc_alive=None, timeout=APP_WINDOW_TIMEOUT,
+                        interval=0.5, sleep=time.sleep, on_tick=None):
+    """Poll until the app window appears.
+
+    Returns "found" when the window exists, "died" when ``proc_alive()``
+    reports the process gone before the window appeared, "timeout" otherwise.
+    The window appearing is the success signal; "timeout" with the process
+    still alive usually just means a slow machine.
+    """
+    if find_window is None:
+        find_window = _find_app_window
+    elapsed = 0.0
+    while True:
+        if find_window():
+            return "found"
+        if proc_alive is not None and not proc_alive():
+            return "died"
+        if elapsed >= timeout:
+            return "timeout"
+        if on_tick is not None:
+            on_tick()
+        sleep(interval)
+        elapsed += interval
 
 
 # ---------------------------------------------------------------------------
@@ -1021,7 +1076,12 @@ def _set_window_icon(tk_root):
 
 def run_bootstrap(meta, install_root, portable, device, reporter, cancel=None,
                   no_launch=False):
-    """Full bootstrap: fetch source, uv sync, write installed.json, launch."""
+    """Full bootstrap: fetch source, uv sync, write installed.json, launch.
+
+    Returns the Popen handle of the launched app, or None when ``no_launch``
+    is set (or the launch failed); GUI callers use it to keep the splash open
+    until the app window appears.
+    """
     target = app_dir(install_root)
     os.makedirs(install_root, exist_ok=True)
     reporter.progress(0.02)
@@ -1066,10 +1126,12 @@ def run_bootstrap(meta, install_root, portable, device, reporter, cancel=None,
     reporter.progress(0.99)
     LOG.info("Bootstrap complete: version=%s extra=%s", meta.version, device)
 
+    popen = None
     if not no_launch:
         reporter.status("Launching LiveAudio...")
-        launch_app(install_root, portable, notify=reporter.notify)
+        popen = launch_app(install_root, portable, notify=reporter.notify) or None
     reporter.progress(1.0)
+    return popen
 
 
 def _bootstrap_headless(meta, install_root, portable, device, no_launch, notes=()):
@@ -1090,6 +1152,33 @@ def _bootstrap_headless(meta, install_root, portable, device, no_launch, notes=(
     return 0
 
 
+def _await_app_window_gui(reporter, popen):
+    """Keep the splash informative until the app window appears (Windows).
+
+    Returns True when the splash should close normally, False when an error
+    was already reported (the splash stays open showing it). On non-Windows
+    platforms window detection is unavailable, so this is a no-op.
+    """
+    if popen is None or sys.platform != "win32":
+        return True
+    reporter.status("Starting LiveAudio...")
+    reporter.progress(1.0)
+    result = wait_for_app_window(proc_alive=lambda: popen.poll() is None)
+    if result == "died":
+        LOG.error("App process exited before its window appeared")
+        reporter.report_error(APP_START_FAILED_MESSAGE)
+        return False
+    if result == "timeout":
+        # Process still alive: slow machine, the window will appear; close
+        # the splash quietly rather than scaring the user with an error.
+        LOG.warning(
+            "App window not seen within %.0fs; assuming slow start", APP_WINDOW_TIMEOUT
+        )
+    else:
+        LOG.info("App window detected")
+    return True
+
+
 def _bootstrap_gui(meta, install_root, portable, device, no_launch, notes=()):
     try:
         reporter = TkReporter(meta.version)
@@ -1101,7 +1190,7 @@ def _bootstrap_gui(meta, install_root, portable, device, no_launch, notes=()):
 
     def worker():
         try:
-            run_bootstrap(
+            popen = run_bootstrap(
                 meta, install_root, portable, device, reporter,
                 cancel=reporter.cancel_token, no_launch=no_launch,
             )
@@ -1111,6 +1200,33 @@ def _bootstrap_gui(meta, install_root, portable, device, no_launch, notes=()):
             LOG.exception("Bootstrap failed")
             reporter.report_error(str(exc))
         else:
+            if _await_app_window_gui(reporter, popen):
+                reporter.report_success()
+
+    log_path = os.path.join(install_root, "bootstrap.log")
+    return reporter.start(worker, log_path=log_path)
+
+
+def _fast_path_gui(version, install_root, portable):
+    """Windows fast path: minimal splash until the app window appears.
+
+    The app imports torch at module level before creating its window, so a
+    cold start can take 60+ seconds with zero feedback. Reuse the existing
+    splash (TkReporter) so users know something is happening.
+    """
+    try:
+        reporter = TkReporter(version or "")
+    except Exception as exc:  # tkinter missing or no display
+        LOG.info("tkinter unavailable (%s), launching without splash", exc)
+        return 0 if launch_app(install_root, portable) else 1
+
+    def worker():
+        reporter.status("Starting LiveAudio...")
+        popen = launch_app(install_root, portable, notify=reporter.notify) or None
+        if popen is None:
+            reporter.report_error(APP_START_FAILED_MESSAGE)
+            return
+        if _await_app_window_gui(reporter, popen):
             reporter.report_success()
 
     log_path = os.path.join(install_root, "bootstrap.log")
@@ -1433,10 +1549,14 @@ def main(argv=None):
     )
 
     if is_installed and version_matches and extra_matches:
-        # Fast path: no UI at all.
+        # Fast path: straight to the app. On Windows a minimal splash stays
+        # open until the app window appears; Linux/headless launch with no UI.
         LOG.info("Fast path: launching installed version %s", installed.get("app_version"))
         if args.no_launch:
             return 0
+        if sys.platform == "win32" and not args.headless:
+            return _fast_path_gui(installed.get("app_version"), install_root, portable)
+        LOG.info("Launching app...")
         return 0 if launch_app(install_root, portable) else 1
 
     if meta is None:

@@ -28,7 +28,16 @@ LiveAudio-Setup-X.Y.Z.exe / liveaudio-launcher
 ```
 
 On subsequent runs, `installed.json` matches the launcher's target version,
-so the launcher takes the **fast path**: no UI, straight to the app.
+so the launcher takes the **fast path**: it spawns the installed app
+directly. On Windows a brief "Starting LiveAudio…" splash stays open until
+the app window (`APP_WINDOW_TITLE` in `launcher.py`, matching the Tk title
+in `liveaudio/app.py`) is detected via `FindWindowW` — the app imports torch
+at module level, so a cold start can take 60+ seconds with no feedback of
+its own. If the window never appears but the process is alive, the splash
+closes quietly after a timeout; if the process dies first, an error dialog
+points at `bootstrap.log`. The same wait applies after a bootstrap launch.
+On Linux and with `--headless` there is no splash: the app is launched and
+the launcher exits.
 
 ### Install layout
 
