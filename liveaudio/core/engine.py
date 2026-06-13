@@ -406,7 +406,18 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
 
     session_writer = None
     shutdown_started_at = None
+    queued_audio_item = None
+    has_queued_audio_item = False
     try:
+        try:
+            queued_audio_item = audio_queue.get_nowait()
+            has_queued_audio_item = True
+        except queue.Empty:
+            queued_audio_item = None
+
+        if has_queued_audio_item and queued_audio_item is None:
+            return
+
         clean_model_name = shared_config["model_size"].split()[0] 
         _emit_status(log_queue, "asr", "ASR: cargando", "active")
         _emit_log(log_queue, f"[IA] Cargando Whisper ({clean_model_name}) en {shared_config['device'].upper()}...")
@@ -454,7 +465,12 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
         session_writer = SessionWriter(jsonl_path, vtt_path)
 
         while True:
-            audio_item = audio_queue.get()
+            if has_queued_audio_item:
+                audio_item = queued_audio_item
+                queued_audio_item = None
+                has_queued_audio_item = False
+            else:
+                audio_item = audio_queue.get()
             if audio_item is None: break
 
             if isinstance(audio_item, dict):
