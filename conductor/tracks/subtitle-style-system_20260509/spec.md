@@ -1,7 +1,9 @@
 # Track: Subtitle Style System v2
 
 ## Overview
-Evolve LiveAudio's subtitle system from a static HTML file to a modular, CSS custom properties-driven theming engine. Fix critical memory leak and backpressure issues first. Add 7 preset themes, inline preview panel, and a dedicated "Subtítulos" tab. Set GPL v3 license. Require OBS 30+ with runtime check.
+Evolve LiveAudio's subtitle system from a static HTML file to a modular, CSS custom properties-driven theming engine. Fix critical memory leak and backpressure issues first. Add 7 preset themes, inline preview panel, and a dedicated "Subtítulos" tab. Require OBS 30+ with runtime check.
+
+> Historical license note: this 2026-05 track originally included a copyleft license migration requirement. That requirement is superseded by the later `dynamic-i18n_20260601` / MIT migration. The current repository license is MIT; this track must not be read as current licensing guidance.
 
 ## Functional Requirements
 
@@ -56,10 +58,10 @@ Evolve LiveAudio's subtitle system from a static HTML file to a modular, CSS cus
 - `style` parameter maps to new theme system automatically
 - No restart of OBS browser source required for theme changes
 
-### REQ-8: GPL v3 License
-- Add `LICENSE` file with GPL v3 text to repository root
-- Add license header to all Python and JS files
-- Update README with license badge and notice
+### REQ-8: Superseded historical license migration
+- Historical requirement only: the original track asked for a copyleft license migration.
+- Superseded by the later `dynamic-i18n_20260601` / MIT migration.
+- Current license source of truth: root `LICENSE`, README license section, `pyproject.toml`, and `tests/test_license.py`.
 
 ### REQ-9: OBS 30+ Runtime Check
 - On app startup, detect OBS version if possible (via `window.obsstudio` or user agent)
@@ -72,7 +74,7 @@ Evolve LiveAudio's subtitle system from a static HTML file to a modular, CSS cus
 - Preview panel must update within 200ms of theme change
 - Memory usage of browser source must not grow > 50MB over 4 hours
 - Backpressure must prevent subtitle flash even at 1 subtitle/second
-- GPL v3 license headers in all source files
+- MIT SPDX headers in source files are the current requirement; the older copyleft-header requirement is superseded.
 - OBS 30+ runtime check completes in < 1 second
 
 ## Acceptance Criteria
@@ -83,7 +85,7 @@ Evolve LiveAudio's subtitle system from a static HTML file to a modular, CSS cus
 - **AC-5**: Preview panel shows accurate representation of OBS output
 - **AC-6**: Existing OBS browser source URLs work without modification after update
 - **AC-7**: Theme changes apply without OBS restart
-- **AC-8**: GPL v3 LICENSE file present, headers in all source files
+- **AC-8**: Superseded by later MIT migration; current acceptance is MIT license file plus MIT SPDX headers in source files
 - **AC-9**: OBS version warning shows if < 30 detected
 - **AC-10**: All existing tests pass + new tests for style system
 

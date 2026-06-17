@@ -1,8 +1,10 @@
 {
   "track_id": "asr-language-separation_20260601",
   "status": "pending_verification",
-  "branch": "feature/empaquetado-portatil",
-  "pr": "https://github.com/FranGuh/LiveAudio/pull/1",
+  "branch": "master",
+  "repository": "https://github.com/plynte-labs/LiveAudio",
+  "pr": null,
+  "review_status_note": "Historical pre-migration PR reference removed; implementation commit is present on master.",
   "commit": "5680b08",
   "created": "2026-06-01",
   "files": [

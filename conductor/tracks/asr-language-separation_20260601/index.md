@@ -2,12 +2,15 @@
 
 **ID:** `asr-language-separation_20260601`
 **Status:** 🔲 pending manual verification
-**Branch:** `feature/empaquetado-portatil`
-**PR:** [#1](https://github.com/FranGuh/LiveAudio/pull/1)
+**Branch:** `master` (implementation commit also remains reachable from historical branch `feature/empaquetado-portatil`)
+**Repository:** `https://github.com/plynte-labs/LiveAudio`
+**PR:** historical pre-migration PR reference removed; implementation is already present on `master`
 **Commit:** `5680b08`
 
 ## Summary
 Decouple ASR voice language (`asr_language`) from UI display language (`language`). Add per-language context prompts (`whisper_context_prompt_es`/`_en`) with transparent migration. Users can set UI to English while speaking Spanish (or vice versa) without restarting the engine.
+
+> Repository migration note: this track was created before the canonical repository moved to `plynte-labs/LiveAudio`. Do not use old personal-fork PR links as current review or release status.
 
 ## Files Changed
 - `core/engine.py` — dynamic `language` param + per-cycle prompt read from `shared_config`

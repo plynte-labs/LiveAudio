@@ -98,14 +98,14 @@
 - [x] Task: Verify all compatibility tests pass
 - [x] Task: Conductor - User Manual Verification 'Backward Compatibility' (Protocol in workflow.md)
 
-## Phase 8: GPL v3 License (REQ-8)
-- [x] Task: Add GPL v3 license files
-    - [x] Create `LICENSE` file with GPL v3 text
-    - [x] Add GPL v3 header to all Python files
-    - [x] Add GPL v3 header to `subtitulos_obs.html`
-    - [x] Update README with license notice
-- [x] Task: Verify license files present
-- [x] Task: Conductor - User Manual Verification 'GPL v3 License' (Protocol in workflow.md)
+## Phase 8: Historical license migration - superseded by MIT (REQ-8)
+- [x] Task: Record historical license work from the original 2026-05 track
+    - [x] Historical only: original plan asked for a copyleft root `LICENSE`
+    - [x] Historical only: original plan asked for copyleft source headers
+    - [x] Historical only: original plan asked for README license notice updates
+- [x] Task: Superseded by later `dynamic-i18n_20260601` / MIT migration
+- [x] Task: Current source of truth is MIT in root `LICENSE`, README, `pyproject.toml`, and `tests/test_license.py`
+- [x] Task: Conductor - User Manual Verification 'Historical license migration, superseded by MIT' (Protocol in workflow.md)
 
 ## Phase 9: OBS 30+ Runtime Check (REQ-9)
 - [x] Task: Write tests — Red phase (tests fail)
@@ -125,7 +125,7 @@
     - [x] Architecture: CSS vars, backward compat, theme schema
     - [x] Performance: memory leak fix, backpressure, CEF overhead
     - [x] QA: preview accuracy, WCAG contrast, edge cases
-    - [x] Research: OBS 30+ compatibility, GPL compliance, docs
+    - [x] Research: OBS 30+ compatibility, historical license notes, docs
     - [x] Product Strategy: preset differentiation, UX flow
 - [x] Task: Resolve any issues found during review
 - [x] Task: Conductor - User Manual Verification 'Collective Review & Sign-Off' (Protocol in workflow.md)
