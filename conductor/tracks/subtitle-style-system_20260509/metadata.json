@@ -4,5 +4,5 @@
   "status": "completed",
   "created_at": "2026-05-09T19:15:00Z",
   "updated_at": "2026-05-11T00:00:00Z",
-  "description": "Subtitle Style System v2 — memory leak fix, CSS custom properties theme engine, 7 presets, preview panel, dedicated Subtítulos tab, GPL v3 license, OBS 30+ runtime check"
+  "description": "Subtitle Style System v2 — memory leak fix, CSS custom properties theme engine, 7 presets, preview panel, dedicated Subtítulos tab, historical license migration superseded by MIT, OBS 30+ runtime check"
 }

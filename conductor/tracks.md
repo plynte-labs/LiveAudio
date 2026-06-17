@@ -44,7 +44,7 @@ This file tracks major LiveAudio tracks. Each track should have its own detailed
 
 - [ ] **Track: ASR Language Separation with Dual Context Prompts**
   *Link: [./tracks/asr-language-separation_20260601/](./tracks/asr-language-separation_20260601/)*
-  *Status: 🔲 pending manual verification. Implementation complete, 47 stress tests, PR #1 approved. Non-blocking follow-up for public launch because the app remains functional today.*
+  *Status: pending manual verification. Implementation complete on `master`, 47 stress tests. Historical pre-migration PR reference removed; do not treat old personal-fork PR links as current release status. Non-blocking follow-up for public launch because the app remains functional today.*
   *Pending: manual test of migration, UI dropdown, prompt swap, and live inference language switch.*
 
 ---
