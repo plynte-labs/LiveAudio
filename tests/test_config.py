@@ -17,6 +17,7 @@ from liveaudio.utils.config import (
     VALID_DEVICES,
     VALID_MODELS,
     VALID_SUBTITLE_STYLES,
+    VALID_SUBTITLE_DISPLAY_MODES,
     VALID_BACKLOG_POLICIES,
     VALID_DIAGNOSTICS_LEVELS,
 )
@@ -320,6 +321,88 @@ class TestNewSubtitleStyles(unittest.TestCase):
         config["obs_enabled"] = "not_a_bool"
         result, updated = _normalize_config(config)
         self.assertIsInstance(result["obs_enabled"], bool)
+
+
+class TestSubtitleDisplayModeConfig(unittest.TestCase):
+    """Tests for subtitle_display_mode / subtitle_ribbon_max_lines (subtitle-ribbon-buffer)."""
+
+    def test_valid_display_modes_set(self):
+        """VALID_SUBTITLE_DISPLAY_MODES must contain exactly the three modes."""
+        self.assertEqual(
+            VALID_SUBTITLE_DISPLAY_MODES,
+            {"single", "ribbon", "adaptive"},
+        )
+
+    def test_default_display_mode_is_adaptive(self):
+        """DEFAULT_CONFIG subtitle_display_mode must be 'adaptive' (LOCKED 2026-06-19)."""
+        self.assertIn("subtitle_display_mode", DEFAULT_CONFIG)
+        self.assertEqual(DEFAULT_CONFIG["subtitle_display_mode"], "adaptive")
+
+    def test_default_ribbon_max_lines_is_three(self):
+        """DEFAULT_CONFIG subtitle_ribbon_max_lines must default to 3 (OD-2)."""
+        self.assertIn("subtitle_ribbon_max_lines", DEFAULT_CONFIG)
+        self.assertEqual(DEFAULT_CONFIG["subtitle_ribbon_max_lines"], 3)
+
+    def test_valid_display_modes_pass_through(self):
+        """single/ribbon/adaptive must pass through unchanged (AC-6)."""
+        for mode in ("single", "ribbon", "adaptive"):
+            config = DEFAULT_CONFIG.copy()
+            config["subtitle_display_mode"] = mode
+            result, _ = _normalize_config(config)
+            self.assertEqual(result["subtitle_display_mode"], mode)
+
+    def test_unknown_display_mode_falls_back_to_adaptive(self):
+        """Unknown display mode normalizes to the DEFAULT 'adaptive' (AC-6)."""
+        config = DEFAULT_CONFIG.copy()
+        config["subtitle_display_mode"] = "tape"
+        result, updated = _normalize_config(config)
+        self.assertEqual(result["subtitle_display_mode"], "adaptive")
+        self.assertTrue(updated)
+
+    def test_missing_display_mode_filled_with_default(self):
+        """A config missing the key gets the default 'adaptive'."""
+        config = {}
+        result, _ = _normalize_config(config)
+        self.assertEqual(result["subtitle_display_mode"], "adaptive")
+
+    def test_ribbon_max_lines_clamps_above_max(self):
+        """subtitle_ribbon_max_lines above 8 should clamp to 8 (AC-5)."""
+        config = DEFAULT_CONFIG.copy()
+        config["subtitle_ribbon_max_lines"] = 99
+        result, updated = _normalize_config(config)
+        self.assertEqual(result["subtitle_ribbon_max_lines"], 8)
+        self.assertTrue(updated)
+
+    def test_ribbon_max_lines_clamps_below_min(self):
+        """subtitle_ribbon_max_lines of 0 should clamp to 1 (AC-5)."""
+        config = DEFAULT_CONFIG.copy()
+        config["subtitle_ribbon_max_lines"] = 0
+        result, updated = _normalize_config(config)
+        self.assertEqual(result["subtitle_ribbon_max_lines"], 1)
+        self.assertTrue(updated)
+
+    def test_ribbon_max_lines_coerces_float_to_int(self):
+        """A float like 3.7 should coerce to int 3 (AC-5)."""
+        config = DEFAULT_CONFIG.copy()
+        config["subtitle_ribbon_max_lines"] = 3.7
+        result, _ = _normalize_config(config)
+        self.assertIsInstance(result["subtitle_ribbon_max_lines"], int)
+        self.assertEqual(result["subtitle_ribbon_max_lines"], 3)
+
+    def test_ribbon_max_lines_non_numeric_resets_to_default(self):
+        """Non-coercible value resets to the default 3 (AC-5)."""
+        config = DEFAULT_CONFIG.copy()
+        config["subtitle_ribbon_max_lines"] = "many"
+        result, updated = _normalize_config(config)
+        self.assertEqual(result["subtitle_ribbon_max_lines"], 3)
+        self.assertTrue(updated)
+
+    def test_ribbon_max_lines_valid_passes_through(self):
+        """A valid value in range passes through unchanged."""
+        config = DEFAULT_CONFIG.copy()
+        config["subtitle_ribbon_max_lines"] = 5
+        result, _ = _normalize_config(config)
+        self.assertEqual(result["subtitle_ribbon_max_lines"], 5)
 
 
 class TestConfigValidation(unittest.TestCase):
