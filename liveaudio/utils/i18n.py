@@ -44,6 +44,8 @@ TRANSLATIONS = {
         "latency_control": "Control de Latencia (Ritmo):",
         "silence_detection": "Detección de Silencio: {:.1f}s",
         "max_phrase_duration": "Duración máxima de frase: {:.1f}s",
+        "vad_speech_pad": "Pre-roll de inicio de voz: {:.0f}ms",
+        "vad_threshold_label": "Sensibilidad del VAD: {:.2f}",
         
         # Performance Section
         "hardware": "Hardware:",
@@ -201,6 +203,8 @@ TRANSLATIONS = {
         "latency_control": "Latency Control (Pacing):",
         "silence_detection": "Silence Detection: {:.1f}s",
         "max_phrase_duration": "Max phrase duration: {:.1f}s",
+        "vad_speech_pad": "Speech onset pre-roll: {:.0f}ms",
+        "vad_threshold_label": "VAD sensitivity: {:.2f}",
         
         # Performance Section
         "hardware": "Hardware:",

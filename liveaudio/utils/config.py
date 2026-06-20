@@ -83,6 +83,8 @@ DEFAULT_CONFIG = {
     "diagnostics_level": "minimal",
     "diagnostics_export_dir": None,
     "last_update_check": 0,
+    "vad_speech_pad_ms": 200,  # Pre-roll de onset (ms) recuperado al inicio de cada frase
+    "vad_threshold": 0.5,  # Sensibilidad del VAD Silero (0.1 a 0.9); mayor = menos sensible
 }
 
 
@@ -141,6 +143,14 @@ def _normalize_config(config):
 
     max_chunk_duration, changed = _clamp_number(config.get("max_chunk_duration"), DEFAULT_CONFIG["max_chunk_duration"], 2.0, 15.0, float)
     config["max_chunk_duration"] = round(max_chunk_duration, 1)
+    updated = updated or changed
+
+    vad_speech_pad_ms, changed = _clamp_number(config.get("vad_speech_pad_ms"), DEFAULT_CONFIG["vad_speech_pad_ms"], 0, 500, int)
+    config["vad_speech_pad_ms"] = vad_speech_pad_ms
+    updated = updated or changed
+
+    vad_threshold, changed = _clamp_number(config.get("vad_threshold"), DEFAULT_CONFIG["vad_threshold"], 0.1, 0.9, float)
+    config["vad_threshold"] = round(vad_threshold, 2)
     updated = updated or changed
 
     if not isinstance(config.get("continuous_session"), bool):

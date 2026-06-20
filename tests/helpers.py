@@ -52,6 +52,8 @@ def make_shared_config(overrides=None):
         "subtitle_catchup_interval_sec": 1.5,
         "silence_timeout": 0.8,
         "max_chunk_duration": 5.0,
+        "vad_speech_pad_ms": 200,
+        "vad_threshold": 0.5,
         "output_dir": "sessions",
         "diagnostics_enabled": True,
         "diagnostics_level": "deep",

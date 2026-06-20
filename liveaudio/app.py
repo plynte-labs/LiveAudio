@@ -782,6 +782,20 @@ class LiveASRApp(ctk.CTk):
         self.slider_max_dur.set(self.config_data["max_chunk_duration"])
         self.slider_max_dur.pack(fill="x", padx=10, pady=(0, 15))
 
+        # Slider Pre-roll de onset (vad_speech_pad_ms)
+        self.lbl_vad_pad = ctk.CTkLabel(tab_audio, text=t("vad_speech_pad", self.config_data['vad_speech_pad_ms']))
+        self.lbl_vad_pad.pack(anchor="w", padx=10)
+        self.slider_vad_pad = ctk.CTkSlider(tab_audio, from_=0, to=500, command=self.on_setting_change)
+        self.slider_vad_pad.set(self.config_data["vad_speech_pad_ms"])
+        self.slider_vad_pad.pack(fill="x", padx=10, pady=(0, 10))
+
+        # Slider Sensibilidad del VAD (vad_threshold)
+        self.lbl_vad_threshold = ctk.CTkLabel(tab_audio, text=t("vad_threshold_label", self.config_data['vad_threshold']))
+        self.lbl_vad_threshold.pack(anchor="w", padx=10)
+        self.slider_vad_threshold = ctk.CTkSlider(tab_audio, from_=0.1, to=0.9, command=self.on_setting_change)
+        self.slider_vad_threshold.set(self.config_data["vad_threshold"])
+        self.slider_vad_threshold.pack(fill="x", padx=10, pady=(0, 15))
+
         # === SECCIÓN: Perfiles ===
         ctk.CTkLabel(tab_advanced, text=t("config_profile"), font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=10, pady=(10, 0))
         current_profile_id = self.config_data.get("selected_profile_id", "custom")
@@ -1053,6 +1067,8 @@ class LiveASRApp(ctk.CTk):
         draft["audio_device"] = copy.deepcopy(self.draft_config.get("audio_device", self.config_data.get("audio_device")))
         draft["silence_timeout"] = round(self.slider_silence.get(), 1)
         draft["max_chunk_duration"] = round(self.slider_max_dur.get(), 1)
+        draft["vad_speech_pad_ms"] = int(round(self.slider_vad_pad.get()))
+        draft["vad_threshold"] = round(self.slider_vad_threshold.get(), 2)
         draft["subtitle_max_live_delay_sec"] = round(self.slider_max_live_delay.get(), 1)
         draft["subtitle_catchup_interval_sec"] = round(self.slider_catchup_interval.get(), 1)
         draft["device"] = self.var_hw.get()
@@ -1103,6 +1119,8 @@ class LiveASRApp(ctk.CTk):
         self.var_model.set(next((m for m in self.opt_model.cget("values") if m.startswith(config["model_size"].split()[0])), "small (Balance CPU)"))
         self.slider_silence.set(config["silence_timeout"])
         self.slider_max_dur.set(config["max_chunk_duration"])
+        self.slider_vad_pad.set(config["vad_speech_pad_ms"])
+        self.slider_vad_threshold.set(config["vad_threshold"])
         self.var_session.set(config["continuous_session"])
         self.var_style.set(config.get("subtitle_style", "default"))
         
@@ -1245,6 +1263,8 @@ class LiveASRApp(ctk.CTk):
 
         self.lbl_silence.configure(text=t("silence_detection", self.slider_silence.get()))
         self.lbl_max_dur.configure(text=t("max_phrase_duration", self.slider_max_dur.get()))
+        self.lbl_vad_pad.configure(text=t("vad_speech_pad", self.slider_vad_pad.get()))
+        self.lbl_vad_threshold.configure(text=t("vad_threshold_label", self.slider_vad_threshold.get()))
         self.lbl_max_live_delay.configure(text=t("max_live_delay", self.slider_max_live_delay.get()))
         self.lbl_catchup_interval.configure(text=t("catchup_pacing", self.slider_catchup_interval.get()))
         self.refresh_profile_status()
@@ -1295,7 +1315,7 @@ class LiveASRApp(ctk.CTk):
 
     def _pending_restart_flags(self, draft):
         needs_asr_restart = any(self.config_data.get(key) != draft.get(key) for key in ["device", "model_size", "cpu_threads"])
-        needs_audio_restart = any(self.config_data.get(key) != draft.get(key) for key in ["audio_device", "silence_timeout", "max_chunk_duration"])
+        needs_audio_restart = any(self.config_data.get(key) != draft.get(key) for key in ["audio_device", "silence_timeout", "max_chunk_duration", "vad_speech_pad_ms", "vad_threshold"])
         return needs_asr_restart, needs_audio_restart
 
     def _validate_draft_config(self, draft):

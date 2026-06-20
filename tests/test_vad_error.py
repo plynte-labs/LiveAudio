@@ -19,6 +19,9 @@ class TestVADErrorHandling(unittest.TestCase):
 
         audio_queue = queue.Queue(maxsize=100)
         log_queue = queue.Queue()
+        # vad_threshold is now a real, consumed config key; 0.5 preserves the
+        # prior default behavior. The VAD load fails before the worker loop, so
+        # the threshold has no behavioral effect on this error-path test.
         config = {
             "device_index": None,
             "vad_threshold": 0.5,
