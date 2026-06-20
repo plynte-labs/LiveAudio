@@ -53,6 +53,7 @@ VALID_MODELS = {
 }
 MODEL_BY_KEY = {model.split()[0]: model for model in VALID_MODELS}
 VALID_SUBTITLE_STYLES = {"default", "karaoke", "neon", "minimal", "bold", "rgb", "typewriter"}
+VALID_SUBTITLE_DISPLAY_MODES = {"single", "ribbon", "adaptive"}
 VALID_BACKLOG_POLICIES = {"auto", "live_only", "send_all"}
 VALID_DIAGNOSTICS_LEVELS = {"off", "minimal", "deep"}
 
@@ -64,6 +65,8 @@ DEFAULT_CONFIG = {
     "blacklist": "amara.org, subtítulos por, suscríbete, dale like, gracias por ver, memos, gracias, activar la campanita",
     "continuous_session": True,
     "subtitle_style": "default",
+    "subtitle_display_mode": "adaptive",
+    "subtitle_ribbon_max_lines": 3,
     "subtitle_backlog_policy": "auto",
     "subtitle_max_live_delay_sec": 10.0,
     "subtitle_catchup_interval_sec": 1.5,
@@ -187,6 +190,14 @@ def _normalize_config(config):
     if config.get("subtitle_style") not in VALID_SUBTITLE_STYLES:
         config["subtitle_style"] = DEFAULT_CONFIG["subtitle_style"]
         updated = True
+
+    if config.get("subtitle_display_mode") not in VALID_SUBTITLE_DISPLAY_MODES:
+        config["subtitle_display_mode"] = DEFAULT_CONFIG["subtitle_display_mode"]
+        updated = True
+
+    ribbon_max_lines, changed = _clamp_number(config.get("subtitle_ribbon_max_lines"), DEFAULT_CONFIG["subtitle_ribbon_max_lines"], 1, 8, int)
+    config["subtitle_ribbon_max_lines"] = ribbon_max_lines
+    updated = updated or changed
 
     if config.get("subtitle_backlog_policy") not in VALID_BACKLOG_POLICIES:
         config["subtitle_backlog_policy"] = DEFAULT_CONFIG["subtitle_backlog_policy"]

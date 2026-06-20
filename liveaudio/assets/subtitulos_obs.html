@@ -69,8 +69,13 @@
         }
 
         .sub-box.visible {
+            /* transform is intentionally NOT !important: .sub-box.visible already
+               wins over .sub-box by specificity, and keeping it a normal author
+               declaration lets the FLIP animation (element.animate, Animations
+               cascade origin) override it during a reflow. An !important here would
+               sit ABOVE the Animations origin and silently suppress the glide. */
             opacity: 1 !important;
-            transform: translateY(0) !important;
+            transform: translateY(0);
         }
 
         /* Salida suave: espejo exacto de la entrada (misma distancia, misma duración) */
@@ -685,8 +690,48 @@
             sub._hideTimer = setTimeout(() => runExpiry(sub, sub._style || 'default', true), delay);
         }
 
+        // --- FLIP: glide surviving ribbon lines to their new position instead of
+        // letting them JUMP when the stack reflows (oldest evicted + new line
+        // appended). Visual only — it animates a transform via the Web Animations
+        // API and never touches any lifetime timer, so on-screen dwell is unchanged.
+        // Values mirror the --sub-slide-* CSS so the glide matches the enter feel.
+        const RIBBON_FLIP_MS = 400;                              // == --sub-slide-duration (0.4s)
+        const RIBBON_FLIP_EASE = 'cubic-bezier(0.0, 0.0, 0.2, 1)'; // == --sub-slide-ease-out
+
+        // First pass: snapshot each current line's top BEFORE the reflow. Returns
+        // empty (and disables FLIP) in a headless/no-layout environment.
+        function captureRibbonRects(container) {
+            const tops = new Map();
+            for (const el of container.children) {
+                if (typeof el.getBoundingClientRect !== 'function') return tops;
+                tops.set(el, el.getBoundingClientRect().top);
+            }
+            return tops;
+        }
+
+        // Play pass: for every surviving line (present before AND after), animate it
+        // from its old position to the new one. The just-added line is skipped — it
+        // keeps its own enter animation.
+        function flipPlayRibbon(container, firstTops, newEl) {
+            if (!firstTops) return;
+            for (const el of container.children) {
+                if (el === newEl) continue;
+                const firstTop = firstTops.get(el);
+                if (firstTop === undefined) continue;
+                if (typeof el.getBoundingClientRect !== 'function' || typeof el.animate !== 'function') continue;
+                const dy = firstTop - el.getBoundingClientRect().top;
+                if (!dy) continue;
+                el.animate(
+                    [{ transform: `translateY(${dy}px)` }, { transform: 'translateY(0)' }],
+                    { duration: RIBBON_FLIP_MS, easing: RIBBON_FLIP_EASE }
+                );
+            }
+        }
+
         function showSubtitle(text, style, renderStacked) {
             const safeStyle = VALID_STYLES.has(style) ? style : 'default';
+            // FLIP snapshot holder (ribbon path only); captured before the reflow.
+            let flipFirst = null;
             let safeText = String(text || '').replace(/[\r\n\t]+/g, ' ').trim().slice(0, MAX_SUBTITLE_CHARS);
             // Strip dangerous Unicode: bidi overrides, control chars
             safeText = safeText.replace(/[\u202E\u202D\u200E\u200F\u0000\u001b]/g, '');
@@ -714,6 +759,9 @@
                 // La insercion es appendChild, asi que el orden de hijos en el DOM es
                 // [mas viejo ... mas nuevo] y el mas viejo es firstElementChild.
                 // column-reverse SOLO invierte el orden VISUAL, no el de los hijos del DOM.
+                // FLIP first pass: snapshot positions BEFORE the stack reflows (the
+                // eviction below + the new line appended later) so survivors glide.
+                flipFirst = captureRibbonRects(container);
                 while (container.children.length >= ribbonMaxLines) {
                     const oldest = container.firstElementChild;
                     if (!oldest) break;
@@ -809,6 +857,10 @@
             }
             
             container.appendChild(sub);
+
+            // FLIP play pass: glide the surviving ribbon lines to their new
+            // positions (no-op in single mode and in the headless harness).
+            if (renderStacked) flipPlayRibbon(container, flipFirst, sub);
 
             // --- Animación de salida unificada ---
             // El TIMING (5000ms hide / 650ms cleanup, stagger por palabra) es identico

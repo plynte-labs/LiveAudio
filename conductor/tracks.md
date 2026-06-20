@@ -64,3 +64,15 @@ This file tracks major LiveAudio tracks. Each track should have its own detailed
 - [~] **Track: Subtitle Legibility & Animation Polish (OBS Overlay)**
   *Link: [./tracks/subtitle-legibility-anim_20260619/](./tracks/subtitle-legibility-anim_20260619/)*
   *Status: [~] In Progress (strict TDD; batched on the `feature/vad-onset-grace` working tree, to be split into `feature/subtitle-legibility-anim` at commit time). Was: proposed. Reconcile the `--sub-animation-duration` mismatch (0.2s CSS vs 0.4s JS), raise `.style-minimal` legibility, lift the small-source font clamp floor, and cap per-word reveal stagger so long phrases appear fast. Edits `subtitulos_obs.html`. SHARES that file with the ribbon track → must land FIRST.*
+
+---
+
+- [~] **Track: Vertical Ribbon Subtitle Buffer for OBS Overlay**
+  *Link: [./tracks/subtitle-ribbon-buffer_20260619/](./tracks/subtitle-ribbon-buffer_20260619/)*
+  *Status: [~] Implemented + dual-reviewed across 3 judgment-day cycles (final: pass-with-notes, state machine sound + memory safe); pending commit/merge. Default `adaptive`, strict TDD, node runtime harness, batched working tree. ADAPTIVE vertical "ribbon" buffer: one subtitle at a time under normal pacing, auto-stacks the N most-recent lines ONLY when subtitles accumulate/queue up (keyed off the existing `pendingQueue` + `is_replay` catch-up signals), then collapses back — so steady speech never shows an oversized text block (today `showSubtitle()` shows one at a time, subtitulos_obs.html:418). Modes `single|ribbon|adaptive`, **default `adaptive`** (LOCKED). Direction (OD-1, newest-on-top) + default/threshold (OD-6) + engine-hint defer (OD-5) RESOLVED. Edits `subtitulos_obs.html` → DEPENDS on the legibility track landing first (workflow.md:49 overlap rule).*
+
+---
+
+- [ ] **Track: Test-suite & launch-readiness cleanup (collateral — DEFERRED)**
+  *Link: N/A — noted follow-up; no track folder yet.*
+  *Status: 🔲 proposed. Collateral issues surfaced during the VAD/subtitle work, intentionally deferred OUT of their tracks (not bugs introduced by them): (1) `.atl/skill-registry.md` carries absolute Windows paths (`C:\Users\...`) after a `gentle-ai skill-registry refresh`, failing `tests/test_public_launch_readiness.py::test_skill_registry_has_no_absolute_windows_paths` — regenerate with relative paths or revert that working-tree change. (2) Pre-existing `tests/test_audio.py::TestVadThresholdEnforcement` + `tests/test_noise_detection.py` re-implement the VAD check locally with `>=`, contradicting the production strict `>` — route through a shared helper so the suite documents one correct boundary. (3) Adaptive-ribbon LOW edges (from Track B re-judge, not blocking): (a) the SINGLE↔RIBBON flap can recur only when `subtitle_catchup_interval_sec > ~5.65s` (slider max is 10s, but all profiles use 0.8–2.0s and default 1.5s) — consider tying the slider max to ~5s; (b) a non-replay live line interleaved between spaced replay payloads momentarily demotes (`subtitulos_obs.html` adaptive enqueue `replayActive = !!isReplay`) — arguable "caught up" semantics, decide if it should latch instead.*

@@ -35,6 +35,14 @@ class TestOBSPortQueryParameter(unittest.TestCase):
         self.assertIn(r"\u202E", self.html_content)
         self.assertIn(r"\u200E", self.html_content)
 
+    def test_mode_and_lines_params_do_not_break_port_parsing(self):
+        """Adding ?mode=/?lines= must not disturb existing port parsing."""
+        # Port parsing must still be present and unchanged.
+        self.assertIn("get('port')", self.html_content)
+        # New params must coexist via the same URLSearchParams pattern.
+        self.assertRegex(self.html_content, re.compile(r"urlParams\.get\(\s*['\"]mode['\"]\s*\)"))
+        self.assertRegex(self.html_content, re.compile(r"urlParams\.get\(\s*['\"]lines['\"]\s*\)"))
+
 
 if __name__ == "__main__":
     unittest.main()

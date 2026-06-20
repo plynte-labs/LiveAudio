@@ -49,6 +49,59 @@ class TestClientBackpressure(unittest.TestCase):
         )
 
 
+class TestRibbonBackpressureInteraction(unittest.TestCase):
+    """REQ-7 / AC-4 / AC-11: ribbon decouples visible cap from transport queue."""
+
+    def setUp(self):
+        html_path = os.path.join(os.path.dirname(__file__), "..", "liveaudio", "assets", "subtitulos_obs.html")
+        with open(html_path, "r", encoding="utf-8") as f:
+            self.html_content = f.read()
+
+    def test_single_mode_discard_oldest_preserved(self):
+        """AC-11: single-mode discard-oldest (pendingQueue.shift) must remain."""
+        self.assertIn(
+            "pendingQueue.shift()",
+            self.html_content,
+            "Single-mode discard-oldest backpressure must be preserved",
+        )
+
+    def test_max_pending_queue_kept_as_transport_valve(self):
+        """OD-4: MAX_PENDING_QUEUE stays as transport guard, decoupled from cap."""
+        self.assertRegex(
+            self.html_content,
+            re.compile(r"const\s+MAX_PENDING_QUEUE\s*=\s*5"),
+            "MAX_PENDING_QUEUE must stay as the transport safety valve (decoupled)",
+        )
+
+    def test_visible_cap_is_ribbon_max_lines_not_max_queue(self):
+        """AC-4: visible depth governed by ribbonMaxLines, not MAX_PENDING_QUEUE."""
+        self.assertIn(
+            "ribbonMaxLines",
+            self.html_content,
+            "Visible cap must be governed by ribbonMaxLines, not MAX_PENDING_QUEUE",
+        )
+
+    def test_debounce_preserved_in_ribbon(self):
+        """OD-3: DEBOUNCE_MS pacing kept (no second timing path)."""
+        self.assertRegex(
+            self.html_content,
+            re.compile(r"const\s+DEBOUNCE_MS\s*=\s*80"),
+            "DEBOUNCE_MS = 80 pacing must be preserved",
+        )
+
+    def test_isshowing_gate_only_governs_single_state(self):
+        """REQ-7: the ribbon branch must NOT gate rendering on isShowing.
+
+        The ribbon render must be reachable without waiting for onSubtitleComplete.
+        Assert the stacked branch is gated by renderStacked (a separate path).
+        """
+        self.assertIn(
+            "renderStacked",
+            self.html_content,
+            "Ribbon rendering must use a renderStacked path, not the isShowing gate",
+        )
+
+
 class TestNetworkBackpressure(unittest.TestCase):
     """Tests for server-side backpressure in network.py."""
 
