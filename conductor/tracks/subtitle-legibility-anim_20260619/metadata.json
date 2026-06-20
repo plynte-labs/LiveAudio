@@ -1,0 +1,8 @@
+{
+  "track_id": "subtitle-legibility-anim_20260619",
+  "type": "enhancement",
+  "status": "proposed",
+  "created_at": "2026-06-19T12:00:00Z",
+  "updated_at": "2026-06-19T12:00:00Z",
+  "description": "Legibility and animation polish for the OBS subtitle overlay (liveaudio/assets/subtitulos_obs.html). Reconcile the divergent --sub-animation-duration default (CSS :root 0.2s at html:19 vs JS VALID_THEME_TOKENS default 0.4s at html:284) into a single source of truth; raise minimal-style legibility (font-weight 300 at html:138, small-source clamp floor at html:251); and cap the cumulative per-word stagger so any phrase finishes its reveal/hide within a small budget (karaoke 0.025s/word html:433, rgb 0.05s/word html:458, typewriter 40ms/word html:477, hide cascade html:509/514/519). Fix the stale '50ms por palabra' karaoke comment (html:432), align the cleanup timeout (350ms at html:531) to the longest capped cascade, repair the false-positive typewriter delay test, and keep HTML/Python token validators in sync (html:275-300, engine.py:75-108). Preserve WCAG AA contrast established by subtitle-style-system_20260509 (tests/test_wcag_contrast.py). Coordinated to land before the sibling Track B subtitle-ribbon-buffer_20260619, which shares the same HTML file."
+}

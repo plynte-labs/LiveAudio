@@ -37,7 +37,7 @@ PRESETS = {
     "default": {"color": "#ffffff", "bg": "#000000"},  # white on rgba(0,0,0,0.7) ~ black
     "karaoke": {"color": "#ffcc00", "bg": "#000000"},  # yellow on rgba(0,0,0,0.7) ~ black
     "neon": {"color": "#ffffff", "bg": "#001414"},     # white on rgba(0,20,20,0.6)
-    "minimal": {"color": "#ffffff", "bg": "#000000"},  # white on rgba(0,0,0,0.3)
+    "minimal": {"color": "#ffffff", "bg": "#000000"},  # white on rgba(0,0,0,0.55)
     "bold": {"color": "#ffffff", "bg": "#000000"},     # white on rgba(0,0,0,0.85)
     "rgb": {"color": "#ffffff", "bg": "#000000"},      # white on rgba(0,0,0,0.7) - base vars
     "typewriter": {"color": "#ffffff", "bg": "#000000"},  # white on rgba(0,0,0,0.75)

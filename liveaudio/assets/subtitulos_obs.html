@@ -10,13 +10,21 @@
         :root {
             --sub-bg: rgba(0, 0, 0, 0.7);
             --sub-color: #ffffff;
-            --sub-font-size: 38px;
-            --sub-font-weight: bold;
+            --sub-font-size: 42px;
+            --sub-font-weight: 900;
             --sub-radius: 10px;
             --sub-shadow: 2px 2px 0 #000, -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000;
             --sub-border: none;
             --sub-padding: 10px 20px;
-            --sub-animation-duration: 0.2s;
+            --sub-animation-duration: 0.3s;
+            /* Ribbon line enter/exit glide. Decoupled from the per-word reveal
+               (--sub-animation-duration) AND from the on-screen dwell time
+               (SUB_LIFETIME_MS in JS) so smoothing the motion never changes how
+               long a line stays readable. Gentle Material-style easing avoids the
+               abrupt snap that made stacked changes feel jarring. */
+            --sub-slide-duration: 0.4s;
+            --sub-slide-ease-out: cubic-bezier(0.0, 0.0, 0.2, 1);
+            --sub-slide-ease-in: cubic-bezier(0.4, 0.0, 1, 1);
             --sub-font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             --sub-text-transform: none;
             --sub-letter-spacing: normal;
@@ -42,12 +50,22 @@
             margin-bottom: 50px;
         }
 
+        /* --- RIBBON: stack vertical, mas reciente ARRIBA (OD-1) --- */
+        /* Aislado a UNA regla de direccion: un futuro flip a newest-bottom
+           es cambiar column-reverse por column, sin impacto en el JS. */
+        #subtitle-container.ribbon-active {
+            display: flex;
+            flex-direction: column-reverse;
+            align-items: center;
+            gap: 8px;
+        }
+
         /* --- ESTILO BASE (Entrada y Salida unificadas) --- */
         .sub-box {
             display: inline-block;
             opacity: 0;
-            transform: translateY(20px);
-            transition: opacity var(--sub-animation-duration) ease-out, transform var(--sub-animation-duration) ease-out;
+            transform: translateY(10px);
+            transition: opacity var(--sub-slide-duration) var(--sub-slide-ease-out), transform var(--sub-slide-duration) var(--sub-slide-ease-out);
         }
 
         .sub-box.visible {
@@ -58,8 +76,8 @@
         /* Salida suave: espejo exacto de la entrada (misma distancia, misma duración) */
         .sub-box.hiding {
             opacity: 0 !important;
-            transform: translateY(20px) !important;
-            transition: opacity var(--sub-animation-duration) ease-in, transform var(--sub-animation-duration) ease-in;
+            transform: translateY(10px) !important;
+            transition: opacity var(--sub-slide-duration) var(--sub-slide-ease-in), transform var(--sub-slide-duration) var(--sub-slide-ease-in);
         }
 
         /* --- ESTILO 1: DEFAULT --- */
@@ -80,8 +98,8 @@
 
         /* --- ESTILO 2: KARAOKE (Palabra por palabra) --- */
         .style-karaoke {
-            font-size: calc(var(--sub-font-size) * 1.15);
-            font-weight: 900;
+            font-size: var(--sub-font-size);
+            font-weight: var(--sub-font-weight);
             color: #ffcc00; /* Amarillo brillante */
             text-shadow: 3px 3px 0 #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000;
             background-color: var(--sub-bg);
@@ -135,9 +153,9 @@
         .style-minimal {
             color: var(--sub-color);
             font-size: var(--sub-font-size);
-            font-weight: 300;
+            font-weight: var(--sub-font-weight);
             padding: 6px 14px;
-            background-color: rgba(0, 0, 0, 0.3);
+            background-color: rgba(0, 0, 0, 0.55);
             border-radius: 4px;
             text-shadow: none;
             border: none;
@@ -148,8 +166,8 @@
         /* --- ESTILO 5: BOLD --- */
         .style-bold {
             color: #ffffff;
-            font-size: calc(var(--sub-font-size) * 1.1);
-            font-weight: 900;
+            font-size: var(--sub-font-size);
+            font-weight: var(--sub-font-weight);
             padding: 12px 24px;
             background-color: rgba(0, 0, 0, 0.85);
             border-radius: 8px;
@@ -248,7 +266,7 @@
             .style-bold,
             .style-rgb,
             .style-typewriter {
-                font-size: clamp(24px, 4vw, 34px);
+                font-size: clamp(28px, 4.5vw, 36px);
                 padding: 8px 16px;
             }
         }
@@ -265,23 +283,63 @@
         let ws;
         const VALID_STYLES = new Set(['default', 'karaoke', 'neon', 'minimal', 'bold', 'rgb', 'typewriter']);
         const MAX_SUBTITLE_CHARS = 600;
+        const VALID_DISPLAY_MODES = new Set(['single', 'ribbon', 'adaptive']);
+        const SUB_LIFETIME_MS = 5000; // vida de cada linea (Track C) — reusado, no re-derivado
+        const RIBBON_MIN_LINES = 1;
+        const RIBBON_MAX_LINES_CEILING = 8;
+        const RIBBON_DEFAULT_LINES = 3;
 
         // --- URL Param Parser: read ?style= on load ---
         const urlParams = new URLSearchParams(window.location.search);
         const urlStyle = urlParams.get('style');
         let currentStyle = (urlStyle && VALID_STYLES.has(urlStyle)) ? urlStyle : null;
 
+        // --- Mode resolution: ?mode= / ?lines= read AT LOAD and ACTUALLY used later ---
+        // resolvedMode es leido en enqueueSubtitle (no es una variable muerta como currentStyle).
+        const urlMode = urlParams.get('mode');
+        let resolvedMode = (urlMode && VALID_DISPLAY_MODES.has(urlMode)) ? urlMode : 'adaptive';
+
+        // ?lines=N override del cap visible, clamp defensivo 1..8 (la autoridad es config.py).
+        function resolveRibbonMaxLines(raw) {
+            const n = parseInt(raw, 10);
+            if (Number.isNaN(n)) return RIBBON_DEFAULT_LINES;
+            return Math.max(RIBBON_MIN_LINES, Math.min(RIBBON_MAX_LINES_CEILING, n));
+        }
+        let ribbonMaxLines = urlParams.has('lines')
+            ? resolveRibbonMaxLines(urlParams.get('lines'))
+            : RIBBON_DEFAULT_LINES;
+
+        // Estado de la maquina adaptativa SINGLE<->RIBBON (solo si resolvedMode === 'adaptive').
+        let adaptiveState = 'SINGLE';
+        let replayActive = false;   // latch: true mientras llegan payloads is_replay
+        let demoteTimer = null;     // settle window pendiente (DEBOUNCE_MS)
+
+        // --- Replay-idle gating (anti-flap) ---
+        // El latch replayActive NO debe limpiarse en un drenaje momentaneo entre dos
+        // payloads is_replay espaciados (catch-up llega cada catchup_interval_sec, que
+        // puede superar DEBOUNCE_MS). Si se limpiara, el settle timer dispararia en el
+        // hueco, demotaria a SINGLE y el siguiente payload re-promoveria: FLAP visible.
+        // Solo envejecemos el latch cuando el replay estuvo REALMENTE inactivo por una
+        // ventana que EXCEDE el espaciado inter-replay, derivada de catchup_interval_sec.
+        const REPLAY_IDLE_FLOOR_MS = 1500;   // piso de inactividad (>= 1 intervalo default)
+        const REPLAY_IDLE_MARGIN_MS = 1000;  // margen sobre el intervalo configurado
+        // Cota dura: debe quedar por DEBAJO de SUB_LIFETIME_MS para que la demotion tras
+        // silencio siga ocurriendo cuando las lineas expiran (no wedge en RIBBON).
+        const REPLAY_IDLE_CEILING_MS = SUB_LIFETIME_MS - REPLAY_IDLE_MARGIN_MS; // 4000
+        let lastReplayAt = 0;                // Date.now() del ultimo payload is_replay
+        let replayIdleMs = REPLAY_IDLE_FLOOR_MS; // ventana de inactividad vigente
+
         // --- Theme Engine: CSS Custom Properties ---
         const VALID_THEME_TOKENS = {
             '--sub-bg': { type: 'color', default: 'rgba(0, 0, 0, 0.7)' },
             '--sub-color': { type: 'color', default: '#ffffff' },
-            '--sub-font-size': { type: 'size', default: '38px', min: 12, max: 120 },
-            '--sub-font-weight': { type: 'weight', default: 'bold' },
+            '--sub-font-size': { type: 'size', default: '42px', min: 12, max: 120 },
+            '--sub-font-weight': { type: 'weight', default: '900' },
             '--sub-radius': { type: 'size', default: '10px', min: 0, max: 50 },
             '--sub-shadow': { type: 'shadow', default: '2px 2px 0 #000, -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000' },
             '--sub-border': { type: 'border', default: 'none' },
             '--sub-padding': { type: 'padding', default: '10px 20px' },
-            '--sub-animation-duration': { type: 'duration', default: '0.4s', min: 0.1, max: 2.0 },
+            '--sub-animation-duration': { type: 'duration', default: '0.3s', min: 0.1, max: 2.0 },
             '--sub-font-family': { type: 'font', default: "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif" },
             '--sub-text-transform': { type: 'transform', default: 'none' },
             '--sub-letter-spacing': { type: 'spacing', default: 'normal' },
@@ -313,21 +371,174 @@
         // --- Backpressure: Debounce + Max Queue ---
         const MAX_PENDING_QUEUE = 5;
         const DEBOUNCE_MS = 80; // Minimum time between subtitle renders
+        // Presupuesto total de aparición/desaparición escalonada por palabra (ms).
+        // Acota el stagger acumulado para que cualquier frase termine de revelarse
+        // dentro de este margen; solo acorta frases largas (las cortas no cambian).
+        const REVEAL_BUDGET_MS = 400;
         let pendingQueue = [];
         let lastShowTime = 0;
         let isShowing = false;
         let debounceTimer = null;
 
-        function enqueueSubtitle(text, style) {
-            // If queue is full, discard oldest (backpressure)
+        // --- Adaptive state machine helpers (SINGLE <-> RIBBON), §1.10-1.12 ---
+
+        function setRibbonActive(on) {
+            if (on) {
+                container.classList.add('ribbon-active');
+            } else {
+                container.classList.remove('ribbon-active');
+            }
+        }
+
+        // Re-arma timers per-linea sobre una caja existente por su vida RESTANTE.
+        // Usado al adoptar la caja viva del path single durante la promocion.
+        function adoptBoxIntoRibbon(box) {
+            if (!box) return;
+            // Cancela los timers COMPARTIDOS del path single para no matar su expiry.
+            clearTimeout(hideTimeout);
+            clearTimeout(cleanupTimeout);
+            // Limpia cualquier timer per-linea previo de esta caja (idempotente).
+            if (box._hideTimer) clearTimeout(box._hideTimer);
+            if (box._cleanupTimer) clearTimeout(box._cleanupTimer);
+            const bornAt = box._bornAt || Date.now();
+            box._bornAt = bornAt;
+            const remaining = Math.max(0, SUB_LIFETIME_MS - (Date.now() - bornAt));
+            armPerLineExpiry(box, remaining);
+        }
+
+        // Decide promote/demote para adaptive ANTES de encolar el nuevo item.
+        // Devuelve true si la nueva linea debe renderizarse apilada (RIBBON).
+        function resolveRenderStacked(isReplay, catchupIntervalSec) {
+            if (resolvedMode === 'single') return false;
+            if (resolvedMode === 'ribbon') {
+                // ribbon fija el render apilado; el contenedor debe llevar column-reverse
+                // (newest-on-top, OD-1) desde la primera linea.
+                setRibbonActive(true);
+                return true;
+            }
+            // adaptive: corre la maquina de estados.
+            replayActive = !!isReplay;
+            if (isReplay) {
+                // Sella el instante del ultimo replay con el MISMO reloj que usa el resto
+                // del codigo (el harness shimea Date.now()). La ventana de inactividad se
+                // deriva del espaciado de catch-up configurado: idle = max(piso, intervalo
+                // + margen), acotada por debajo de SUB_LIFETIME_MS para no wedgear.
+                lastReplayAt = Date.now();
+                const intervalMs = (Number(catchupIntervalSec) || 0) * 1000;
+                replayIdleMs = Math.min(
+                    REPLAY_IDLE_CEILING_MS,
+                    Math.max(REPLAY_IDLE_FLOOR_MS, intervalMs + REPLAY_IDLE_MARGIN_MS)
+                );
+            }
+            if (adaptiveState === 'SINGLE') {
+                // PROMOTE edge-triggered: mas de un item esperando O replay activo.
+                if (pendingQueue.length > 1 || isReplay) {
+                    adaptiveState = 'RIBBON';
+                    setRibbonActive(true);
+                    // Re-arma el path single serializado: onSubtitleComplete (el UNICO
+                    // sitio que resetea isShowing en el path single) ya no correra para
+                    // las cajas adoptadas, asi que isShowing quedaria orphaned en true y
+                    // tras una demotion el guard `if (!isShowing) processQueue()` estaria
+                    // muerto para siempre, tragando lineas single. Lo limpiamos aqui.
+                    isShowing = false;
+                    if (debounceTimer) {
+                        clearTimeout(debounceTimer);
+                        debounceTimer = null;
+                    }
+                    // Adopta la caja viva del path single (si existe) al ribbon.
+                    const live = container.querySelector('.sub-box');
+                    if (live) adoptBoxIntoRibbon(live);
+                }
+            }
+            return adaptiveState === 'RIBBON';
+        }
+
+        // Programa la demotion RIBBON->SINGLE tras una ventana de asentamiento
+        // (DEBOUNCE_MS), solo si el drenaje SIGUE valido al disparar (§1.11).
+        function scheduleDemoteCheck() {
+            if (resolvedMode !== 'adaptive' || adaptiveState !== 'RIBBON') return;
+            if (demoteTimer) clearTimeout(demoteTimer);
+            demoteTimer = setTimeout(() => {
+                demoteTimer = null;
+                const liveCount = container.querySelectorAll('.sub-box').length;
+                // El settle disparo sin que llegara trafico nuevo durante la ventana.
+                // Si la cola esta drenada y el ribbon casi vacio Y el replay estuvo
+                // REALMENTE inactivo por replayIdleMs (que excede el espaciado inter-replay),
+                // envejecemos el latch. El guard temporal evita el FLAP: durante un replay
+                // espaciado en curso lastReplayAt es reciente, el latch NO se limpia, y la
+                // demotion no dispara entre dos payloads. Tras SILENCIO real (las lineas
+                // expiran > replayIdleMs despues del ultimo replay), el latch envejece y
+                // demote dispara — sin wedge, porque replayIdleMs < SUB_LIFETIME_MS.
+                if (pendingQueue.length <= 1
+                    && liveCount <= 1
+                    && (Date.now() - lastReplayAt) > replayIdleMs) {
+                    replayActive = false;
+                }
+                if (adaptiveState === 'RIBBON'
+                    && pendingQueue.length <= 1
+                    && liveCount <= 1
+                    && !replayActive) {
+                    adaptiveState = 'SINGLE';
+                    setRibbonActive(false);
+                    // La caja superviviente conserva sus timers per-linea (no se tocan).
+                }
+            }, DEBOUNCE_MS);
+        }
+
+        function enqueueSubtitle(text, style, isReplay, catchupIntervalSec) {
+            const renderStacked = resolveRenderStacked(isReplay, catchupIntervalSec);
+
+            if (renderStacked) {
+                // RIBBON: la cola es la fuente del stack, no un buffer de descarte.
+                // El cap VISIBLE (ribbonMaxLines), no MAX_PENDING_QUEUE, gobierna la
+                // profundidad mostrada. Pero MAX_PENDING_QUEUE sigue siendo la valvula de
+                // transporte (OD-4): una rafaga sostenida mas rapida que el pump no debe
+                // crecer pendingQueue sin limite — descartamos el mas viejo pendiente.
+                if (pendingQueue.length >= MAX_PENDING_QUEUE) {
+                    pendingQueue.shift(); // Discard oldest pending (transport valve)
+                }
+                pendingQueue.push({ text, style, stacked: true });
+                pumpRibbonQueue();
+                return;
+            }
+
+            // SINGLE (legacy): backpressure serializado con descarte del mas viejo.
             if (pendingQueue.length >= MAX_PENDING_QUEUE) {
                 pendingQueue.shift(); // Discard oldest
             }
-            pendingQueue.push({ text, style });
-            
+            pendingQueue.push({ text, style, stacked: false });
+
             // If not currently showing, try to show immediately
             if (!isShowing) {
                 processQueue();
+            }
+        }
+
+        // Drena la cola apilando lineas (RIBBON), pausado por DEBOUNCE_MS para
+        // evitar thrash visual en rafagas. No usa el gate isShowing.
+        function pumpRibbonQueue() {
+            if (pendingQueue.length === 0) return;
+            const now = Date.now();
+            const sinceLast = now - lastShowTime;
+            if (sinceLast < DEBOUNCE_MS) {
+                if (debounceTimer) clearTimeout(debounceTimer);
+                debounceTimer = setTimeout(() => {
+                    const item = pendingQueue.shift();
+                    if (item) {
+                        showSubtitle(item.text, item.style, true);
+                        lastShowTime = Date.now();
+                    }
+                    if (pendingQueue.length > 0) pumpRibbonQueue();
+                    else scheduleDemoteCheck();
+                }, DEBOUNCE_MS - sinceLast);
+            } else {
+                const item = pendingQueue.shift();
+                if (item) {
+                    showSubtitle(item.text, item.style, true);
+                    lastShowTime = Date.now();
+                }
+                if (pendingQueue.length > 0) pumpRibbonQueue();
+                else scheduleDemoteCheck();
             }
         }
 
@@ -389,7 +600,15 @@
                     }
                     // Aseguramos que data sea un objeto con text y style
                     if (data && data.text) {
-                        enqueueSubtitle(data.text, data.style || 'default');
+                        // is_replay alimenta la senal secundaria de la maquina adaptativa.
+                        // catchup_interval_sec (el espaciado de catch-up) dimensiona la
+                        // ventana de replay-idle para el anti-flap del latch.
+                        enqueueSubtitle(
+                            data.text,
+                            data.style || 'default',
+                            data.is_replay === true,
+                            data.catchup_interval_sec
+                        );
                     }
                 } catch (e) {
                     console.error("Error parseando WebSocket:", e);
@@ -402,35 +621,126 @@
             };
         }
 
-        function showSubtitle(text, style) {
+        // Aplica el stagger de salida por palabra (REVEAL_BUDGET_MS, identico a la entrada)
+        // y programa la limpieza del nodo. Compartido por ambos paths (single y ribbon):
+        // lo unico que difiere es el flag `stacked`, que decide si se pumpea la cola single.
+        function runExpiry(sub, safeStyle, stacked) {
+            sub.classList.add('hiding');
+            sub.classList.remove('visible');
+
+            // Si es karaoke, rgb o typewriter, escalonar la desaparición de las palabras.
+            // Mismo presupuesto que la entrada (REVEAL_BUDGET_MS) para no truncar la cola.
+            if (safeStyle === 'karaoke') {
+                const words = sub.querySelectorAll('.word');
+                const perWordDelay = Math.min(25, REVEAL_BUDGET_MS / Math.max(words.length - 1, 1));
+                words.forEach((word, index) => {
+                    word.style.animationDelay = `${index * perWordDelay}ms`;
+                });
+            } else if (safeStyle === 'rgb') {
+                const words = sub.querySelectorAll('.word');
+                const perWordDelay = Math.min(50, REVEAL_BUDGET_MS / Math.max(words.length - 1, 1));
+                words.forEach((word, index) => {
+                    word.style.animationDelay = `${index * perWordDelay}ms`;
+                });
+            } else if (safeStyle === 'typewriter') {
+                const words = sub.querySelectorAll('.word');
+                const perWordDelay = Math.min(40, REVEAL_BUDGET_MS / Math.max(words.length - 1, 1));
+                words.forEach((word, index) => {
+                    word.style.animationDelay = `${index * perWordDelay}ms`;
+                });
+            }
+
+            // Limpiar el nodo del DOM después de que termine la animación de salida.
+            // 650ms = REVEAL_BUDGET_MS (400) + animación de salida por palabra (~200ms) + margen,
+            // para que las palabras de la cola completen su fade antes de eliminar el nodo.
+            const cleanupCb = () => {
+                // Use removeChild for predictable GC
+                if (sub.parentNode) {
+                    sub.parentNode.removeChild(sub);
+                }
+                if (stacked) {
+                    // RIBBON: GC per-linea, SIN re-pumpear la cola serializada (§1.12).
+                    sub._hideTimer = sub._cleanupTimer = null;
+                    // Cuando una linea apilada expira y el ribbon se vacia, re-evaluar
+                    // la demotion para que adaptive colapse a SINGLE sin esperar otra linea.
+                    scheduleDemoteCheck();
+                } else {
+                    // SINGLE: senalar a la cola que procese la siguiente.
+                    onSubtitleComplete();
+                }
+            };
+
+            if (stacked) {
+                sub._cleanupTimer = setTimeout(cleanupCb, 650);
+            } else {
+                cleanupTimeout = setTimeout(cleanupCb, 650); // >= REVEAL_BUDGET_MS + salida
+            }
+        }
+
+        // Arma (o re-arma) el timer de hide per-linea de una caja stacked tras `delay` ms.
+        // Reutilizado en la creacion normal del ribbon y en la ADOPCION de la caja viva
+        // durante la promocion SINGLE->RIBBON (donde delay = vida restante).
+        function armPerLineExpiry(sub, delay) {
+            if (sub._hideTimer) clearTimeout(sub._hideTimer);
+            sub._hideTimer = setTimeout(() => runExpiry(sub, sub._style || 'default', true), delay);
+        }
+
+        function showSubtitle(text, style, renderStacked) {
             const safeStyle = VALID_STYLES.has(style) ? style : 'default';
             let safeText = String(text || '').replace(/[\r\n\t]+/g, ' ').trim().slice(0, MAX_SUBTITLE_CHARS);
             // Strip dangerous Unicode: bidi overrides, control chars
             safeText = safeText.replace(/[\u202E\u202D\u200E\u200F\u0000\u001b]/g, '');
 
-            // Limpiar timers anteriores
-            clearTimeout(hideTimeout);
-            clearTimeout(cleanupTimeout);
-            
-            // Remove previous subtitle from DOM using removeChild (predictable GC)
-            let existing = container.querySelector('.sub-box');
-            if (existing) {
-                container.removeChild(existing);
-                existing = null; // Nullify reference for GC
+            if (!renderStacked) {
+                // --- PATH SINGLE (legacy, byte-for-byte): timers compartidos + replace ---
+                // Limpiar timers anteriores
+                clearTimeout(hideTimeout);
+                clearTimeout(cleanupTimeout);
+
+                // Remove previous subtitle from DOM using removeChild (predictable GC)
+                let existing = container.querySelector('.sub-box');
+                if (existing) {
+                    // §1.12 demotion edge: si la caja venia del path RIBBON (superviviente),
+                    // limpiar sus timers per-linea para que un callback obsoleto no toque
+                    // un nodo desprendido. No-op inofensivo para cajas single genuinas.
+                    if (existing._hideTimer) clearTimeout(existing._hideTimer);
+                    if (existing._cleanupTimer) clearTimeout(existing._cleanupTimer);
+                    container.removeChild(existing);
+                    existing = null; // Nullify reference for GC
+                }
+            } else {
+                // --- PATH RIBBON: NO toca timers compartidos ni hace removeChild del previo ---
+                // Cap eviction: si apilar excede el cap, evicta el MAS VIEJO primero.
+                // La insercion es appendChild, asi que el orden de hijos en el DOM es
+                // [mas viejo ... mas nuevo] y el mas viejo es firstElementChild.
+                // column-reverse SOLO invierte el orden VISUAL, no el de los hijos del DOM.
+                while (container.children.length >= ribbonMaxLines) {
+                    const oldest = container.firstElementChild;
+                    if (!oldest) break;
+                    // R-2: limpiar timers ANTES de removeChild, luego nulificar ids.
+                    if (oldest._hideTimer) clearTimeout(oldest._hideTimer);
+                    if (oldest._cleanupTimer) clearTimeout(oldest._cleanupTimer);
+                    container.removeChild(oldest);
+                    oldest._hideTimer = oldest._cleanupTimer = null;
+                }
             }
-            
+
             const sub = document.createElement('div');
             sub.className = `sub-box style-${safeStyle}`;
+            sub._bornAt = Date.now(); // marca de nacimiento para adopcion (§1.12)
+            sub._style = safeStyle;   // estilo persistido: el stagger de salida lo necesita tras adopcion
             
             if (safeStyle === 'karaoke') {
                 // Generar spans para cada palabra
                 const words = safeText.split(' ');
+                // Escalonamos la aparición (25ms por palabra), acotado por REVEAL_BUDGET_MS
+                // para que las frases largas terminen de revelarse dentro del presupuesto.
+                const perWordDelay = Math.min(25, REVEAL_BUDGET_MS / Math.max(words.length - 1, 1));
                 words.forEach((word, index) => {
                     const span = document.createElement('span');
                     span.className = 'word';
                     span.textContent = word;
-                    // Escalonamos la aparición (50ms por palabra)
-                    span.style.animationDelay = `${index * 0.025}s`;
+                    span.style.animationDelay = `${index * perWordDelay}ms`;
                     sub.appendChild(span);
                     
                     // Espacio entre palabras
@@ -446,6 +756,8 @@
             } else if (safeStyle === 'rgb') {
                 // RGB: split into word spans with random HSL colors
                 const words = safeText.split(' ');
+                // Stagger de 50ms por palabra, acotado por REVEAL_BUDGET_MS en frases largas.
+                const perWordDelay = Math.min(50, REVEAL_BUDGET_MS / Math.max(words.length - 1, 1));
                 words.forEach((word, index) => {
                     const span = document.createElement('span');
                     span.className = 'word';
@@ -455,7 +767,7 @@
                     const saturation = 70 + Math.floor(Math.random() * 30); // 70-100%
                     const luminance = 40 + Math.floor(Math.random() * 25); // 40-65%
                     span.style.color = `hsl(${hue}, ${saturation}%, ${luminance}%)`;
-                    span.style.animationDelay = `${index * 0.05}s`;
+                    span.style.animationDelay = `${index * perWordDelay}ms`;
                     sub.appendChild(span);
                     
                     if (index < words.length - 1) {
@@ -469,12 +781,13 @@
             } else if (safeStyle === 'typewriter') {
                 // Typewriter: split into word spans with staggered reveal
                 const words = safeText.split(' ');
+                // Stagger de 40ms por palabra, acotado por REVEAL_BUDGET_MS en frases largas.
+                const perWordDelay = Math.min(40, REVEAL_BUDGET_MS / Math.max(words.length - 1, 1));
                 words.forEach((word, index) => {
                     const span = document.createElement('span');
                     span.className = 'word';
                     span.textContent = word;
-                    // Staggered animation delay (40ms per word)
-                    span.style.animationDelay = `${index * 40}ms`;
+                    span.style.animationDelay = `${index * perWordDelay}ms`;
                     sub.appendChild(span);
                     
                     if (index < words.length - 1) {
@@ -498,39 +811,15 @@
             container.appendChild(sub);
 
             // --- Animación de salida unificada ---
-            hideTimeout = setTimeout(() => {
-                sub.classList.add('hiding');
-                sub.classList.remove('visible');
-                
-                // Si es karaoke, rgb o typewriter, escalonar la desaparición de las palabras
-                if (safeStyle === 'karaoke') {
-                    const words = sub.querySelectorAll('.word');
-                    words.forEach((word, index) => {
-                        word.style.animationDelay = `${index * 0.025}s`;
-                    });
-                } else if (safeStyle === 'rgb') {
-                    const words = sub.querySelectorAll('.word');
-                    words.forEach((word, index) => {
-                        word.style.animationDelay = `${index * 0.025}s`;
-                    });
-                } else if (safeStyle === 'typewriter') {
-                    const words = sub.querySelectorAll('.word');
-                    words.forEach((word, index) => {
-                        word.style.animationDelay = `${index * 0.025}s`;
-                    });
-                }
-                
-                // Limpiar el nodo del DOM después de que termine la animación de salida
-                cleanupTimeout = setTimeout(() => {
-                    // Use removeChild for predictable GC
-                    if (sub.parentNode) {
-                        sub.parentNode.removeChild(sub);
-                    }
-                    // Signal queue to process next subtitle
-                    onSubtitleComplete();
-                }, 350); // Debe ser >= duración de la transición de salida
-                
-            }, 5000);
+            // El TIMING (5000ms hide / 650ms cleanup, stagger por palabra) es identico
+            // en ambos paths (Track C). Lo unico que cambia es QUIEN posee el timer:
+            // - stacked  -> timers per-linea (sub._hideTimer/_cleanupTimer), sin onSubtitleComplete.
+            // - single   -> timers compartidos (hideTimeout/cleanupTimeout) + onSubtitleComplete.
+            if (renderStacked) {
+                armPerLineExpiry(sub, 5000);
+            } else {
+                hideTimeout = setTimeout(() => runExpiry(sub, safeStyle, false), 5000);
+            }
         }
 
         connect();
