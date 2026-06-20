@@ -58,3 +58,9 @@ This file tracks major LiveAudio tracks. Each track should have its own detailed
 - [~] **Track: VAD Onset Grace & Configurable Silero Pre-roll**
   *Link: [./tracks/vad-onset-grace_20260619/](./tracks/vad-onset-grace_20260619/)*
   *Status: [~] In Progress on branch `feature/vad-onset-grace` (strict TDD). Was: proposed. Make the Silero VAD onset pre-roll configurable (today hardcoded `pre_buffer=deque(maxlen=3)` ≈ 96ms at audio.py:308) so soft word onsets stop getting clipped; expose `vad_speech_pad_ms` and `vad_threshold`. INDEPENDENT — touches only audio.py/config.py/app.py; can run in parallel with the subtitle tracks.*
+
+---
+
+- [~] **Track: Subtitle Legibility & Animation Polish (OBS Overlay)**
+  *Link: [./tracks/subtitle-legibility-anim_20260619/](./tracks/subtitle-legibility-anim_20260619/)*
+  *Status: [~] In Progress (strict TDD; batched on the `feature/vad-onset-grace` working tree, to be split into `feature/subtitle-legibility-anim` at commit time). Was: proposed. Reconcile the `--sub-animation-duration` mismatch (0.2s CSS vs 0.4s JS), raise `.style-minimal` legibility, lift the small-source font clamp floor, and cap per-word reveal stagger so long phrases appear fast. Edits `subtitulos_obs.html`. SHARES that file with the ribbon track → must land FIRST.*
