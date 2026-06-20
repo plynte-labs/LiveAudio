@@ -209,6 +209,90 @@ class TestNormalizeConfig(unittest.TestCase):
         self.assertTrue(updated)
 
 
+class TestVadOnsetGraceConfig(unittest.TestCase):
+    """Tests for vad_speech_pad_ms / vad_threshold config keys (vad-onset-grace)."""
+
+    def test_default_config_has_vad_speech_pad_ms(self):
+        """DEFAULT_CONFIG should include vad_speech_pad_ms defaulting to 200."""
+        self.assertIn("vad_speech_pad_ms", DEFAULT_CONFIG)
+        self.assertEqual(DEFAULT_CONFIG["vad_speech_pad_ms"], 200)
+
+    def test_default_config_has_vad_threshold(self):
+        """DEFAULT_CONFIG should include vad_threshold defaulting to 0.5."""
+        self.assertIn("vad_threshold", DEFAULT_CONFIG)
+        self.assertEqual(DEFAULT_CONFIG["vad_threshold"], 0.5)
+
+    def test_missing_vad_keys_filled_with_defaults(self):
+        """Loading a config without the new keys fills them with defaults (AC-3)."""
+        config = {}
+        result, _ = _normalize_config(config)
+        self.assertEqual(result["vad_speech_pad_ms"], 200)
+        self.assertEqual(result["vad_threshold"], 0.5)
+
+    def test_vad_speech_pad_ms_clamps_above_max(self):
+        """vad_speech_pad_ms above 500 should clamp to 500 (AC-3)."""
+        config = DEFAULT_CONFIG.copy()
+        config["vad_speech_pad_ms"] = 9999
+        result, updated = _normalize_config(config)
+        self.assertEqual(result["vad_speech_pad_ms"], 500)
+        self.assertTrue(updated)
+
+    def test_vad_speech_pad_ms_clamps_below_min(self):
+        """vad_speech_pad_ms below 0 should clamp to 0 (AC-3)."""
+        config = DEFAULT_CONFIG.copy()
+        config["vad_speech_pad_ms"] = -5
+        result, updated = _normalize_config(config)
+        self.assertEqual(result["vad_speech_pad_ms"], 0)
+        self.assertTrue(updated)
+
+    def test_vad_speech_pad_ms_non_numeric_resets_to_default(self):
+        """Non-numeric vad_speech_pad_ms should reset to default 200 (AC-3)."""
+        config = DEFAULT_CONFIG.copy()
+        config["vad_speech_pad_ms"] = "abc"
+        result, updated = _normalize_config(config)
+        self.assertEqual(result["vad_speech_pad_ms"], 200)
+        self.assertTrue(updated)
+
+    def test_vad_speech_pad_ms_is_int(self):
+        """vad_speech_pad_ms should be stored as an int after normalize."""
+        config = DEFAULT_CONFIG.copy()
+        config["vad_speech_pad_ms"] = 150.7
+        result, _ = _normalize_config(config)
+        self.assertIsInstance(result["vad_speech_pad_ms"], int)
+        self.assertEqual(result["vad_speech_pad_ms"], 150)
+
+    def test_vad_threshold_clamps_above_max(self):
+        """vad_threshold above 0.9 should clamp to 0.9 (AC-6)."""
+        config = DEFAULT_CONFIG.copy()
+        config["vad_threshold"] = 1.5
+        result, updated = _normalize_config(config)
+        self.assertEqual(result["vad_threshold"], 0.9)
+        self.assertTrue(updated)
+
+    def test_vad_threshold_clamps_below_min(self):
+        """vad_threshold below 0.1 should clamp to 0.1 (AC-6)."""
+        config = DEFAULT_CONFIG.copy()
+        config["vad_threshold"] = 0.0
+        result, updated = _normalize_config(config)
+        self.assertEqual(result["vad_threshold"], 0.1)
+        self.assertTrue(updated)
+
+    def test_vad_threshold_non_numeric_resets_to_default(self):
+        """Non-numeric vad_threshold should reset to default 0.5 (AC-6)."""
+        config = DEFAULT_CONFIG.copy()
+        config["vad_threshold"] = "loud"
+        result, updated = _normalize_config(config)
+        self.assertEqual(result["vad_threshold"], 0.5)
+        self.assertTrue(updated)
+
+    def test_vad_threshold_rounds_to_two_decimals(self):
+        """vad_threshold should round to 2 decimals (AC-6)."""
+        config = DEFAULT_CONFIG.copy()
+        config["vad_threshold"] = 0.666
+        result, _ = _normalize_config(config)
+        self.assertEqual(result["vad_threshold"], 0.67)
+
+
 class TestNewSubtitleStyles(unittest.TestCase):
     """Tests for expanded subtitle styles (T1 — subtitle-style-system-v2)."""
 

@@ -136,6 +136,71 @@ class TestAudioDeviceResolution(unittest.TestCase):
         self.assertIsNone(extra_settings)
 
 
+class TestVadPreBufferChunks(unittest.TestCase):
+    """Tests for the configurable onset pre-roll maxlen formula (vad-onset-grace)."""
+
+    def test_default_pad_yields_seven_chunks(self):
+        """200ms pad => ceil(0.2*16000/512) = 7 chunks (AC-1)."""
+        from liveaudio.core.audio import vad_pre_buffer_chunks
+        self.assertEqual(vad_pre_buffer_chunks(200), 7)
+
+    def test_zero_pad_floors_to_one(self):
+        """0ms pad must floor to 1 chunk, never 0 (AC-2)."""
+        from liveaudio.core.audio import vad_pre_buffer_chunks
+        self.assertEqual(vad_pre_buffer_chunks(0), 1)
+
+    def test_mid_value_rounds_up_via_ceil(self):
+        """100ms pad => ceil(0.1*16000/512) = ceil(3.125) = 4 chunks."""
+        from liveaudio.core.audio import vad_pre_buffer_chunks
+        self.assertEqual(vad_pre_buffer_chunks(100), 4)
+
+    def test_max_pad_value(self):
+        """500ms pad => ceil(0.5*16000/512) = ceil(15.625) = 16 chunks."""
+        from liveaudio.core.audio import vad_pre_buffer_chunks
+        self.assertEqual(vad_pre_buffer_chunks(500), 16)
+
+
+class TestVadThresholdComparison(unittest.TestCase):
+    """Tests pinning the strict greater-than VAD comparison (AC-4, AC-5)."""
+
+    def _is_speech(self, speech_prob, threshold):
+        # Mirrors the production comparison at liveaudio/core/audio.py
+        # (speech_prob > vad_threshold). Strict greater-than is intentional.
+        return speech_prob > threshold
+
+    def test_above_threshold_is_speech(self):
+        """speech_prob 0.8 with threshold 0.7 counts as speech (AC-4)."""
+        self.assertTrue(self._is_speech(0.8, 0.7))
+
+    def test_below_threshold_is_not_speech(self):
+        """speech_prob 0.6 with threshold 0.7 is not speech (AC-4)."""
+        self.assertFalse(self._is_speech(0.6, 0.7))
+
+    def test_exactly_at_threshold_is_not_speech(self):
+        """speech_prob == threshold is NOT speech: strict '>' preserved (AC-5)."""
+        self.assertFalse(self._is_speech(0.7, 0.7))
+        self.assertFalse(self._is_speech(0.5, 0.5))
+
+    def test_default_threshold_constant_unchanged(self):
+        """VAD_THRESHOLD module constant remains 0.5 as default fallback (AC-10)."""
+        from liveaudio.core.audio import VAD_THRESHOLD
+        self.assertEqual(VAD_THRESHOLD, 0.5)
+
+    def test_production_uses_strict_greater_than(self):
+        """Pin the real production comparison in audio_producer (AC-5).
+
+        The behavioral _is_speech tests above document the intended semantics,
+        but they re-implement the comparison and would still pass if someone
+        regressed audio.py from '>' to '>='. This test asserts directly against
+        the production source so the strict greater-than is genuinely guarded.
+        """
+        import inspect
+        from liveaudio.core.audio import audio_producer
+        src = inspect.getsource(audio_producer)
+        self.assertIn("speech_prob > vad_threshold", src)
+        self.assertNotIn("speech_prob >= vad_threshold", src)
+
+
 class TestVadThresholdEnforcement(unittest.TestCase):
     """Tests for VAD threshold behavior."""
 

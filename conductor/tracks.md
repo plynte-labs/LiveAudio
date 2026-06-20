@@ -52,3 +52,9 @@ This file tracks major LiveAudio tracks. Each track should have its own detailed
 - [ ] **Track: Experimental Moonshine ASR Integration**
   *Link: [./tracks/moonshine-asr-integration_20260607/](./tracks/moonshine-asr-integration_20260607/)*
   *Status: 🔲 proposed/pending. Research and baseline integration of the low-latency Moonshine model as an alternative to Whisper.*
+
+---
+
+- [~] **Track: VAD Onset Grace & Configurable Silero Pre-roll**
+  *Link: [./tracks/vad-onset-grace_20260619/](./tracks/vad-onset-grace_20260619/)*
+  *Status: [~] In Progress on branch `feature/vad-onset-grace` (strict TDD). Was: proposed. Make the Silero VAD onset pre-roll configurable (today hardcoded `pre_buffer=deque(maxlen=3)` ≈ 96ms at audio.py:308) so soft word onsets stop getting clipped; expose `vad_speech_pad_ms` and `vad_threshold`. INDEPENDENT — touches only audio.py/config.py/app.py; can run in parallel with the subtitle tracks.*

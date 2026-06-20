@@ -590,6 +590,10 @@ class TestReadUIConfigASRLanguage(unittest.TestCase):
         mock.slider_silence.get.return_value = 0.8
         mock.slider_max_dur = MagicMock()
         mock.slider_max_dur.get.return_value = 5.0
+        mock.slider_vad_pad = MagicMock()
+        mock.slider_vad_pad.get.return_value = 200
+        mock.slider_vad_threshold = MagicMock()
+        mock.slider_vad_threshold.get.return_value = 0.5
         mock.slider_max_live_delay = MagicMock()
         mock.slider_max_live_delay.get.return_value = 10.0
         mock.slider_catchup_interval = MagicMock()
@@ -692,6 +696,27 @@ class TestReadUIConfigASRLanguage(unittest.TestCase):
         # Inactive language (es) prompt should be from draft
         self.assertEqual(result["whisper_context_prompt_es"], "Draft ES")
 
+    def test_read_ui_config_collects_vad_pad_and_threshold(self):
+        """_read_ui_config must collect the VAD pad/threshold slider values, rounded.
+
+        Production rounds vad_speech_pad_ms to an int (int(round(...))) and
+        vad_threshold to 2 decimals (round(..., 2)). This asserts the slider
+        values actually round-trip into the draft instead of just not raising.
+        """
+        from liveaudio.app import LiveASRApp
+
+        draft = {"asr_language": "es"}
+        config_data = {"asr_language": "es"}
+        mock = self._make_mock_app_for_read(draft, config_data)
+        mock.slider_vad_pad.get.return_value = 199.6
+        mock.slider_vad_threshold.get.return_value = 0.666
+
+        result = LiveASRApp._read_ui_config(mock)
+
+        self.assertEqual(result["vad_speech_pad_ms"], 200)
+        self.assertIsInstance(result["vad_speech_pad_ms"], int)
+        self.assertEqual(result["vad_threshold"], 0.67)
+
 
 class TestLoadUIFromConfigASRLanguage(unittest.TestCase):
     """Tests for _load_ui_from_config handling of ASR language — runtime verification."""
@@ -710,6 +735,8 @@ class TestLoadUIFromConfigASRLanguage(unittest.TestCase):
         mock.var_model = MagicMock()
         mock.slider_silence = MagicMock()
         mock.slider_max_dur = MagicMock()
+        mock.slider_vad_pad = MagicMock()
+        mock.slider_vad_threshold = MagicMock()
         mock.slider_max_live_delay = MagicMock()
         mock.slider_catchup_interval = MagicMock()
         mock.var_session = MagicMock()
@@ -731,6 +758,8 @@ class TestLoadUIFromConfigASRLanguage(unittest.TestCase):
             "model_size": "small (Balance CPU)",
             "silence_timeout": 0.8,
             "max_chunk_duration": 5.0,
+            "vad_speech_pad_ms": 200,
+            "vad_threshold": 0.5,
             "continuous_session": True,
             "subtitle_style": "default",
             "subtitle_backlog_policy": "auto",
@@ -821,6 +850,22 @@ class TestLoadUIFromConfigASRLanguage(unittest.TestCase):
         call_text = mock.lbl_whisper_context_help.configure.call_args[1]["text"]
         expected_text = t("whisper_context_help_es")
         self.assertEqual(call_text, expected_text)
+
+    def test_load_ui_applies_vad_pad_and_threshold_sliders(self):
+        """_load_ui_from_config must push the VAD pad/threshold config values onto the sliders.
+
+        Asserts the values are actually applied via .set(...) rather than the
+        mocks merely preventing an AttributeError.
+        """
+        from liveaudio.app import LiveASRApp
+
+        mock = self._make_mock_app_for_load()
+        config = self._make_full_config(asr_language="es")
+
+        LiveASRApp._load_ui_from_config(mock, config)
+
+        mock.slider_vad_pad.set.assert_called_with(config["vad_speech_pad_ms"])
+        mock.slider_vad_threshold.set.assert_called_with(config["vad_threshold"])
 
 
 class TestOnASRLanguageChangeMethodExists(unittest.TestCase):

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 import os
 import sys
+import math
 import time
 import queue
 import threading
@@ -25,6 +26,16 @@ VAD_THRESHOLD = 0.5  # Probabilidad mínima para considerar que hay voz (0.0 a 1
 # 500 chunks * 32ms = 16 segundos de buffer. Más que suficiente para absorber
 # cualquier pico de CPU sin perder audio.
 RING_BUFFER_MAX_CHUNKS = 500
+
+
+def vad_pre_buffer_chunks(vad_speech_pad_ms):
+    """Número de chunks de pre-roll para recuperar el onset de la voz.
+
+    Convierte milisegundos a chunks de CHUNK_SIZE muestras a SAMPLE_RATE.
+    Usa ceil para que el pad configurado sea una cota inferior del lead-in
+    capturado, y un piso de 1 para que el deque nunca tenga maxlen 0.
+    """
+    return max(1, math.ceil(vad_speech_pad_ms / 1000 * SAMPLE_RATE / CHUNK_SIZE))
 
 
 def _record_audio_runtime_health(
@@ -193,10 +204,13 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
 
     silence_sec = config.get("silence_timeout", 0.8)
     max_sec = config.get("max_chunk_duration", 5.0)
+    vad_threshold = config.get("vad_threshold", VAD_THRESHOLD)
+    vad_speech_pad_ms = config.get("vad_speech_pad_ms", 200)
     diagnostics_store = diagnostics_store or create_store_from_config(config)
 
     SILENCE_CHUNKS_TO_END = int((SAMPLE_RATE / CHUNK_SIZE) * silence_sec)
     MAX_CHUNKS_LIMIT = int((SAMPLE_RATE / CHUNK_SIZE) * max_sec)
+    PRE_BUFFER_CHUNKS = vad_pre_buffer_chunks(vad_speech_pad_ms)
 
     _status("vad", "VAD: cargando", "active")
     _log("[Productor] Cargando modelo Silero VAD en CPU...")
@@ -303,9 +317,10 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
         utterance_sequence = 0
 
         # Pre-buffer: guarda los últimos chunks descartados para recuperar
-        # los primeros ~96ms de voz cuando el VAD recién detecta speech.
-        # 3 chunks * 32ms = 96ms de audio recuperado.
-        pre_buffer = collections.deque(maxlen=3)
+        # el onset de la voz cuando el VAD recién detecta speech. La cantidad
+        # de chunks (lead-in) es configurable vía vad_speech_pad_ms; con el
+        # default de 200ms son 7 chunks (~224ms de audio recuperado).
+        pre_buffer = collections.deque(maxlen=PRE_BUFFER_CHUNKS)
 
         def enqueue_phrase(full_audio):
             nonlocal utterance_sequence
@@ -345,11 +360,11 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
                 tensor_chunk = torch.from_numpy(audio_chunk)
                 speech_prob = model(tensor_chunk, SAMPLE_RATE).item()
 
-                if speech_prob > VAD_THRESHOLD:
+                if speech_prob > vad_threshold:
                     # Se detectó voz
                     if not is_speaking:
                         # Transición silencio → voz: prependé el pre-buffer
-                        # para recuperar los primeros ~96ms de audio
+                        # para recuperar el onset de la voz (lead-in configurable)
                         speech_buffer.extend(pre_buffer)
                         pre_buffer.clear()
 
