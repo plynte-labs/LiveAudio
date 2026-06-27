@@ -288,6 +288,90 @@ Animaciones asimétricas (entrada diferente a salida) se sienten "rotas" visualm
 
 ---
 
+## ADR-013: Desactivar el DPI awareness automático de CustomTkinter
+
+**Estado**: ✅ Implementado (2026-06-26)
+**Archivos**: `app.py`, `utils/crash_handler.py`
+
+### Decisión
+
+Invocar `ctk.deactivate_automatic_dpi_awareness()` al importar el módulo, antes de construir cualquier ventana CTk (en `app.py` y en el diálogo de crash). Además, fijar `self.minsize(900, 650)` y un piso de ancho para la columna de ajustes (`grid_columnconfigure(0, minsize=320)`).
+
+### Por qué
+
+CustomTkinter, ante un cambio de monitor con distinto escalado, baja la opacidad de la ventana a 0.15 → re-layout → la restaura a 1.0, **sin `try/finally`** (en su `scaling_tracker.py`). Si algo falla entre medio, la opacidad queda clavada en 15% (ventana "casi invisible") de forma permanente, y el poller de DPI muere, así que no se autocorrige hasta reiniciar. Desactivar el manejo automático elimina ese camino frágil por completo.
+
+El `minsize` resuelve un problema distinto: la columna de ajustes es un frame fijo de 320px sin weight; sin un piso de tamaño de ventana, al achicarla el panel derecho/live colapsaba a ~0.
+
+### Trade-offs
+
+- **Nitidez**: con el DPI automático desactivado el proceso queda DPI-unaware → Windows hace bitmap-stretch en monitores HiDPI (la UI se ve un poco borrosa pero **siempre visible** y bien dimensionada). Se cambió "a veces invisible" por "siempre visible, levemente borrosa en HiDPI".
+- Para recuperar nitidez sin reintroducir el camino frágil se puede setear DPI awareness manual a system-aware o per-monitor v1 — **NO** v2 (rompe con `resizable(False, False)`, que usa el diálogo de crash).
+
+### Alternativas rechazadas
+
+- **Parchar la excepción del toggle**: el trigger exacto no es demostrable estáticamente; desactivar todo el camino es más robusto.
+- **Per-monitor v2**: el propio maintainer de CTk documenta que rompe con `resizable(False, False)`.
+
+---
+
+## ADR-014: Procesos GUI y WebSocket libres de torch
+
+**Estado**: ✅ Implementado (2026-06-27)
+**Archivos**: `app.py`, `core/workers.py`, `core/devices.py`, `utils/cuda.py`, `utils/config.py`, `utils/dllpath.py`
+
+### Decisión
+
+Mantener el proceso de la GUI y el de WebSocket **sin importar torch/faster-whisper**. Para lograrlo:
+
+1. **Imports diferidos**: los workers pesados (`asr_consumer`, `audio_producer`) se importan recién en el sitio de spawn, vía shims libres de torch en `core/workers.py` (`run_asr`/`run_audio`) usados como `target=` de `mp.Process`.
+2. **Enumeración de dispositivos** (`list_audio_devices`) movida a `core/devices.py`, libre de torch (la GUI la llama al construir la UI).
+3. **Sonda CUDA out-of-process** (`utils/cuda.py`): consulta `ctranslate2.get_cuda_device_count()` en un subproceso de un disparo, porque `import ctranslate2` arrastra torch.
+4. **Registro de DLLs** (`utils/dllpath.py`): ubica `torch/lib` vía `importlib.util.find_spec` sin importar torch (sigue registrando `cublas64_12.dll` para builds CUDA).
+
+### Por qué
+
+En Windows, `multiprocessing` usa `spawn`: cada hijo reimporta su módulo objetivo. Con `import torch` a nivel de módulo en `app.py`, **cada** proceso (GUI, ws, manager) pagaba el costo de torch (~300-600MB c/u), multiplicando la RAM. Diferir los imports hace que solo los procesos que realmente lo necesitan (audio/asr) carguen torch.
+
+### Trade-offs
+
+- **Sonda CUDA out-of-process**: agrega el costo de spawnear un subproceso corto al validar un perfil CUDA. Aceptable (no está en el hot path).
+- **Lifecycle**: se agregó `self.manager.shutdown()` explícito en el teardown para no dejar colgado el proceso del Manager.
+
+### Alternativas rechazadas / gotchas
+
+- **Borrar solo `import torch` de `app.py`**: no alcanza — `core.audio` se importaba a module-scope (vía `list_audio_devices`) y arrastraba torch igual.
+- **Sonda CUDA in-process con ctranslate2**: `import ctranslate2` importa torch al cargarse → contaminaba la GUI. De ahí la versión out-of-process.
+- ⚠️ **Pendiente (frozen build)**: la sonda usa `sys.executable -c`, que se rompe en el launcher empaquetado (ver `openspec/changes/frozen-launcher-cuda-probe`).
+
+---
+
+## ADR-015: Inferencia de Silero VAD bajo torch.inference_mode()
+
+**Estado**: ✅ Implementado (2026-06-27)
+**Archivo**: `core/audio.py` → `vad_worker()`
+
+### Decisión
+
+Envolver el forward del Silero VAD en `with torch.inference_mode():`.
+
+### Por qué
+
+El Silero VAD es un modelo JIT recurrente que **persiste su estado LSTM entre llamadas sin `.detach()`**, y sus parámetros tienen `requires_grad=True`. Sin un guard de no-grad, cada forward (~31/seg, con voz o silencio) agregaba un eslabón al grafo de autograd anclado a ese estado vivo, que nunca se liberaba (jamás corre `backward()`), filtrando RAM de forma lineal durante toda la sesión.
+
+**Medido** con el modelo real: +583 MB / 20.000 chunks sin el guard, vs **0.0 MB plano** con `inference_mode()`. (`model._state.grad_fn` queda no-None pre-fix, `None` post-fix.) Relacionado con [ADR-001](#adr-001-silero-vad-como-módulo-separado-de-whisper).
+
+### Trade-offs
+
+- Ninguno relevante: `inference_mode()` no altera el resultado del VAD; solo evita construir el grafo (y es más rápido por llamada que `no_grad()`).
+
+### Alternativas rechazadas
+
+- **`model.reset_states()`**: solo truncaría el grafo por utterance (seguiría filtrando en utterances/silencios largos) y borraría el contexto temporal legítimo del VAD, degradando la detección.
+- **`model.eval()`**: redundante (`init_jit_model` ya hace `eval()`) e irrelevante (`eval()` no desactiva autograd).
+
+---
+
 ## Glosario
 
 | Término | Significado |
