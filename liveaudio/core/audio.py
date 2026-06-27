@@ -287,9 +287,15 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
                 except IndexError:
                     break  # Otro hilo consumió el chunk (no debería pasar, pero defensa)
                 
-                # Evaluar probabilidad de voz con Silero
-                tensor_chunk = torch.from_numpy(audio_chunk)
-                speech_prob = model(tensor_chunk, SAMPLE_RATE).item()
+                # Evaluar probabilidad de voz con Silero.
+                # inference_mode() es CRÍTICO: el VAD es un JIT recurrente cuyo
+                # estado LSTM persiste entre llamadas sin .detach(). Sin este guard,
+                # cada forward (~31/seg) agrega un eslabón al grafo de autograd que
+                # nunca se libera (no hay backward), filtrando RAM de forma lineal
+                # durante toda la sesión (medido: +583MB/20k chunks -> 0 con el guard).
+                with torch.inference_mode():
+                    tensor_chunk = torch.from_numpy(audio_chunk)
+                    speech_prob = model(tensor_chunk, SAMPLE_RATE).item()
 
                 if speech_prob > vad_threshold:
                     # Se detectó voz
