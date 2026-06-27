@@ -32,6 +32,16 @@ from liveaudio.core.diagnostics import build_diagnostics_report, normalize_expor
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("green")
 
+# DPI: desactivar el reescalado automático de CustomTkinter. Ante un cambio de
+# monitor con distinto escalado, CTk baja la opacidad de la ventana a 0.15 y la
+# restaura sin try/finally; si algo falla en el medio, la opacidad queda clavada
+# en 15% (ventana casi invisible) de forma permanente. Desactivarlo elimina ese
+# camino frágil por completo. Debe invocarse antes de crear cualquier ventana CTk.
+try:
+    ctk.deactivate_automatic_dpi_awareness()
+except Exception as e:  # pragma: no cover - depende de la versión de customtkinter
+    print(f"[DPI] No se pudo desactivar el DPI awareness automatico: {e}")
+
 
 def _asset_path(name: str) -> str:
     """Resolve a bundled asset to a filesystem path."""
@@ -231,6 +241,9 @@ class LiveASRApp(ctk.CTk):
         super().__init__()
         self.title("Plynte LiveAudio")
         self.geometry("1200x800")
+        # Tamaño mínimo: evita que al achicar la ventana por debajo del ancho
+        # del panel de ajustes (320px) el panel derecho/live colapse a ~0.
+        self.minsize(900, 650)
         
         # --- ICONO PERSONALIZADO (Chihuahua Kawaii y Taskbar Fix) ---
         try:
@@ -614,6 +627,9 @@ class LiveASRApp(ctk.CTk):
     # --- PANTALLA 2: MOTOR ASR ---
     def build_main_screen(self):
         self.screen_main.grid_columnconfigure(1, weight=1)
+        # Piso de ancho para la columna de ajustes: todo el shrink horizontal
+        # recae sobre la columna 1 (panel derecho/live), no sobre los ajustes.
+        self.screen_main.grid_columnconfigure(0, minsize=320)
         self.screen_main.grid_rowconfigure(0, weight=1)
 
         # Panel Izquierdo (Ajustes) — con scroll para manejar muchos controles
