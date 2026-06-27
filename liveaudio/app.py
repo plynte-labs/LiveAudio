@@ -8,7 +8,6 @@ import multiprocessing as mp
 from importlib import resources
 
 import customtkinter as ctk
-import torch
 import webbrowser
 from PIL import Image, ImageTk
 from tkinter import filedialog, messagebox
@@ -22,8 +21,11 @@ from liveaudio.utils.i18n import t, set_language, autodetect_language, get_langu
 from liveaudio.utils.crash_handler import install_crash_handler
 from liveaudio.utils.updater import check_for_updates_async, start_update, APP_VERSION
 
-from liveaudio.core.engine import asr_consumer
-from liveaudio.core.audio import audio_producer, list_audio_devices
+# asr_consumer (faster_whisper+torch) y audio_producer (torch/Silero) se importan
+# de forma diferida en hot_swap_engine, justo antes de spawnear los procesos hijos.
+# Así la GUI (y el proceso ws, que reimporta app.py como __mp_main__) nunca cargan
+# torch ni faster_whisper. list_audio_devices vive en un módulo libre de torch.
+from liveaudio.core.devices import list_audio_devices
 from liveaudio.core.network import run_ws_server
 from liveaudio.core.diagnostics import build_diagnostics_report, normalize_export_dir
 
@@ -1320,13 +1322,12 @@ class LiveASRApp(ctk.CTk):
 
     def _validate_draft_config(self, draft):
         if draft.get("device") == "cuda":
-            if not torch.cuda.is_available():
+            # Sonda CUDA libre de torch (vía ctranslate2): mantiene el proceso GUI
+            # sin cargar torch sólo para validar el perfil. El test real de
+            # asignación en GPU se delega al worker ASR al cargar el modelo.
+            from liveaudio.utils.cuda import cuda_is_available
+            if not cuda_is_available():
                 raise RuntimeError("CUDA no esta disponible. Cambia a CPU o libera/configura la GPU antes de aplicar este perfil.")
-            # Run a small CUDA test to verify the GPU is actually usable
-            try:
-                torch.zeros(1).cuda()
-            except Exception as e:
-                raise RuntimeError(f"CUDA no responde: {e}. Cambia a CPU antes de aplicar.")
 
         audio_device = draft.get("audio_device")
         if audio_device is not None:
@@ -1643,8 +1644,14 @@ class LiveASRApp(ctk.CTk):
         
         self.audio_queue = mp.Queue(maxsize=QUEUE_MAXSIZE)  # Tubería 100% nueva y limpia
 
-        self.p_audio = mp.Process(target=audio_producer, args=(self.audio_queue, self.shared_config, self.log_queue), daemon=True)
-        self.p_ia = mp.Process(target=asr_consumer, args=(self.audio_queue, self.text_queue, self.log_queue, self.shared_config, self.current_session_dir), daemon=True)
+        # Targets libres de torch: workers.py no importa nada pesado, así que la
+        # GUI puede referenciar los targets sin importar torch. En spawn el hijo
+        # reimporta workers.py (ligero) para resolver el target e importa torch
+        # sólo dentro del worker. Mantiene el proceso GUI sin torch incluso tras Start.
+        from liveaudio.core.workers import run_asr, run_audio
+
+        self.p_audio = mp.Process(target=run_audio, args=(self.audio_queue, self.shared_config, self.log_queue), daemon=True)
+        self.p_ia = mp.Process(target=run_asr, args=(self.audio_queue, self.text_queue, self.log_queue, self.shared_config, self.current_session_dir), daemon=True)
         self.p_audio.start()
         self.p_ia.start()
         self.after(3000, self.refresh_profile_status)
