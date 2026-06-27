@@ -1789,7 +1789,15 @@ class LiveASRApp(ctk.CTk):
         # Drenar colas para desbloquear cualquier proceso
         for q in [self.audio_queue, self.text_queue, self.log_queue]:
             self._drain_queue(q)
-        
+
+        # Cerrar el proceso del Manager (host del dict de config compartido).
+        # Sin esto queda colgado tras un kill duro; el shutdown normal lo reclama
+        # por atexit, pero cerrarlo explícito es más prolijo y determinístico.
+        try:
+            self.manager.shutdown()
+        except Exception:
+            pass
+
         self.destroy()
 
 
