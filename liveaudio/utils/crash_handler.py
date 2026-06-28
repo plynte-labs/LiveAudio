@@ -18,6 +18,12 @@ def show_crash_dialog(error_type, error_value, tb):
     
     # Intentar inicializar un diálogo CTk
     try:
+        # Defensa en profundidad: evitar el toggle de opacidad por DPI de CTk
+        # (ver liveaudio/app.py) también en el diálogo de crash.
+        try:
+            ctk.deactivate_automatic_dpi_awareness()
+        except Exception:
+            pass
         app = ctk.CTk()
         app.title("LiveAudio - Error Inesperado")
         app.geometry("700x500")

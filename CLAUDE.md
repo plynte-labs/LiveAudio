@@ -17,3 +17,17 @@
 - Python desktop app: faster-whisper + ctranslate2 (ASR), torch (Silero VAD), CustomTkinter GUI, websockets (OBS subtitles).
 - CUDA builds must use the cu121 torch index (bundles cublas64_12.dll required by ctranslate2 4.x).
 - Do not commit built artifacts; dist/ is gitignored.
+
+## Minimalism — Decision Ladder
+
+Write the least code that fully solves the task. Before adding code, walk this ladder and stop at the first hit:
+
+1. Does it need to exist? If not, skip it (YAGNI).
+2. Already in the codebase? Reuse it.
+3. Covered by the standard library? Use it.
+4. Native platform feature? Use it.
+5. Already-installed dependency? Use it.
+6. One line? Write one line.
+7. Only then: the minimum viable solution.
+
+Lazy about the solution, never about reading — analyze the code thoroughly first. Never cut trust-boundary validation, data-loss handling, security, or accessibility. (Adapted from the Ponytail decision ladder.)

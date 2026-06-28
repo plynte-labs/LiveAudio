@@ -2,12 +2,6 @@
 import os
 import json
 import multiprocessing as mp
-
-try:
-    import torch
-except ImportError:
-    torch = None
-
 import time
 
 
@@ -331,13 +325,13 @@ def load_config():
         
         config, updated = _normalize_config(config)
         
-        if torch is not None:
-            try:
-                if config.get("device") == "cuda" and not torch.cuda.is_available():
-                    config["device"] = "cpu"
-                    updated = True
-            except Exception:
-                pass
+        try:
+            from liveaudio.utils.cuda import cuda_is_available
+            if config.get("device") == "cuda" and not cuda_is_available():
+                config["device"] = "cpu"
+                updated = True
+        except Exception:
+            pass
         
         if updated and locked:
             _save_config_no_lock(config)

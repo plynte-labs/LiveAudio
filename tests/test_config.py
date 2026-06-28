@@ -548,8 +548,8 @@ class TestLoadSaveConfig(unittest.TestCase):
             
         open("config.json.lock", "w").close()
         
-        with patch("liveaudio.utils.config.torch") as mock_torch:
-            mock_torch.cuda.is_available.return_value = True
+        with patch("liveaudio.utils.cuda.cuda_is_available") as mock_cuda:
+            mock_cuda.return_value = True
             config = load_config()
             
         self.assertEqual(config["device"], "cuda")

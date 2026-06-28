@@ -110,7 +110,7 @@ class TestVRAMCheckFunction(unittest.TestCase):
 class TestGPUAutoDetectConfig(unittest.TestCase):
     """Tests for GPU auto-detection in config loading."""
 
-    @patch("liveaudio.utils.config.torch.cuda.is_available")
+    @patch("liveaudio.utils.cuda.cuda_is_available")
     @patch("liveaudio.utils.config.os.path.exists")
     @patch("liveaudio.utils.config.save_config")
     def test_auto_detect_cpu_when_cuda_unavailable(self, mock_save, mock_exists, mock_cuda):
@@ -123,7 +123,7 @@ class TestGPUAutoDetectConfig(unittest.TestCase):
 
         self.assertEqual(config["device"], "cpu")
 
-    @patch("liveaudio.utils.config.torch.cuda.is_available")
+    @patch("liveaudio.utils.cuda.cuda_is_available")
     @patch("liveaudio.utils.config.os.path.exists")
     @patch("liveaudio.utils.config.save_config")
     def test_keeps_cuda_when_available(self, mock_save, mock_exists, mock_cuda):
@@ -136,7 +136,7 @@ class TestGPUAutoDetectConfig(unittest.TestCase):
 
         self.assertEqual(config["device"], "cuda")
 
-    @patch("liveaudio.utils.config.torch.cuda.is_available")
+    @patch("liveaudio.utils.cuda.cuda_is_available")
     @patch("liveaudio.utils.config.os.path.exists")
     @patch("liveaudio.utils.config._save_config_no_lock")
     @patch("liveaudio.utils.config.json.load")

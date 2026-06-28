@@ -13,6 +13,10 @@ import torch
 import warnings
 from liveaudio.core.diagnostics import create_store_from_config
 from liveaudio.utils.streams import make_streams_encoding_safe
+# La enumeración de dispositivos vive en un módulo libre de torch para que la
+# GUI pueda listarlos sin importar torch. Se reexporta aquí por compatibilidad
+# (p. ej. el bloque __main__ de pruebas).
+from liveaudio.core.devices import list_audio_devices, _normalize_device_name
 
 # Suprimir solo advertencias de PyTorch/UserWarning, no todas
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -63,79 +67,6 @@ def _record_audio_runtime_health(
         diagnostics_store.record_counter("audio.reconnects")
     if dropped_phrases:
         diagnostics_store.record_counter("audio.queue_full_drops", int(dropped_phrases))
-
-
-def _normalize_device_name(name):
-    """Normaliza nombre de dispositivo para deduplicar variantes del mismo hardware.
-    
-    Ejemplo: 'Microphone (Realtek Audio)', 'Microphone (Realtek High Definition Audio)'
-    ambos se normalizan a 'microphone realtek audio'.
-    """
-    import re
-    # Quitar parentesis y contenido, luego limpiar
-    cleaned = re.sub(r'\([^)]*\)', '', name)
-    # Quitar caracteres especiales, lowercase
-    cleaned = re.sub(r'[^a-z0-9\s]', '', cleaned.lower().strip())
-    # Colapsar espacios multiples
-    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
-    return cleaned
-
-
-def list_audio_devices():
-    """
-    Retorna una lista de dispositivos de audio disponibles para captura.
-    Cada entrada es un dict con: index, name, hostapi, max_input_channels, is_loopback.
-    Incluye dispositivos WASAPI loopback en Windows para capturar audio del sistema.
-    Dispositivos duplicados (mismo nombre base) se filtran para evitar confusion.
-    """
-    devices = sd.query_devices()
-    hostapis = sd.query_hostapis()
-    
-    result = []
-    seen_names = set()  # Para deduplicar por nombre normalizado
-    
-    for i, dev in enumerate(devices):
-        # Dispositivos de entrada normales (microfonos)
-        if dev["max_input_channels"] > 0:
-            hostapi_name = hostapis[dev["hostapi"]]["name"]
-            norm_name = _normalize_device_name(dev["name"])
-            
-            # Saltar duplicados (mismo nombre base, mismo tipo)
-            dedup_key = f"input:{norm_name}"
-            if dedup_key in seen_names:
-                continue
-            seen_names.add(dedup_key)
-            
-            result.append({
-                "index": i,
-                "name": dev["name"],
-                "hostapi": hostapi_name,
-                "max_input_channels": dev["max_input_channels"],
-                "is_loopback": False,
-                "display": f"🎤 {dev['name']} ({hostapi_name})"
-            })
-        
-        # Dispositivos de salida WASAPI → loopback (captura del sistema)
-        if sys.platform == "win32" and dev["max_output_channels"] > 0:
-            hostapi_name = hostapis[dev["hostapi"]]["name"]
-            if "WASAPI" in hostapi_name:
-                norm_name = _normalize_device_name(dev["name"])
-                
-                dedup_key = f"loopback:{norm_name}"
-                if dedup_key in seen_names:
-                    continue
-                seen_names.add(dedup_key)
-                
-                result.append({
-                    "index": i,
-                    "name": dev["name"],
-                    "hostapi": hostapi_name,
-                    "max_input_channels": dev["max_output_channels"],
-                    "is_loopback": True,
-                    "display": f"🔊 {dev['name']} (Loopback)"
-                })
-    
-    return result
 
 
 def _resolve_device_settings(config):
@@ -356,9 +287,15 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
                 except IndexError:
                     break  # Otro hilo consumió el chunk (no debería pasar, pero defensa)
                 
-                # Evaluar probabilidad de voz con Silero
-                tensor_chunk = torch.from_numpy(audio_chunk)
-                speech_prob = model(tensor_chunk, SAMPLE_RATE).item()
+                # Evaluar probabilidad de voz con Silero.
+                # inference_mode() es CRÍTICO: el VAD es un JIT recurrente cuyo
+                # estado LSTM persiste entre llamadas sin .detach(). Sin este guard,
+                # cada forward (~31/seg) agrega un eslabón al grafo de autograd que
+                # nunca se libera (no hay backward), filtrando RAM de forma lineal
+                # durante toda la sesión (medido: +583MB/20k chunks -> 0 con el guard).
+                with torch.inference_mode():
+                    tensor_chunk = torch.from_numpy(audio_chunk)
+                    speech_prob = model(tensor_chunk, SAMPLE_RATE).item()
 
                 if speech_prob > vad_threshold:
                     # Se detectó voz

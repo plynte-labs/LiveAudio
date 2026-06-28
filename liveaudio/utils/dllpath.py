@@ -9,6 +9,7 @@ PATH. No-op on non-Windows platforms or when torch is not installed.
 
 import os
 import sys
+import importlib.util
 
 _already_done = False
 
@@ -18,12 +19,18 @@ def ensure_torch_dlls():
     global _already_done
     if _already_done or sys.platform != "win32":
         return
+
+    # Localizamos torch/lib SIN importar torch: find_spec sólo lee los metadatos
+    # del paquete (no ejecuta torch/__init__.py), así el proceso GUI no paga el
+    # coste de torch sólo para registrar las DLLs de CUDA.
     try:
-        import torch
-    except ImportError:
+        spec = importlib.util.find_spec("torch")
+    except (ImportError, ValueError):
+        return
+    if spec is None or not spec.submodule_search_locations:
         return
 
-    torch_lib = os.path.join(os.path.dirname(torch.__file__), "lib")
+    torch_lib = os.path.join(spec.submodule_search_locations[0], "lib")
     if not os.path.isdir(torch_lib):
         return
 
