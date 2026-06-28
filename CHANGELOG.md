@@ -4,6 +4,28 @@ Todos los cambios notables de LiveAudio se documentan aquí.
 
 ---
 
+## [1.2.1] — 2026-06-27
+
+### Corregido
+
+- **Ventana casi invisible al cambiar de monitor / redimensionar** — CustomTkinter bajaba la opacidad de la ventana a 0.15 ante un cambio de DPI y la restauraba sin `try/finally`; si algo fallaba en el medio quedaba clavada en 15%. Se desactiva el DPI awareness automático de CTk al import (app y diálogo de crash) y se agrega `minsize` de ventana y de la columna de ajustes para que el panel en vivo no colapse al achicar. (ADR-013)
+- **Cierre del proceso Manager** — `_shutdown()` ahora cierra explícitamente el `mp.Manager` del config compartido en vez de dejarlo para el `atexit`. (ADR-014)
+
+### Rendimiento
+
+- **RAM base: procesos GUI y WebSocket libres de torch** — en Windows `spawn` reimportaba torch en cada proceso. La GUI, el servidor WebSocket y el Manager ya no cargan torch ni faster-whisper: imports diferidos al sitio de spawn vía shims libres de torch (`core/workers.py`), enumeración de dispositivos en un módulo sin torch (`core/devices.py`), sonda CUDA out-of-process (`utils/cuda.py`, porque `import ctranslate2` arrastra torch) y localización de `torch/lib` vía `find_spec` sin importar torch (`utils/dllpath.py`). (ADR-014)
+- **Fuga de RAM en sesiones largas** — el Silero VAD corría sin `torch.inference_mode()`, acumulando un grafo de autograd anclado a su estado LSTM persistente que nunca se liberaba. Medido: +583 MB / 20k chunks sin el guard, vs 0 MB plano con él. (ADR-015)
+
+### Documentación
+
+- ADR-013/014/015 en `docs/ARCHITECTURE_DECISIONS.md`; "decision ladder" de minimalismo en `CLAUDE.md` y `AGENTS.md`; proposals de seguimiento en `openspec/changes/` (probe CUDA en build frozen, allocator nativo del ASR, fallback cuda→cpu).
+
+### Tests
+
+- `tests/test_lazy_imports.py` — garantiza que importar la GUI no cargue torch/faster-whisper/ctranslate2. Suite total: 537 en verde.
+
+---
+
 ## [1.1.0] — 2026-06-10 (sin publicar)
 
 ### Nuevo sistema de empaquetado y distribución
