@@ -4,7 +4,7 @@ context: |
   Project: LiveAudio
   Stack: Python 3.13 desktop app with CustomTkinter UI, faster-whisper ASR, websockets, multiprocessing, JSON config, and OBS browser-source integration.
   Architecture: Local-first desktop transcription pipeline with audio capture, ASR worker, WebSocket broadcaster, persistent config, and session outputs.
-  Testing: Strict TDD enabled. Current executable test runner is `python -m pytest -q`. Build validation command is `python -m compileall main.py core utils`.
+  Testing: Strict TDD enabled. Current executable test runner is `python -m pytest -q`. Build validation command is `python -m compileall liveaudio`.
   Conventions: Keep responses and planning concise, verify technical claims before asserting them, avoid exposing private paths or user data, and prefer safe public-release defaults.
 
 rules:
@@ -23,10 +23,10 @@ rules:
   apply:
     - Follow strict TDD.
     - test_command: "python -m pytest -q"
-    - build_command: "python -m compileall main.py core utils"
+    - build_command: "python -m compileall liveaudio"
   verify:
     - test_command: "python -m pytest -q"
-    - build_command: "python -m compileall main.py core utils"
+    - build_command: "python -m compileall liveaudio"
     - coverage_threshold: 0
   archive:
     - Do not archive until manual launch-readiness checks and repo-governance decisions are closed.

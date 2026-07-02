@@ -2,6 +2,7 @@
 """Tests for main.py UI components (subtitle-style-system-v2)."""
 
 import unittest
+import inspect
 
 
 class TestPresetStyles(unittest.TestCase):
@@ -110,6 +111,17 @@ class TestPreviewPanel(unittest.TestCase):
         default_style = PRESET_STYLES["default"]
         self.assertIn("fg_color", default_style)
         self.assertIn("text_color", default_style)
+
+
+class TestWelcomeVersionLabel(unittest.TestCase):
+    """The welcome screen should expose the running app version."""
+
+    def test_welcome_screen_uses_app_version(self):
+        from liveaudio.app import APP_VERSION, LiveASRApp
+
+        source = inspect.getsource(LiveASRApp.build_welcome_screen)
+        self.assertIn("APP_VERSION", source)
+        self.assertRegex(APP_VERSION, r"^\d+\.\d+\.\d+$")
 
 
 if __name__ == "__main__":

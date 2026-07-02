@@ -4,6 +4,21 @@ Todos los cambios notables de LiveAudio se documentan aquí.
 
 ---
 
+## [1.2.2] — 2026-07-01
+
+### Corregido
+
+- **Actualizaciones in-app visibles y accionables** — el aviso de update ya no se pierde cuando la app detecta una versión nueva en la pantalla de bienvenida y luego reconstruye la pantalla principal. La versión detectada queda guardada como estado de la app y el aviso se vuelve a renderizar al entrar al panel principal.
+- **Cadencia del updater** — el chequeo ahora corre en el primer inicio del día y luego, como máximo, cada 6 horas. Si no hay internet o falla la consulta, no interrumpe al usuario ni persiste un timestamp falso.
+- **UX de update** — el banner mantiene “Actualizar ahora” y agrega “Más tarde” para posponer el aviso durante la sesión.
+- **Versión visible** — la pantalla de bienvenida muestra la versión actual de LiveAudio para evitar confusión entre builds instalados y ejecuciones desde código fuente.
+
+### Tests
+
+- Cobertura agregada para cadencia del updater, fallos de red silenciosos, ciclo de vida del banner al reconstruir la UI y etiqueta de versión en bienvenida.
+
+---
+
 ## [1.2.1] — 2026-06-27
 
 ### Corregido

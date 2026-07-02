@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: MIT
 """Update check against GitHub releases + hand-off to the bootstrap launcher.
 
-The check itself is rate limited to once per 24 hours and runs on a daemon
-thread. When the app was started by the frozen launcher (LiveAudio-Setup.exe /
+The check itself is rate limited to the first app open of the day, then once
+every 6 hours, and runs on a daemon thread. When the app was started by the frozen launcher (LiveAudio-Setup.exe /
 liveaudio-launcher), ``start_update`` relaunches it with ``--update <tag>`` so
 it can swap ``app/`` and re-run ``uv sync`` while the app is closed.
 """
@@ -23,7 +23,7 @@ from liveaudio import __version__ as APP_VERSION  # Single source of truth
 LOG = logging.getLogger(__name__)
 
 GITHUB_RELEASES_URL = "https://api.github.com/repos/plynte-labs/LiveAudio/releases/latest"
-CHECK_INTERVAL_SECONDS = 86400  # 24 hours
+CHECK_INTERVAL_SECONDS = 21600  # 6 hours
 REQUEST_TIMEOUT_SECONDS = 5
 
 # Set by the frozen launcher (packaging/launcher.py) in the app's environment.
@@ -49,6 +49,14 @@ def parse_version(version_str):
 def is_new_version_available(current_version, latest_version):
     """Compara si la versión de GitHub es mayor que la local."""
     return parse_version(latest_version) > parse_version(current_version)
+
+
+def _same_local_day(first_timestamp, second_timestamp):
+    if not first_timestamp or not second_timestamp:
+        return False
+    first = time.localtime(int(first_timestamp))
+    second = time.localtime(int(second_timestamp))
+    return first.tm_year == second.tm_year and first.tm_yday == second.tm_yday
 
 def _read_json_response(request, context):
     with urllib.request.urlopen(
@@ -88,16 +96,21 @@ def _fetch_latest_release():
     return _read_json_response(request, ssl._create_unverified_context())
 
 def check_for_updates(callback):
-    """Synchronous update check (rate limited to once per 24 hours).
+    """Synchronous update check.
 
     The ``callback`` receives a boolean (update available) and the latest
     release tag string. Network failures are swallowed: no callback is fired.
+    Successful checks are rate limited to the first open of the day, then once
+    every 6 hours.
     """
     config = load_config()
     last_check = config.get("last_update_check", 0)
     current_time = int(time.time())
 
-    if current_time - last_check < CHECK_INTERVAL_SECONDS:
+    if (
+        _same_local_day(last_check, current_time)
+        and current_time - last_check < CHECK_INTERVAL_SECONDS
+    ):
         return
 
     try:

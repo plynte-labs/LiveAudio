@@ -296,6 +296,8 @@ class LiveASRApp(ctk.CTk):
         self._log_lines = []
         self._advanced_visible = False
         self.status_labels = {}
+        self._pending_update_tag = None
+        self._dismissed_update_tag = None
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(0, weight=1)
@@ -311,13 +313,45 @@ class LiveASRApp(ctk.CTk):
     def check_updates(self):
         def on_update_result(available, tag):
             if available:
-                self.after(100, lambda: self.display_update_alert(tag))
+                self._pending_update_tag = tag
+                self.after(100, self._maybe_show_update_notice)
         check_for_updates_async(on_update_result)
+
+    def _main_screen_ready_for_update_notice(self):
+        screen = getattr(self, "screen_main", None)
+        if not screen:
+            return False
+        try:
+            return bool(screen.winfo_exists() and screen.winfo_ismapped())
+        except Exception:
+            return False
+
+    def _maybe_show_update_notice(self):
+        latest_tag = getattr(self, "_pending_update_tag", None)
+        if not latest_tag or getattr(self, "_dismissed_update_tag", None) == latest_tag:
+            return
+        if not self._main_screen_ready_for_update_notice():
+            return
+        banner = getattr(self, "frame_update_banner", None)
+        if banner is not None:
+            try:
+                if banner.winfo_exists():
+                    return
+            except Exception:
+                pass
+        self.display_update_alert(latest_tag)
 
     def display_update_alert(self, latest_tag):
         """Muestra un banner discreto en la barra de Ajustes para avisar del update."""
-        if hasattr(self, "frame_update_banner"):
+        if getattr(self, "_dismissed_update_tag", None) == latest_tag:
             return
+        banner = getattr(self, "frame_update_banner", None)
+        if banner is not None:
+            try:
+                if banner.winfo_exists():
+                    return
+            except Exception:
+                pass
             
         # Banner verde oscuro premium
         self.frame_update_banner = ctk.CTkFrame(
@@ -357,6 +391,31 @@ class LiveASRApp(ctk.CTk):
             command=lambda: self.start_in_app_update(latest_tag)
         )
         btn_update.pack(side="right", padx=10, pady=5)
+
+        btn_later = ctk.CTkButton(
+            self.frame_update_banner,
+            text=t("update_later"),
+            font=ctk.CTkFont(size=12, weight="bold", family="Segoe UI"),
+            fg_color="#1b5e20",
+            hover_color="#2e7d32",
+            text_color="#FFFFFF",
+            width=90,
+            height=24,
+            corner_radius=6,
+            command=lambda: self.dismiss_update_alert(latest_tag)
+        )
+        btn_later.pack(side="right", padx=(0, 4), pady=5)
+
+    def dismiss_update_alert(self, latest_tag):
+        self._dismissed_update_tag = latest_tag
+        banner = getattr(self, "frame_update_banner", None)
+        if banner is not None:
+            try:
+                banner.destroy()
+            except Exception:
+                pass
+            if hasattr(self, "frame_update_banner"):
+                delattr(self, "frame_update_banner")
 
     def start_in_app_update(self, latest_tag):
         """Hands the update off to the launcher and shuts the app down.
@@ -420,6 +479,7 @@ class LiveASRApp(ctk.CTk):
             self.screen_main = ctk.CTkFrame(self, fg_color="transparent")
             self.build_main_screen()
             self.screen_main.grid(row=0, column=0, sticky="nsew")
+            self._maybe_show_update_notice()
 
     # --- PANTALLA 1: BIENVENIDA ---
     def build_welcome_screen(self):
@@ -474,6 +534,13 @@ class LiveASRApp(ctk.CTk):
         )
         lbl_by.pack(pady=(0, 15))
         lbl_by.bind("<Button-1>", lambda e: webbrowser.open_new("https://github.com/plynte-labs/LiveAudio"))
+
+        ctk.CTkLabel(
+            left_panel,
+            text=f"v{APP_VERSION}",
+            font=ctk.CTkFont(size=11, weight="bold", family="Segoe UI"),
+            text_color="#7E8A8E"
+        ).pack(pady=(0, 12))
 
         # Tarjeta de tips estilizada
         tips_card = ctk.CTkFrame(left_panel, fg_color="#0a1214", corner_radius=12, border_width=1, border_color="#18272c")
@@ -623,6 +690,7 @@ class LiveASRApp(ctk.CTk):
         
         self.screen_welcome.grid_forget() # Ocultar bienvenida
         self.screen_main.grid(row=0, column=0, sticky="nsew") # Mostrar principal
+        self._maybe_show_update_notice()
 
     # --- PANTALLA 2: MOTOR ASR ---
     def build_main_screen(self):

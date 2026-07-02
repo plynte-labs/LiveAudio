@@ -15,7 +15,9 @@ import tempfile
 import time
 import unittest
 import urllib.error
+from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from liveaudio.utils import updater
@@ -127,7 +129,62 @@ class TestFetchLatestReleaseSsl(unittest.TestCase):
 class TestCheckForUpdates(unittest.TestCase):
     """Rate limiting + callback semantics of the synchronous check."""
 
-    def test_rate_limited_within_24h(self):
+    def test_rate_limited_within_6h_same_day(self):
+        now = int(time.time())
+        config = {"last_update_check": now - 60}
+        callback = MagicMock()
+        with patch.object(updater.time, "time", return_value=now):
+            with patch.object(updater, "load_config", return_value=config):
+                with patch.object(updater, "_fetch_latest_release") as fetch:
+                    updater.check_for_updates(callback)
+        fetch.assert_not_called()
+        callback.assert_not_called()
+
+    def test_first_open_of_day_checks_even_within_6h(self):
+        last_check = int(time.mktime(datetime(2026, 7, 1, 23, 30).timetuple()))
+        now = int(time.mktime(datetime(2026, 7, 2, 0, 30).timetuple()))
+        callback = MagicMock()
+        saved = {}
+        with patch.object(updater.time, "time", return_value=now):
+            with patch.object(updater, "load_config", return_value={"last_update_check": last_check}):
+                with patch.object(updater, "save_config", side_effect=saved.update):
+                    with patch.object(
+                        updater, "_fetch_latest_release",
+                        return_value={"tag_name": "v999.0.0"},
+                    ) as fetch:
+                        updater.check_for_updates(callback)
+        fetch.assert_called_once()
+        callback.assert_called_once_with(True, "v999.0.0")
+        self.assertEqual(saved.get("last_update_check"), now)
+
+    def test_six_hour_elapsed_same_day_checks(self):
+        now = int(time.time())
+        callback = MagicMock()
+        with patch.object(updater.time, "time", return_value=now):
+            with patch.object(updater, "load_config", return_value={"last_update_check": now - 21601}):
+                with patch.object(updater, "save_config"):
+                    with patch.object(
+                        updater, "_fetch_latest_release",
+                        return_value={"tag_name": "v%s" % updater.APP_VERSION},
+                    ) as fetch:
+                        updater.check_for_updates(callback)
+        fetch.assert_called_once()
+        callback.assert_called_once_with(False, "v%s" % updater.APP_VERSION)
+
+    def test_network_failure_does_not_persist_timestamp(self):
+        callback = MagicMock()
+        with patch.object(updater, "load_config", return_value={"last_update_check": 0}):
+            with patch.object(updater, "save_config") as save:
+                with patch.object(
+                    updater, "_fetch_latest_release",
+                    side_effect=urllib.error.URLError(OSError("offline")),
+                ):
+                    with patch("sys.stdout", new_callable=io.StringIO):
+                        updater.check_for_updates(callback)
+        save.assert_not_called()
+        callback.assert_not_called()
+
+    def test_rate_limited_skips_release_lookup(self):
         config = {"last_update_check": int(time.time()) - 60}
         callback = MagicMock()
         with patch.object(updater, "load_config", return_value=config):
@@ -295,6 +352,96 @@ class TestStartInAppUpdateOrdering(unittest.TestCase):
                 LiveASRApp.start_in_app_update(mock, "v9.9.9")
         browser.open_new.assert_called_once()
         mock._shutdown.assert_called_once()
+
+
+class TestUpdateNotificationLifecycle(unittest.TestCase):
+    """Update availability must survive welcome/main-screen UI rebuilds."""
+
+    def _app_mock(self):
+        from liveaudio.app import LiveASRApp
+        mock = SimpleNamespace(
+            _pending_update_tag=None,
+            _dismissed_update_tag=None,
+            after=lambda _delay, fn: fn(),
+        )
+        return LiveASRApp, mock
+
+    def test_check_updates_stores_pending_tag(self):
+        LiveASRApp, mock = self._app_mock()
+
+        def fake_async(callback):
+            callback(True, "v9.9.9")
+
+        with patch("liveaudio.app.check_for_updates_async", side_effect=fake_async):
+            mock._maybe_show_update_notice = MagicMock()
+            LiveASRApp.check_updates(mock)
+
+        self.assertEqual(mock._pending_update_tag, "v9.9.9")
+        mock._maybe_show_update_notice.assert_called_once_with()
+
+    def test_hidden_main_screen_does_not_render_notice(self):
+        LiveASRApp, mock = self._app_mock()
+        mock._pending_update_tag = "v9.9.9"
+        mock.screen_main = MagicMock()
+        mock.screen_main.winfo_exists.return_value = True
+        mock.screen_main.winfo_ismapped.return_value = False
+        mock._main_screen_ready_for_update_notice = (
+            lambda: LiveASRApp._main_screen_ready_for_update_notice(mock)
+        )
+        mock.display_update_alert = MagicMock()
+
+        LiveASRApp._maybe_show_update_notice(mock)
+
+        mock.display_update_alert.assert_not_called()
+
+    def test_mapped_main_screen_renders_pending_notice(self):
+        LiveASRApp, mock = self._app_mock()
+        mock._pending_update_tag = "v9.9.9"
+        mock.screen_main = MagicMock()
+        mock.screen_main.winfo_exists.return_value = True
+        mock.screen_main.winfo_ismapped.return_value = True
+        mock._main_screen_ready_for_update_notice = (
+            lambda: LiveASRApp._main_screen_ready_for_update_notice(mock)
+        )
+        mock.display_update_alert = MagicMock()
+
+        LiveASRApp._maybe_show_update_notice(mock)
+
+        mock.display_update_alert.assert_called_once_with("v9.9.9")
+
+    def test_existing_banner_is_not_duplicated(self):
+        LiveASRApp, mock = self._app_mock()
+        mock._pending_update_tag = "v9.9.9"
+        mock.screen_main = MagicMock()
+        mock.screen_main.winfo_exists.return_value = True
+        mock.screen_main.winfo_ismapped.return_value = True
+        mock.frame_update_banner = MagicMock()
+        mock.frame_update_banner.winfo_exists.return_value = True
+        mock._main_screen_ready_for_update_notice = (
+            lambda: LiveASRApp._main_screen_ready_for_update_notice(mock)
+        )
+        mock.display_update_alert = MagicMock()
+
+        LiveASRApp._maybe_show_update_notice(mock)
+
+        mock.display_update_alert.assert_not_called()
+
+    def test_later_dismisses_tag_without_starting_update(self):
+        LiveASRApp, mock = self._app_mock()
+        banner = MagicMock()
+        mock.frame_update_banner = banner
+
+        LiveASRApp.dismiss_update_alert(mock, "v9.9.9")
+
+        self.assertEqual(mock._dismissed_update_tag, "v9.9.9")
+        banner.destroy.assert_called_once()
+
+    def test_main_screen_rebuilds_attempt_to_render_pending_notice(self):
+        import inspect
+        from liveaudio.app import LiveASRApp
+
+        self.assertIn("_maybe_show_update_notice", inspect.getsource(LiveASRApp.go_to_main))
+        self.assertIn("_maybe_show_update_notice", inspect.getsource(LiveASRApp._rebuild_ui))
 
 
 if __name__ == "__main__":

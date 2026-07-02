@@ -113,6 +113,7 @@ TRANSLATIONS = {
         # Updates
         "update_available_banner": "✨ ¡Nueva versión {} disponible! Haz clic para ver las novedades.",
         "update_now": "Actualizar ahora",
+        "update_later": "Más tarde",
 
         # Status labels
         "status_audio_init": "Audio: iniciando",
@@ -272,6 +273,7 @@ TRANSLATIONS = {
         # Updates
         "update_available_banner": "✨ New version {} available! Click to see what's new.",
         "update_now": "Update now",
+        "update_later": "Later",
 
         # Status labels
         "status_audio_init": "Audio: initiating",
