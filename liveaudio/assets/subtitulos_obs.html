@@ -293,6 +293,9 @@
         const RIBBON_MIN_LINES = 1;
         const RIBBON_MAX_LINES_CEILING = 8;
         const RIBBON_DEFAULT_LINES = 3;
+        const WS_PORT_FALLBACK_RANGE = 10;
+        const HELLO_TIMEOUT_MS = 2000;
+        const WS_PROTO = 1;
 
         // --- URL Param Parser: read ?style= on load ---
         const urlParams = new URLSearchParams(window.location.search);
@@ -586,18 +589,44 @@
             processQueue(); // Process next in queue
         }
 
+        const requestedPort = parseInt(urlParams.get('port') || '8765', 10);
+        const wsBasePort = Math.max(1, Math.min(65535, Number.isNaN(requestedPort) ? 8765 : requestedPort));
+        const wsLastPort = Math.min(wsBasePort + WS_PORT_FALLBACK_RANGE - 1, 65535);
+        let wsCandidate = wsBasePort;
+        let wsBackoffMs = 1000;
+        let wsState = 'CLOSED';
+
         function connect() {
-            // Read port from query parameter (?port=XXXX), default to 8765
-            const params = new URLSearchParams(window.location.search);
-            const wsPort = params.get('port') || '8765';
-            const wsUrl = `ws://127.0.0.1:${wsPort}`;
-            ws = new WebSocket(wsUrl);
+            const candidate = wsCandidate;
+            const wsPort = candidate;
+            wsState = 'CONNECTING';
+            const socket = new WebSocket(`ws://127.0.0.1:${wsPort}`);
+            let helloTimer = null;
+            ws = socket;
+
+            socket.onopen = () => {
+                if (ws !== socket) return;
+                wsState = 'AWAIT_HELLO';
+                helloTimer = setTimeout(() => {
+                    if (ws === socket && wsState === 'AWAIT_HELLO') socket.close();
+                }, HELLO_TIMEOUT_MS);
+            };
             
-            ws.onopen = () => console.log('Conectado al motor ASR');
-            
-            ws.onmessage = (event) => {
+            socket.onmessage = (event) => {
+                if (ws !== socket) return;
                 try {
                     const data = JSON.parse(event.data);
+                    if (wsState !== 'ACTIVE') {
+                        if (data && data.type === 'hello' && data.app === 'liveaudio' &&
+                            Number.isInteger(data.proto) && data.proto >= WS_PROTO) {
+                            clearTimeout(helloTimer);
+                            wsState = 'ACTIVE';
+                            wsBackoffMs = 1000;
+                            return;
+                        }
+                        if (data && data.type === 'hello') socket.close();
+                        return;
+                    }
                     // Handle theme messages
                     if (data && data.type === 'theme' && data.tokens) {
                         applyTheme(data.tokens);
@@ -620,9 +649,23 @@
                 }
             };
 
-            ws.onclose = () => {
-                console.log('Desconectado. Reintentando...');
-                setTimeout(connect, 3000);
+            socket.onclose = () => {
+                clearTimeout(helloTimer);
+                if (ws !== socket) return;
+                const wasActive = wsState === 'ACTIVE';
+                wsState = 'CLOSED';
+                if (wasActive) {
+                    wsCandidate = wsBasePort;
+                } else if (candidate < wsLastPort) {
+                    wsCandidate = candidate + 1;
+                    setTimeout(connect, 0);
+                    return;
+                } else {
+                    wsCandidate = wsBasePort;
+                }
+                const delay = wsBackoffMs;
+                wsBackoffMs = Math.min(wsBackoffMs * 2, 8000);
+                setTimeout(connect, delay);
             };
         }
 

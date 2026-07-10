@@ -26,7 +26,7 @@ from liveaudio.utils.updater import check_for_updates_async, start_update, APP_V
 # Así la GUI (y el proceso ws, que reimporta app.py como __mp_main__) nunca cargan
 # torch ni faster_whisper. list_audio_devices vive en un módulo libre de torch.
 from liveaudio.core.devices import list_audio_devices
-from liveaudio.core.network import run_ws_server, port_available
+from liveaudio.core.network import run_ws_server, port_range_available
 from liveaudio.core.diagnostics import build_diagnostics_report, normalize_export_dir
 
 ctk.set_appearance_mode("dark")
@@ -963,15 +963,17 @@ class LiveASRApp(ctk.CTk):
         ).pack(anchor="w", padx=14, pady=(10, 4))
         
         guide_steps = t("obs_guide_steps", html_path=_asset_path("subtitulos_obs.html"))
+        self._obs_guide_base_text = guide_steps
         
-        ctk.CTkLabel(
+        self.obs_guide_label = ctk.CTkLabel(
             self.frame_obs_guide,
             text=guide_steps,
             wraplength=250,
             justify="left",
             font=ctk.CTkFont(size=11),
             text_color="#B0BEC5",
-        ).pack(anchor="w", padx=14, pady=(0, 10))
+        )
+        self.obs_guide_label.pack(anchor="w", padx=14, pady=(0, 10))
 
         # OBS backlog policy (basic)
         ctk.CTkLabel(tab_subtitulos, text=t("obs_backlog")).pack(anchor="w", padx=10)
@@ -1622,6 +1624,23 @@ class LiveASRApp(ctk.CTk):
                     
             translated_text = t(found_key) if found_key else raw_text
             self.set_status(status_key, translated_text, state)
+
+        elif event_type == "ws_port":
+            port = int(event.get("port", 8765))
+            base = int(event.get("base", port))
+            self._ws_effective_port = port
+            if port != base:
+                self.set_status("ws", t("status_ws_fallback", port=port), "ok")
+                if hasattr(self, "obs_guide_label"):
+                    guide = t("obs_guide_steps", html_path=_asset_path("subtitulos_obs.html"))
+                    note = t("obs_guide_port_note", port=port, base=base)
+                    self.obs_guide_label.configure(text=f"{guide}\n\n{note}")
+            else:
+                self.set_status("ws", f"WS: localhost:{port}", "ok")
+                if hasattr(self, "obs_guide_label"):
+                    guide = t("obs_guide_steps", html_path=_asset_path("subtitulos_obs.html"))
+                    self._obs_guide_base_text = guide
+                    self.obs_guide_label.configure(text=guide)
             
         elif event_type == "transcript":
             latency = event.get("latency")
@@ -1759,9 +1778,10 @@ class LiveASRApp(ctk.CTk):
             # Pre-flight: si otra aplicación ya ocupa el puerto WS, el proceso
             # hijo moriría en silencio. Fallar acá, antes de arrancar nada.
             ws_port = self.shared_config.get("ws_port", 8765)
-            if not port_available(ws_port):
-                messagebox.showerror(t("ws_port_busy_title"), t("ws_port_busy_msg").format(port=ws_port))
-                self.print_log(t("log_ws_port_busy").format(port=ws_port))
+            if not port_range_available(ws_port):
+                end_port = min(ws_port + 9, 65535)
+                messagebox.showerror(t("ws_port_busy_title"), t("ws_port_busy_msg").format(port=ws_port, end_port=end_port))
+                self.print_log(t("log_ws_port_busy").format(port=ws_port, end_port=end_port))
                 self.set_status("ws", t("status_ws_port_busy"), "error")
                 return
             self.is_running = True

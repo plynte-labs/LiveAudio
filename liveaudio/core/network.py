@@ -10,6 +10,8 @@ from websockets.asyncio.server import serve, broadcast
 from liveaudio.core.diagnostics import create_store_from_config
 from liveaudio.utils.streams import make_streams_encoding_safe
 
+WS_PORT_FALLBACK_RANGE = 10
+
 
 def port_available(port, host="127.0.0.1"):
     """Comprueba si un puerto TCP local está libre intentando un bind real.
@@ -30,6 +32,12 @@ def port_available(port, host="127.0.0.1"):
         return True
     except OSError:
         return False
+
+
+def port_range_available(base, host="127.0.0.1"):
+    """Return whether any candidate in the bounded fallback range is free."""
+    top_port = min(base + WS_PORT_FALLBACK_RANGE - 1, 65535)
+    return any(port_available(port, host) for port in range(base, top_port + 1))
 
 
 def _emit(log_queue, event):
@@ -78,7 +86,7 @@ def _record_network_runtime_health(
         diagnostics_store.record_state("ws.runtime", payload)
 
 
-async def _handle_client(websocket, clients, log_queue, diagnostics_store=None):
+async def _handle_client(websocket, clients, log_queue, diagnostics_store=None, effective_port=8765):
     """Handler para cada conexión WebSocket entrante."""
     remote = websocket.remote_address
     if remote and remote[0] not in ("127.0.0.1", "::1", "localhost"):
@@ -96,6 +104,9 @@ async def _handle_client(websocket, clients, log_queue, diagnostics_store=None):
     print(f"[WebSocket] Cliente conectado: {client_id}")
 
     try:
+        await websocket.send(json.dumps({
+            "type": "hello", "app": "liveaudio", "proto": 1, "port": effective_port,
+        }))
         async for message in websocket:
             pass  # Client messages ignored (OBS browser source is receive-only)
     except Exception:
@@ -259,13 +270,38 @@ def run_ws_server(text_queue, log_queue=None, port=8765, diagnostics_store=None,
     async def main():
         clients = set()
 
-        async def handle_client(websocket):
-            await _handle_client(websocket, clients, log_queue, diagnostics_store=diagnostics_store)
+        last_bind_error = None
+        top_port = min(port + WS_PORT_FALLBACK_RANGE - 1, 65535)
+        for candidate in range(port, top_port + 1):
+            async def handle_client(websocket, effective_port=candidate):
+                await _handle_client(
+                    websocket, clients, log_queue,
+                    diagnostics_store=diagnostics_store,
+                    effective_port=effective_port,
+                )
+            try:
+                server_ctx = serve(handle_client, "127.0.0.1", candidate, ping_interval=10, ping_timeout=5)
+                server = await server_ctx.__aenter__()
+            except OSError as bind_error:
+                if bind_error.errno in (errno.EADDRINUSE, 10048):
+                    last_bind_error = bind_error
+                    continue
+                raise
+            try:
+                if candidate != port:
+                    _emit_log(log_queue, f"[WebSocket] Puerto {port} ocupado; usando puerto de respaldo {candidate}")
+                    print(f"[WebSocket] Puerto {port} ocupado; usando puerto de respaldo {candidate}")
+                _emit(log_queue, {"type": "status", "key": "ws", "text": f"WS: localhost:{candidate}", "state": "ok"})
+                # Puerto efectivo hacia la GUI (WPF-3), antes de servir la cola.
+                _emit(log_queue, {"type": "ws_port", "port": candidate, "base": port})
+                # Ejecutar el polling de la cola en paralelo con el servidor
+                await _poll_queue(text_queue, server, log_queue, diagnostics_store=diagnostics_store)
+            finally:
+                await server_ctx.__aexit__(None, None, None)
+            return
 
-        async with serve(handle_client, "127.0.0.1", port, ping_interval=10, ping_timeout=5) as server:
-            _emit(log_queue, {"type": "status", "key": "ws", "text": f"WS: localhost:{port}", "state": "ok"})
-            # Ejecutar el polling de la cola en paralelo con el servidor
-            await _poll_queue(text_queue, server, log_queue, diagnostics_store=diagnostics_store)
+        # Rango agotado (WPF-1): degrada al fail-fast existente (dialogo + monitor).
+        raise last_bind_error
 
     try:
         asyncio.run(main())

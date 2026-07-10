@@ -31,8 +31,10 @@ const path = require('path');
 let now = 0;
 let timerSeq = 1;
 const timers = new Map(); // id -> { at, cb }
+const scheduledDelays = [];
 
 function setTimeoutShim(cb, delay) {
+  scheduledDelays.push(delay || 0);
   const id = timerSeq++;
   timers.set(id, { at: now + (delay || 0), cb });
   return id;
@@ -161,11 +163,26 @@ const documentShim = {
 
 // ---- WebSocket shim: captures the onmessage handler the overlay installs ---
 let wsInstance = null;
+const wsInstances = [];
 class WebSocketShim {
-  constructor() { this.onopen = null; this.onmessage = null; this.onclose = null; wsInstance = this; }
+  constructor(url) {
+    this.url = url;
+    this.onopen = null;
+    this.onmessage = null;
+    this.onclose = null;
+    this.closed = false;
+    wsInstance = this;
+    wsInstances.push(this);
+  }
+  close() { this.closed = true; if (this.onclose) this.onclose(); }
 }
 
 function send(payload) {
+  if (!wsInstance._identified) {
+    if (wsInstance.onopen) wsInstance.onopen();
+    wsInstance.onmessage({ data: JSON.stringify({ type: 'hello', app: 'liveaudio', proto: 1, port: 8765 }) });
+    wsInstance._identified = true;
+  }
   wsInstance.onmessage({ data: JSON.stringify(payload) });
 }
 
@@ -374,8 +391,59 @@ function scenario5() {
   };
 }
 
+function helloGate() {
+  wsInstance.onopen();
+  wsInstance.onmessage({ data: JSON.stringify({ text: 'foreign', style: 'default' }) });
+  const beforeHello = liveCount();
+  wsInstance.onmessage({ data: JSON.stringify({ type: 'hello', app: 'liveaudio', proto: 1, port: 8765 }) });
+  wsInstance.onmessage({ data: JSON.stringify({ text: 'accepted', style: 'default' }) });
+  advance(100);
+  return { beforeHello, afterHello: liveTexts() };
+}
+
+function helloTimeout() {
+  wsInstance.onopen();
+  advance(2000);
+  return { firstClosed: wsInstances[0].closed, urls: wsInstances.map((item) => item.url) };
+}
+
+function activeReconnect() {
+  wsInstance.onopen();
+  wsInstance.onmessage({ data: JSON.stringify({ type: 'hello', app: 'liveaudio', proto: 1, port: 8766 }) });
+  wsInstance.close();
+  advance(1000);
+  return { urls: wsInstances.map((item) => item.url) };
+}
+
+function staleCallbacks() {
+  const stale = wsInstance;
+  stale.onopen();
+  advance(2000);
+  const before = wsInstances.length;
+  stale.onmessage({ data: JSON.stringify({ type: 'hello', app: 'liveaudio', proto: 1, port: 8765 }) });
+  stale.onmessage({ data: JSON.stringify({ text: 'stale', style: 'default' }) });
+  stale.onclose();
+  advance(0);
+  return { before, after: wsInstances.length, rendered: liveTexts() };
+}
+
+function backoffCap() {
+  const expected = [1000, 2000, 4000, 8000, 8000];
+  const backoffs = [];
+  for (const delay of expected) {
+    for (let i = 0; i < 10; i++) {
+      wsInstance.onopen();
+      wsInstance.close();
+      advance(0);
+    }
+    backoffs.push(scheduledDelays[scheduledDelays.length - 1]);
+    advance(delay);
+  }
+  return { backoffs };
+}
+
 const which = process.argv[2];
-const dispatch = { scenario1, scenario2, scenario3, scenario4, scenario5 };
+const dispatch = { scenario1, scenario2, scenario3, scenario4, scenario5, helloGate, helloTimeout, activeReconnect, staleCallbacks, backoffCap };
 if (!dispatch[which]) {
   process.stderr.write(`unknown scenario: ${which}\n`);
   process.exit(2);
