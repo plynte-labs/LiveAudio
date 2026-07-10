@@ -4,6 +4,18 @@ Todos los cambios notables de LiveAudio se documentan aquí.
 
 ---
 
+## [1.2.3] — 2026-07-10
+
+### Corregido
+
+- **Fallo silencioso cuando el puerto WebSocket está ocupado** — si otra aplicación ya usaba el puerto de subtítulos (`ws_port`, por defecto 8765), el servidor WebSocket moría al iniciar mientras la app seguía registrando "Subtitulo enviado a OBS" (ese log medía el encolado interno, no la entrega real) y OBS conectaba con la aplicación equivocada sin mostrar error. Ahora: chequeo previo del puerto antes de arrancar el sistema (diálogo claro con el puerto en conflicto y las dos soluciones: cerrar la otra aplicación o cambiar `ws_port` en `config.json` y agregar `?port=` a la URL del navegador en OBS), monitoreo de salud del proceso WebSocket (a los 2 s del arranque y luego cada 5 s, avisa en consola y en el estado sin robar el foco en medio del stream) y mensaje específico de "puerto en uso" en el log del servidor. En POSIX el chequeo replica el `SO_REUSEADDR` del bind real para no dar falsos "ocupado" por sockets en TIME_WAIT tras un Stop→Start normal.
+
+### Tests
+
+- 8 tests nuevos (TDD): probe de puerto libre/ocupado, camino de error de bind ejercido en proceso, wiring de la GUI y paridad de claves i18n es/en. Suite total: 551.
+
+---
+
 ## [1.2.2] — 2026-07-01
 
 ### Corregido
