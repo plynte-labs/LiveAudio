@@ -191,6 +191,134 @@ class TestMessageRouting(unittest.TestCase):
         self.assertEqual(parsed["style"], "default")
 
 
+class TestPortAvailable(unittest.TestCase):
+    """Tests for the advisory pre-flight port check."""
+
+    def test_returns_false_when_port_is_held_by_listener(self):
+        """port_available should be False while another socket listens on the port."""
+        import socket
+        from liveaudio.core.network import port_available
+
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen(1)
+            port = listener.getsockname()[1]
+            self.assertFalse(port_available(port))
+        finally:
+            listener.close()
+
+    def test_returns_true_for_freed_ephemeral_port(self):
+        """port_available should be True for a port that was just released."""
+        import socket
+        from liveaudio.core.network import port_available
+
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+        probe.close()
+        self.assertTrue(port_available(port))
+
+
+class TestRunWsServerPortConflict(unittest.TestCase):
+    """Tests for the bind-failure path of run_ws_server."""
+
+    def test_occupied_port_raises_and_logs_friendly_message(self):
+        """run_ws_server on a busy port should raise OSError and emit a clear log."""
+        import queue as std_queue
+        import socket
+        from liveaudio.core.network import run_ws_server
+
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen(1)
+            port = listener.getsockname()[1]
+
+            log_queue = std_queue.Queue()
+            text_queue = std_queue.Queue()
+            with self.assertRaises(OSError):
+                run_ws_server(text_queue, log_queue, port)
+
+            messages = []
+            while True:
+                try:
+                    event = log_queue.get_nowait()
+                except std_queue.Empty:
+                    break
+                if isinstance(event, dict) and event.get("type") == "log":
+                    messages.append(event.get("message", ""))
+            self.assertTrue(
+                any("en uso" in message for message in messages),
+                f"No friendly port-in-use log emitted. Logs: {messages}",
+            )
+        finally:
+            listener.close()
+
+
+class TestAppWsResilienceWiring(unittest.TestCase):
+    """Source-inspection tests for the app-side pre-flight check and health monitor."""
+
+    @staticmethod
+    def _read_app_source():
+        import os
+        app_path = os.path.join(os.path.dirname(__file__), "..", "liveaudio", "app.py")
+        with open(app_path, encoding="utf-8") as f:
+            return f.read()
+
+    def test_preflight_port_check_runs_before_ws_spawn(self):
+        """toggle_system must call port_available before spawning the WS process."""
+        source = self._read_app_source()
+        toggle_start = source.index("def toggle_system")
+        body = source[toggle_start:]
+        check_pos = body.find("port_available(")
+        spawn_pos = body.find("self.p_ws = mp.Process")
+        self.assertNotEqual(check_pos, -1, "toggle_system does not call port_available")
+        self.assertNotEqual(spawn_pos, -1, "toggle_system does not spawn p_ws")
+        self.assertLess(check_pos, spawn_pos, "port check must run before spawning p_ws")
+
+    def test_ws_health_monitor_exists_and_is_scheduled(self):
+        """_check_ws_health must exist and be scheduled with after() post-start."""
+        source = self._read_app_source()
+        self.assertIn("def _check_ws_health(self):", source)
+        self.assertIn("self.after(2000, self._check_ws_health)", source)
+        self.assertIn("self.p_ws.is_alive()", source)
+
+    def test_ws_health_monitor_is_cancelled_on_stop(self):
+        """The stop branch of toggle_system itself must cancel the monitor handle."""
+        source = self._read_app_source()
+        toggle_start = source.index("def toggle_system")
+        toggle_end = source.index("\n    def ", toggle_start)
+        toggle_body = source[toggle_start:toggle_end]
+        self.assertIn("self.after_cancel(self._ws_health_after_id)", toggle_body)
+
+
+class TestWsResilienceTranslations(unittest.TestCase):
+    """New i18n keys must exist in both languages (key parity)."""
+
+    NEW_KEYS = (
+        "ws_port_busy_title",
+        "ws_port_busy_msg",
+        "log_ws_port_busy",
+        "status_ws_port_busy",
+        "status_ws_dead",
+        "log_ws_dead",
+    )
+
+    def test_new_keys_present_in_both_languages(self):
+        from liveaudio.utils.i18n import TRANSLATIONS
+        for lang in ("es", "en"):
+            for key in self.NEW_KEYS:
+                self.assertIn(key, TRANSLATIONS[lang], f"{key} missing in {lang}")
+
+    def test_port_placeholder_renders(self):
+        from liveaudio.utils.i18n import TRANSLATIONS
+        for lang in ("es", "en"):
+            for key in ("ws_port_busy_msg", "log_ws_port_busy"):
+                rendered = TRANSLATIONS[lang][key].format(port=8765)
+                self.assertIn("8765", rendered)
+
+
 class TestWebSocketLocalhostBinding(unittest.TestCase):
     """Tests for localhost-only binding security."""
 

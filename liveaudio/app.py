@@ -26,7 +26,7 @@ from liveaudio.utils.updater import check_for_updates_async, start_update, APP_V
 # Así la GUI (y el proceso ws, que reimporta app.py como __mp_main__) nunca cargan
 # torch ni faster_whisper. list_audio_devices vive en un módulo libre de torch.
 from liveaudio.core.devices import list_audio_devices
-from liveaudio.core.network import run_ws_server
+from liveaudio.core.network import run_ws_server, port_available
 from liveaudio.core.diagnostics import build_diagnostics_report, normalize_export_dir
 
 ctk.set_appearance_mode("dark")
@@ -292,6 +292,7 @@ class LiveASRApp(ctk.CTk):
         self.text_queue = mp.Queue(maxsize=QUEUE_MAXSIZE)
         self.log_queue = mp.Queue(maxsize=QUEUE_MAXSIZE)
         self.p_audio = self.p_ia = self.p_ws = None
+        self._ws_health_after_id = None
         self.current_session_dir = None
         self._log_lines = []
         self._advanced_visible = False
@@ -1755,6 +1756,14 @@ class LiveASRApp(ctk.CTk):
                     if any(draft.get(key) != self.config_data.get(key) for key in draft.keys()):
                         return
         if not self.is_running:
+            # Pre-flight: si otra aplicación ya ocupa el puerto WS, el proceso
+            # hijo moriría en silencio. Fallar acá, antes de arrancar nada.
+            ws_port = self.shared_config.get("ws_port", 8765)
+            if not port_available(ws_port):
+                messagebox.showerror(t("ws_port_busy_title"), t("ws_port_busy_msg").format(port=ws_port))
+                self.print_log(t("log_ws_port_busy").format(port=ws_port))
+                self.set_status("ws", t("status_ws_port_busy"), "error")
+                return
             self.is_running = True
             self.btn_power.configure(text=t("stop_system"), fg_color="darkred", hover_color="red")
             
@@ -1779,13 +1788,16 @@ class LiveASRApp(ctk.CTk):
             # Recrear cola de texto para evitar pipes corruptos entre sesiones
             self.text_queue = mp.Queue(maxsize=QUEUE_MAXSIZE)
             
-            ws_port = self.shared_config.get("ws_port", 8765)
             self.p_ws = mp.Process(target=run_ws_server, args=(self.text_queue, self.log_queue, ws_port), daemon=True)
             self.p_ws.start()
-            
+            self._ws_health_after_id = self.after(2000, self._check_ws_health)
+
             self.hot_swap_engine()
         else:
             self.is_running = False
+            if self._ws_health_after_id is not None:
+                self.after_cancel(self._ws_health_after_id)
+                self._ws_health_after_id = None
             self.btn_power.configure(text=t("start_system"), fg_color=["#3B8ED0", "#1F6AA5"], hover_color=["#36719F", "#144870"])
             self.print_log(t("log_base_stopping"))
             self.set_status("audio", t("status_audio_stopped"), "idle")
@@ -1817,6 +1829,21 @@ class LiveASRApp(ctk.CTk):
             self.current_session_dir = None
             self.update_session_label()
 
+    def _check_ws_health(self):
+        """Monitor periódico del proceso WS: avisa si murió (ej. puerto robado).
+
+        Sin messagebox: robar el foco en medio de un stream es inaceptable.
+        Solo consola + chip de estado. Sin auto-restart (fuera de alcance).
+        """
+        self._ws_health_after_id = None
+        if not self.is_running:
+            return
+        if self.p_ws is None or not self.p_ws.is_alive():
+            self.set_status("ws", t("status_ws_dead"), "error")
+            self.print_log(t("log_ws_dead"))
+            return
+        self._ws_health_after_id = self.after(5000, self._check_ws_health)
+
     def _confirm_close(self):
         """Pending-changes prompt; returns False when the user cancels closing."""
         if not self._ui_ready:
@@ -1843,6 +1870,9 @@ class LiveASRApp(ctk.CTk):
     def _shutdown(self):
         """Irreversible teardown: stop workers, drain queues, destroy the window."""
         self.is_running = False
+        if self._ws_health_after_id is not None:
+            self.after_cancel(self._ws_health_after_id)
+            self._ws_health_after_id = None
         
         # Señal de apagado limpio al servidor WebSocket
         try:
