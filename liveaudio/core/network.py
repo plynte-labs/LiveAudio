@@ -1,11 +1,35 @@
 # SPDX-License-Identifier: MIT
 import asyncio
+import errno
 import json
+import os
 import queue
+import socket
 
 from websockets.asyncio.server import serve, broadcast
 from liveaudio.core.diagnostics import create_store_from_config
 from liveaudio.utils.streams import make_streams_encoding_safe
+
+
+def port_available(port, host="127.0.0.1"):
+    """Comprueba si un puerto TCP local está libre intentando un bind real.
+
+    Chequeo consultivo con carrera TOCTOU inherente: otro proceso puede tomar
+    el puerto entre esta comprobación y el bind real del servidor. El monitor
+    de salud del proceso WS cubre esa carrera. En POSIX replica el
+    SO_REUSEADDR que asyncio aplica en el bind real del servidor (evita
+    falsos "ocupado" por sockets en TIME_WAIT tras un Stop→Start); en
+    Windows no se usa, porque allí permitiría bindear sobre un puerto
+    activo y ocultaría conflictos reales.
+    """
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            if os.name == "posix":
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            probe.bind((host, port))
+        return True
+    except OSError:
+        return False
 
 
 def _emit(log_queue, event):
@@ -245,6 +269,14 @@ def run_ws_server(text_queue, log_queue=None, port=8765, diagnostics_store=None,
 
     try:
         asyncio.run(main())
+    except OSError as e:
+        if e.errno in (errno.EADDRINUSE, 10048):
+            _emit_log(log_queue, f'[WebSocket] Puerto {port} en uso por otra aplicacion. Cierra esa aplicacion o cambia "ws_port" en config.json.')
+            _emit(log_queue, {"type": "status", "key": "ws", "text": f"WS: puerto {port} ocupado", "state": "error"})
+        else:
+            _emit_log(log_queue, f"[WebSocket] Error fatal: {e}")
+            _emit(log_queue, {"type": "status", "key": "ws", "text": "WS: error", "state": "error"})
+        raise
     except Exception as e:
         _emit_log(log_queue, f"[WebSocket] Error fatal: {e}")
         _emit(log_queue, {"type": "status", "key": "ws", "text": "WS: error", "state": "error"})
