@@ -890,20 +890,35 @@
                 sub.classList.add('visible');
                 
             } else {
-                // Para Default y Neon, es texto plano
+                // Para Default y Neon, es texto plano. El reveal se programa tras
+                // el appendChild (ver mas abajo): estos estilos transicionan por CSS
+                // y necesitan que el estado inicial (opacity:0) este comprometido
+                // ANTES de anadir .visible.
                 sub.textContent = safeText;
-                
-                // Pequeño timeout para permitir que el DOM se actualice antes de animar
-                requestAnimationFrame(() => {
-                    setTimeout(() => sub.classList.add('visible'), 20);
-                });
             }
-            
+
             container.appendChild(sub);
 
             // FLIP play pass: glide the surviving ribbon lines to their new
             // positions (no-op in single mode and in the headless harness).
             if (renderStacked) flipPlayRibbon(container, flipFirst, sub);
+
+            // Reveal de los estilos que transicionan por CSS (default, neon, minimal,
+            // bold). Los de @keyframes (karaoke, rgb, typewriter) ya se marcaron
+            // .visible arriba de forma sincrona y no entran aqui.
+            //
+            // Leer offsetHeight fuerza un reflow SINCRONO, que compromete el estado
+            // inicial (.sub-box -> opacity:0) antes de que el timer de 20ms anada
+            // .visible; sin ese flush el navegador coalesce ambos estados y se salta
+            // la transicion. Esto sustituye a un requestAnimationFrame: OBS CEF
+            // SUSPENDE los callbacks de rAF mientras el documento esta oculto (escena
+            // inactiva o pestana en segundo plano) mientras los setTimeout siguen
+            // corriendo, asi que un reveal via rAF dejaba subtitulos invisibles para
+            // siempre mientras sus timers de expiry si vencian.
+            if (!sub.classList.contains('visible')) {
+                void sub.offsetHeight; // force reflow: flush the pre-transition state
+                setTimeout(() => sub.classList.add('visible'), 20);
+            }
 
             // --- Animación de salida unificada ---
             // El TIMING (5000ms hide / 650ms cleanup, stagger por palabra) es identico
@@ -916,6 +931,46 @@
                 hideTimeout = setTimeout(() => runExpiry(sub, safeStyle, false), 5000);
             }
         }
+
+        // --- Reset duro al volver a ser visible ---------------------------------
+        // Mientras el documento esta oculto (escena OBS inactiva o pestana en segundo
+        // plano) el overlay SIGUE recibiendo por WebSocket y renderizando a ciegas.
+        // Todo lo que quede en vuelo al reaparecer pertenece, por definicion, a audio
+        // que el espectador ya se perdio. Regla de producto para toda salida de la app:
+        // cuando una salida se reanuda, NUNCA reproduce lo que se perdio. Asi que al
+        // volver a visible tiramos todo — sin revelarlo ni animarlo — y solo se
+        // renderizan los subtitulos que lleguen DESPUES.
+        function resetOverlayOnResume() {
+            // Timers compartidos del path single + los de la maquina de estados.
+            clearTimeout(hideTimeout);
+            clearTimeout(cleanupTimeout);
+            clearTimeout(debounceTimer);
+            clearTimeout(demoteTimer);
+            hideTimeout = cleanupTimeout = debounceTimer = demoteTimer = null;
+
+            // Cajas vivas: se desprenden SIN anadir .visible ni .hiding, para que no
+            // haya ni flash de entrada ni fade de salida al reaparecer la escena.
+            for (const box of container.querySelectorAll('.sub-box')) {
+                if (box._hideTimer) clearTimeout(box._hideTimer);
+                if (box._cleanupTimer) clearTimeout(box._cleanupTimer);
+                box._hideTimer = box._cleanupTimer = null;
+                if (box.parentNode) box.parentNode.removeChild(box);
+            }
+
+            // Cola y gates del path single.
+            pendingQueue = [];
+            isShowing = false;
+            lastShowTime = 0;
+            // Maquina adaptativa: pizarra limpia en SINGLE, sin latch de replay vivo.
+            adaptiveState = 'SINGLE';
+            replayActive = false;
+            lastReplayAt = 0;
+            setRibbonActive(false);
+        }
+
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden) resetOverlayOnResume();
+        });
 
         connect();
     </script>

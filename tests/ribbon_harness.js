@@ -154,12 +154,37 @@ function descendants(node) {
 const containerEl = createElement('div');
 const documentElementEl = createElement('html');
 
+// ---- Document visibility + SUSPENDABLE rAF --------------------------------
+// Real browsers -- OBS CEF included -- SUSPEND requestAnimationFrame while the
+// document is hidden (inactive scene / backgrounded tab) and resume it on
+// unhide, while setTimeout keeps firing, merely throttled. The harness
+// reproduces exactly that asymmetry so overlay behavior under a hidden document
+// is observable instead of silently passing.
+const rafPending = [];
+const visibilityListeners = [];
+
 const documentShim = {
+  hidden: false,
   getElementById() { return containerEl; },
   createElement,
   createTextNode(t) { return { tagName: null, _text: String(t), parentNode: null }; },
   get documentElement() { return documentElementEl; },
+  addEventListener(type, cb) {
+    if (type === 'visibilitychange' && typeof cb === 'function') visibilityListeners.push(cb);
+  },
 };
+
+// Flip document.hidden and notify listeners. On UNHIDE the queued rAF callbacks
+// are flushed AFTER the visibilitychange listeners have run -- the order a real
+// browser uses (the event is a task; rAF resumes at the next frame).
+function setHidden(hidden) {
+  documentShim.hidden = hidden;
+  for (const cb of visibilityListeners.slice()) cb();
+  if (!hidden) {
+    const due = rafPending.splice(0, rafPending.length);
+    for (const cb of due) cb();
+  }
+}
 
 // ---- WebSocket shim: captures the onmessage handler the overlay installs ---
 let wsInstance = null;
@@ -194,7 +219,16 @@ global.WebSocket = WebSocketShim;
 global.console = { log() {}, warn() {}, error() {} };
 global.setTimeout = setTimeoutShim;
 global.clearTimeout = clearTimeoutShim;
-global.requestAnimationFrame = (cb) => setTimeoutShim(cb, 0);
+// Suspended (QUEUED, never dropped) while the document is hidden, flushed by
+// setHidden(false) -- so an rAF-gated reveal fails here exactly as it fails
+// inside an inactive OBS scene.
+global.requestAnimationFrame = (cb) => {
+  if (documentShim.hidden) {
+    rafPending.push(cb);
+    return 0;
+  }
+  return setTimeoutShim(cb, 0);
+};
 global.Date = Object.assign(
   function () { return new (class { getTime() { return now; } })(); },
   { now: () => now }
@@ -391,6 +425,76 @@ function scenario5() {
   };
 }
 
+// ===========================================================================
+// SCENARIO revealWithoutRaf: the reveal must not depend on requestAnimationFrame
+// ===========================================================================
+// OBS suspends rAF while the scene is inactive. Every transition-based style
+// (default, neon, minimal, bold -- the ones that reveal via the CSS transition
+// on .sub-box, not via @keyframes) must still get `.visible`. Gating that reveal
+// behind rAF leaves the box in the DOM at opacity 0 forever.
+function revealWithoutRaf() {
+  setHidden(true); // rAF is now suspended and is never flushed in this scenario
+  const styles = ['default', 'neon', 'minimal', 'bold'];
+  const revealed = {};
+  for (const style of styles) {
+    const text = `t-${style}`;
+    send({ text, style });
+    advance(100); // > the 20ms reveal timer
+    const box = containerEl.querySelectorAll('.sub-box').find((b) => b.textContent === text);
+    revealed[style] = !!box && box.classList.contains('visible');
+    advance(6000); // age it out so the next style starts from a clean single path
+  }
+  return { revealed, rafPending: rafPending.length };
+}
+
+// ===========================================================================
+// SCENARIO visibilityReset: becoming visible HARD RESETS the overlay
+// ===========================================================================
+// Product rule: when an output resumes, it never replays what was missed. A
+// subtitle produced while the scene was inactive belongs to audio the viewer
+// already missed, so on visibilitychange->visible everything in flight is
+// dropped WITHOUT being revealed, and only later arrivals render.
+// Reproduces the user report: "every time I switch tab it shows one subtitle
+// and that's it" -- a stale box surfaces and the fresh line is swallowed by the
+// orphaned single-path gate.
+function visibilityReset() {
+  setHidden(true);
+  for (const text of ['h0', 'h1', 'h2']) {
+    send({ text, style: 'default' });
+    advance(120);
+  }
+  advance(6000); // past a full line lifetime (5000 hide + 650 cleanup)
+
+  // One more line lands just before the scene comes back: the stale subtitle.
+  send({ text: 'stale', style: 'default' });
+  advance(300);
+  const liveWhileHidden = liveTexts();
+  const staleBox = containerEl.querySelectorAll('.sub-box')[0] || null;
+
+  // Scene becomes active: visibilitychange fires, then the browser flushes the
+  // rAF backlog queued while hidden.
+  setHidden(false);
+  advance(0);
+  const afterUnhide = liveTexts();
+
+  // A subtitle arriving AFTER the overlay is visible must render normally.
+  send({ text: 'fresh', style: 'default' });
+  advance(300);
+  const fresh = containerEl.querySelectorAll('.sub-box');
+
+  return {
+    liveWhileHidden,
+    afterUnhide,
+    ribbonAfterUnhide: ribbonActive(),
+    // Dropped silently: detached from the DOM and never put through the exit
+    // animation (`.hiding`), so nothing fades out on screen.
+    staleDroppedSilently: !!staleBox && staleBox.parentNode === null
+      && !staleBox.classList.contains('hiding'),
+    freshTexts: fresh.map((n) => n.textContent),
+    freshVisible: fresh.length === 1 && fresh[0].classList.contains('visible'),
+  };
+}
+
 function helloGate() {
   wsInstance.onopen();
   wsInstance.onmessage({ data: JSON.stringify({ text: 'foreign', style: 'default' }) });
@@ -443,7 +547,7 @@ function backoffCap() {
 }
 
 const which = process.argv[2];
-const dispatch = { scenario1, scenario2, scenario3, scenario4, scenario5, helloGate, helloTimeout, activeReconnect, staleCallbacks, backoffCap };
+const dispatch = { scenario1, scenario2, scenario3, scenario4, scenario5, revealWithoutRaf, visibilityReset, helloGate, helloTimeout, activeReconnect, staleCallbacks, backoffCap };
 if (!dispatch[which]) {
   process.stderr.write(`unknown scenario: ${which}\n`);
   process.exit(2);
