@@ -1,8 +1,8 @@
 {
   "track_id": "critical-bugfixes_20260509",
   "type": "bugfix",
-  "status": "new",
+  "status": "completed",
   "created_at": "2026-05-09T01:47:00Z",
-  "updated_at": "2026-05-09T01:47:00Z",
+  "updated_at": "2026-05-09T17:44:02Z",
   "description": "Critical Bug Fixes — Resilience & Stability: Fix 8 critical/high-severity bugs from Dream Team audit (ASR freeze recovery, queue backpressure, graceful shutdown, Unicode bidi strip, WS port wiring, dependency pinning, VAD error handling, output_dir validation) + GPU auto-detection with runtime VRAM monitoring and auto-fallback."
 }

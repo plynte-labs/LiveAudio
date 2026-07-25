@@ -1,8 +1,8 @@
 {
   "track_id": "vad-onset-grace_20260619",
   "type": "enhancement",
-  "status": "proposed",
+  "status": "completed",
   "created_at": "2026-06-19T12:00:00Z",
-  "updated_at": "2026-06-19T12:00:00Z",
+  "updated_at": "2026-06-20T07:44:09Z",
   "description": "Reduce clipping of soft speech onsets by making the Silero VAD pre-roll (lead-in) configurable. Replace the hardcoded pre_buffer maxlen=3 (~96ms) in vad_worker() (liveaudio/core/audio.py:308) with a value computed from a new config key vad_speech_pad_ms (default 200ms => 7 chunks), and expose the previously hardcoded VAD_THRESHOLD (liveaudio/core/audio.py:22, used at :348) as a configurable vad_threshold key (default 0.5, clamp 0.1-0.9). Both keys are added to DEFAULT_CONFIG with _normalize_config clamps for transparent auto-migration of existing config.json (liveaudio/utils/config.py), surfaced in the Latency control settings UI as CTkSliders mirroring the existing silence_timeout / max_chunk_duration pattern (liveaudio/app.py:768-783), wired into draft collection and slider sync, and added to _pending_restart_flags so changes trigger an audio-thread restart (liveaudio/app.py:1298). Latency must not regress: the ring-buffer architecture and CPU VAD stay intact and silence_timeout defaults are not changed. Scope is per-utterance onset pre-roll, not an app/stream warm-up grace."
 }
