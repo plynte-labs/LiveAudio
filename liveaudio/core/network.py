@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 import asyncio
 import errno
+import http
 import json
 import os
 import queue
@@ -11,6 +12,20 @@ from liveaudio.core.diagnostics import create_store_from_config
 from liveaudio.utils.streams import make_streams_encoding_safe
 
 WS_PORT_FALLBACK_RANGE = 10
+
+# Origenes permitidos en el handshake WebSocket. El navegador NO aplica
+# same-origin a los WebSockets: cualquier web abierta mientras se transmite
+# podria conectarse a ws://127.0.0.1:8765 y leer la transcripcion en vivo, asi
+# que filtrar por Origin es responsabilidad del servidor.
+#   - "http://absolute": host interno de CEF para las fuentes de navegador
+#     locales de OBS. Valor MEDIDO contra el OBS real del mantenedor
+#     (2026-07-24), no supuesto; no es "null", y una web no puede falsificarlo
+#     porque el navegador escribe Origin desde el origen real del documento.
+# Ausencia de cabecera Origin: se acepta aparte (ver _reject_foreign_origin).
+# Todo cliente no navegador (scripts, herramientas nativas, integraciones
+# futuras) no envia Origin, y un proceso no navegador puede falsificar
+# cualquier valor: eso queda fuera de este filtro por diseño.
+WS_ALLOWED_ORIGINS = frozenset({"http://absolute"})
 
 
 def port_available(port, host="127.0.0.1"):
@@ -84,6 +99,32 @@ def _record_network_runtime_health(
         payload["rejected_client"] = bool(rejected_client)
     if payload:
         diagnostics_store.record_state("ws.runtime", payload)
+
+
+def _reject_foreign_origin(connection, request, log_queue=None):
+    """Hook process_request: corta el handshake si el Origin no está permitido.
+
+    Se filtra aquí y no con el parámetro origins= de serve() a propósito: ese
+    parámetro responde 403 antes de que corra el handler, así que el rechazo
+    sería mudo. Si una versión futura de OBS cambiara su origen interno, el
+    overlay moriría en silencio — exactamente el fallo que este proyecto ya
+    peleó dos veces (#9, #11). Aquí el rechazo se ve en consola, en el log
+    (con el Origin recibido, para diagnosticarlo de un vistazo) y en el chip.
+
+    Devuelve None para continuar el handshake, o una Response para abortarlo.
+    """
+    origins = request.headers.get_all("Origin")
+    if not origins:
+        return None  # Cliente no navegador: no manda Origin.
+    if len(origins) == 1 and origins[0] in WS_ALLOWED_ORIGINS:
+        return None
+    # Varias cabeceras Origin nunca son legítimas: falla cerrado y se registran
+    # todas, en vez de reventar dentro del hook y degradar a un 500 mudo.
+    received = ", ".join(origins)
+    _emit_log(log_queue, f"[WebSocket] Conexion rechazada por Origin no permitido: {received}")
+    _emit(log_queue, {"type": "status", "key": "obs", "text": "OBS: origen rechazado", "state": "warn"})
+    print(f"[WebSocket] Conexion rechazada por Origin no permitido: {received}")
+    return connection.respond(http.HTTPStatus.FORBIDDEN, "Origen no permitido\n")
 
 
 async def _handle_client(websocket, clients, log_queue, diagnostics_store=None, effective_port=8765):
@@ -270,6 +311,9 @@ def run_ws_server(text_queue, log_queue=None, port=8765, diagnostics_store=None,
     async def main():
         clients = set()
 
+        def check_origin(connection, request):
+            return _reject_foreign_origin(connection, request, log_queue)
+
         last_bind_error = None
         top_port = min(port + WS_PORT_FALLBACK_RANGE - 1, 65535)
         for candidate in range(port, top_port + 1):
@@ -280,7 +324,10 @@ def run_ws_server(text_queue, log_queue=None, port=8765, diagnostics_store=None,
                     effective_port=effective_port,
                 )
             try:
-                server_ctx = serve(handle_client, "127.0.0.1", candidate, ping_interval=10, ping_timeout=5)
+                server_ctx = serve(
+                    handle_client, "127.0.0.1", candidate,
+                    ping_interval=10, ping_timeout=5, process_request=check_origin,
+                )
                 server = await server_ctx.__aenter__()
             except OSError as bind_error:
                 if bind_error.errno in (errno.EADDRINUSE, 10048):
