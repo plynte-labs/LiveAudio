@@ -1,18 +1,25 @@
 # SPDX-License-Identifier: MIT
 """Tests for utils/config.py validation functions (REQ-2)."""
 
+import io
 import unittest
 import os
 import json
 import tempfile
 import shutil
+import time
 from unittest.mock import patch
 
 from liveaudio.utils.config import (
+    _acquire_lock,
     _clamp_number,
+    _config_file,
+    _lock_file,
     _normalize_config,
+    _release_lock,
     load_config,
     save_config,
+    LOCK_STALE_AFTER_SECONDS,
     DEFAULT_CONFIG,
     VALID_DEVICES,
     VALID_MODELS,
@@ -550,8 +557,9 @@ class TestLoadSaveConfig(unittest.TestCase):
         
         with patch("liveaudio.utils.cuda.cuda_is_available") as mock_cuda:
             mock_cuda.return_value = True
-            config = load_config()
-            
+            with patch("sys.stdout", io.StringIO()):
+                config = load_config()
+
         self.assertEqual(config["device"], "cuda")
         
         with open("config.json", "r", encoding="utf-8") as f:
@@ -559,6 +567,174 @@ class TestLoadSaveConfig(unittest.TestCase):
             self.assertNotIn("device", disk_config)
             
         os.remove("config.json.lock")
+
+
+class _LockTestCase(unittest.TestCase):
+    """Base case pointing the data home at a throwaway directory."""
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp()
+        self.original_home = os.environ.get("LIVEAUDIO_HOME")
+        os.environ["LIVEAUDIO_HOME"] = self.test_dir
+
+    def tearDown(self):
+        if self.original_home is None:
+            os.environ.pop("LIVEAUDIO_HOME", None)
+        else:
+            os.environ["LIVEAUDIO_HOME"] = self.original_home
+        shutil.rmtree(self.test_dir, ignore_errors=True)
+
+    def _write_lock(self, age_seconds=0.0):
+        """Create the lock file and back-date it by ``age_seconds``."""
+        lock = _lock_file()
+        os.makedirs(os.path.dirname(lock), exist_ok=True)
+        open(lock, "w").close()
+        if age_seconds:
+            stamp = time.time() - age_seconds
+            os.utime(lock, (stamp, stamp))
+        return lock
+
+
+class TestDataHomeOverride(_LockTestCase):
+    """LIVEAUDIO_HOME must redirect config away from the real %APPDATA%."""
+
+    def test_config_file_follows_liveaudio_home(self):
+        """config.json path must live under LIVEAUDIO_HOME."""
+        self.assertEqual(os.path.dirname(_config_file()), os.path.normpath(self.test_dir))
+
+    def test_save_config_writes_under_liveaudio_home(self):
+        """save_config must write inside LIVEAUDIO_HOME, not the real data home."""
+        save_config({"device": "cpu"})
+        self.assertTrue(os.path.exists(os.path.join(self.test_dir, "config.json")))
+
+
+class TestStaleLock(_LockTestCase):
+    """An abandoned lock file must not poison config saving forever."""
+
+    def test_stale_lock_is_reclaimed(self):
+        """A lock older than the staleness threshold must be broken."""
+        self._write_lock(age_seconds=LOCK_STALE_AFTER_SECONDS + 60)
+        self.assertTrue(_acquire_lock(timeout=1.0))
+        _release_lock()
+
+    def test_stale_lock_does_not_block_save(self):
+        """save_config must succeed and persist despite an orphaned lock."""
+        self._write_lock(age_seconds=LOCK_STALE_AFTER_SECONDS + 86400)
+        self.assertTrue(save_config({"device": "cpu"}))
+        with open(_config_file(), "r", encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)["device"], "cpu")
+        self.assertFalse(os.path.exists(_lock_file()))
+
+    def test_fresh_lock_still_provides_mutual_exclusion(self):
+        """A lock held right now must still block a second writer."""
+        self._write_lock(age_seconds=0.0)
+        self.assertFalse(_acquire_lock(timeout=0.2))
+        self.assertTrue(os.path.exists(_lock_file()))
+
+    def test_lock_held_by_live_writer_is_not_stolen(self):
+        """A lock taken through _acquire_lock is not stale for a second caller."""
+        self.assertTrue(_acquire_lock(timeout=1.0))
+        try:
+            self.assertFalse(_acquire_lock(timeout=0.2))
+        finally:
+            _release_lock()
+
+    def test_unremovable_stale_lock_still_times_out(self):
+        """A stale lock that cannot be deleted must not spin forever."""
+        self._write_lock(age_seconds=LOCK_STALE_AFTER_SECONDS + 60)
+        started = time.time()
+        with patch("liveaudio.utils.config.os.remove", side_effect=PermissionError("denied")):
+            self.assertFalse(_acquire_lock(timeout=0.2))
+        self.assertLess(time.time() - started, 5.0)
+
+    def test_interrupted_write_leaves_previous_config_intact(self):
+        """A write that dies mid-way must not truncate the existing config.
+
+        This is what makes losing the stale-cleanup race harmless: the visible
+        file is only ever swapped in whole, so a torn or empty config.json is
+        impossible even if two writers proceed at the same time.
+        """
+        save_config(dict(DEFAULT_CONFIG, device="cpu"))
+        with patch("json.dump", side_effect=OSError("no space left on device")):
+            with patch("sys.stdout", io.StringIO()):
+                self.assertFalse(save_config(dict(DEFAULT_CONFIG, device="cuda")))
+        with open(_config_file(), "r", encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)["device"], "cpu")
+
+    def test_interrupted_write_leaves_no_temp_file_behind(self):
+        """The staging file used for the atomic swap must be cleaned up."""
+        save_config(dict(DEFAULT_CONFIG, device="cpu"))
+        with patch("json.dump", side_effect=OSError("no space left on device")):
+            with patch("sys.stdout", io.StringIO()):
+                save_config(dict(DEFAULT_CONFIG, device="cuda"))
+        leftovers = [name for name in os.listdir(self.test_dir) if name != "config.json"]
+        self.assertEqual(leftovers, [])
+
+
+class TestSaveConfigFailureIsVisible(_LockTestCase):
+    """save_config must report failure instead of silently doing nothing."""
+
+    def test_save_config_returns_true_on_success(self):
+        """A successful save reports True."""
+        self.assertTrue(save_config({"device": "cpu"}))
+
+    def test_save_config_returns_false_when_lock_unavailable(self):
+        """A genuinely busy lock makes save_config report failure."""
+        with patch("liveaudio.utils.config._acquire_lock", return_value=False):
+            with patch("sys.stdout", io.StringIO()):
+                self.assertFalse(save_config({"device": "cpu"}))
+        self.assertFalse(os.path.exists(_config_file()))
+
+    def test_failed_save_is_printed(self):
+        """A failed save must be visible even if the caller ignores the result."""
+        buffer = io.StringIO()
+        with patch("liveaudio.utils.config._acquire_lock", return_value=False):
+            with patch("sys.stdout", buffer):
+                save_config({"device": "cpu"})
+        self.assertIn("config", buffer.getvalue().lower())
+        self.assertTrue(buffer.getvalue().strip())
+
+    def test_save_config_returns_false_on_write_error(self):
+        """A disk error is reported as False, never raised at the caller."""
+        with patch("liveaudio.utils.config._save_config_no_lock", side_effect=OSError("disk full")):
+            with patch("sys.stdout", io.StringIO()):
+                self.assertFalse(save_config({"device": "cpu"}))
+
+    def test_save_config_does_not_leak_the_lock_on_write_error(self):
+        """A failed write still releases the lock."""
+        with patch("liveaudio.utils.config._save_config_no_lock", side_effect=OSError("disk full")):
+            with patch("sys.stdout", io.StringIO()):
+                save_config({"device": "cpu"})
+        self.assertFalse(os.path.exists(_lock_file()))
+
+
+class TestLoadConfigMigrationWrite(_LockTestCase):
+    """load_config must not silently drop its normalization write."""
+
+    def _write_raw(self, config):
+        os.makedirs(self.test_dir, exist_ok=True)
+        with open(_config_file(), "w", encoding="utf-8") as fh:
+            json.dump(config, fh)
+
+    def test_migration_persists_when_lock_is_stale(self):
+        """A stale lock must not stop the normalization write."""
+        self._write_raw({"device": "cpu"})
+        self._write_lock(age_seconds=LOCK_STALE_AFTER_SECONDS + 60)
+        load_config()
+        with open(_config_file(), "r", encoding="utf-8") as fh:
+            self.assertIn("model_size", json.load(fh))
+
+    def test_dropped_migration_is_reported(self):
+        """When the lock is genuinely busy, the dropped write must be visible."""
+        self._write_raw({"device": "cpu"})
+        buffer = io.StringIO()
+        with patch("liveaudio.utils.config._acquire_lock", return_value=False):
+            with patch("sys.stdout", buffer):
+                config = load_config()
+        self.assertIn("model_size", config)
+        self.assertTrue(buffer.getvalue().strip())
+        with open(_config_file(), "r", encoding="utf-8") as fh:
+            self.assertNotIn("model_size", json.load(fh))
 
 
 if __name__ == "__main__":

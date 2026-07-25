@@ -264,18 +264,50 @@ def _normalize_config(config):
 
     return config, updated
 
+# Guardar la config tarda milisegundos: un lock retenido durante mas tiempo
+# pertenece a un proceso muerto (crash o kill antes de _release_lock). Sin esto,
+# un lock huerfano bloquea el guardado para siempre, incluso tras reiniciar.
+# Se elige la deteccion por antiguedad y no por PID: comprobar si un PID sigue
+# vivo no es portable en Windows sin ctypes, y el margen de 30 s ya es dos
+# ordenes de magnitud mayor que cualquier guardado real.
+LOCK_STALE_AFTER_SECONDS = 30.0
+
+
+def _lock_is_stale(lock_path):
+    """True si el lock existe y es lo bastante viejo como para estar abandonado."""
+    try:
+        return (time.time() - os.path.getmtime(lock_path)) > LOCK_STALE_AFTER_SECONDS
+    except OSError:
+        # Desaparecio entre el intento de creacion y la comprobacion: no es viejo.
+        return False
+
+
 def _acquire_lock(timeout=2.0):
-    import time
     _ensure_data_home()
+    lock_path = _lock_file()
     start = time.time()
-    while time.time() - start < timeout:
+    while True:
         try:
-            fd = os.open(_lock_file(), os.O_CREAT | os.O_EXCL | os.O_RDWR)
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_RDWR)
             os.close(fd)
             return True
-        except (FileExistsError, OSError):
+        except OSError:
+            # La antiguedad se relee justo antes de borrar, asi que si otro
+            # proceso ya rompio el lock y creo el suyo, aqui ya se ve fresco.
+            # Si aun asi dos procesos lo rompen a la vez, el resultado no puede
+            # corromper nada: _save_config_no_lock publica el archivo con un
+            # os.replace atomico (gana el ultimo en escribir, sin archivos rotos).
+            if _lock_is_stale(lock_path):
+                try:
+                    os.remove(lock_path)
+                    continue  # Reintento inmediato: el lock huerfano ya no esta.
+                except OSError:
+                    # No se pudo borrar (permisos): seguir esperando el timeout
+                    # en vez de girar en un bucle infinito.
+                    pass
+            if time.time() - start >= timeout:
+                return False
             time.sleep(0.05)
-    return False
 
 def _release_lock():
     try:
@@ -284,10 +316,44 @@ def _release_lock():
         pass
 
 def _save_config_no_lock(config):
-    import json
     _ensure_data_home()
-    with open(_config_file(), "w", encoding="utf-8") as f:
-        json.dump(config, f, indent=4, ensure_ascii=False)
+    config_path = _config_file()
+    # Escritura atomica: se escribe en un temporal propio del proceso y se
+    # publica con os.replace, que es atomico en Windows y POSIX. Asi un crash a
+    # media escritura (o dos escritores simultaneos) nunca deja un config.json
+    # truncado; como mucho gana el ultimo que publique.
+    tmp_path = "{}.{}.tmp".format(config_path, os.getpid())
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(config, f, indent=4, ensure_ascii=False)
+        os.replace(tmp_path, config_path)
+    except BaseException:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _write_config_reporting(config, locked, label):
+    """Escribe la config informando del fallo. Devuelve True si llego a disco.
+
+    Nunca lanza: el fallo debe ser visible por si solo (print) aunque el
+    llamador ignore el valor de retorno, y varios llamadores corren en hilos
+    de fondo donde una excepcion mataria el hilo en silencio.
+    """
+    if not locked:
+        print(
+            "[Config] {}: config NOT saved, lock busy at {} "
+            "(delete it if no other LiveAudio instance is running).".format(label, _lock_file())
+        )
+        return False
+    try:
+        _save_config_no_lock(config)
+        return True
+    except Exception as exc:
+        print("[Config] {}: config NOT saved: {}".format(label, exc))
+        return False
 
 def _migrate_legacy_config():
     """Copy a CWD config.json (legacy portable layout) to the data home once."""
@@ -315,16 +381,14 @@ def load_config():
     locked = _acquire_lock()
     try:
         if not os.path.exists(_config_file()):
-            if locked:
-                _save_config_no_lock(DEFAULT_CONFIG)
+            _write_config_reporting(DEFAULT_CONFIG, locked, "initial config")
             config = DEFAULT_CONFIG.copy()
         else:
-            import json
             with open(_config_file(), "r", encoding="utf-8") as f:
                 config = json.load(f)
-        
+
         config, updated = _normalize_config(config)
-        
+
         try:
             from liveaudio.utils.cuda import cuda_is_available
             if config.get("device") == "cuda" and not cuda_is_available():
@@ -332,18 +396,26 @@ def load_config():
                 updated = True
         except Exception:
             pass
-        
-        if updated and locked:
-            _save_config_no_lock(config)
-        
+
+        if updated:
+            # La migracion/normalizacion tambien debe persistirse o avisar:
+            # perderla en silencio devuelve al usuario a la config vieja.
+            _write_config_reporting(config, locked, "normalized config")
+
         return config
     finally:
         if locked:
             _release_lock()
 
 def save_config(config):
-    if _acquire_lock():
-        try:
-            _save_config_no_lock(config)
-        finally:
+    """Guarda la configuracion en disco. Devuelve True si se escribio.
+
+    Nunca lanza: un fallo se registra por stdout y se devuelve False, para que
+    el llamador pueda reaccionar sin que un hilo de fondo muera por excepcion.
+    """
+    locked = _acquire_lock()
+    try:
+        return _write_config_reporting(config, locked, "save_config")
+    finally:
+        if locked:
             _release_lock()
