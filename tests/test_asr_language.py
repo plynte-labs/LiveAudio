@@ -608,6 +608,12 @@ class TestReadUIConfigASRLanguage(unittest.TestCase):
         mock.var_backlog_policy.get.return_value = "Auto (recomendado)"
         mock.var_obs_enabled = MagicMock()
         mock.var_obs_enabled.get.return_value = True
+        mock.var_save_transcript = MagicMock()
+        mock.var_save_transcript.get.return_value = True
+        mock.var_save_vtt = MagicMock()
+        mock.var_save_vtt.get.return_value = True
+        mock.var_ws_port = MagicMock()
+        mock.var_ws_port.get.return_value = "8765"
         mock.text_whisper_prompt = MagicMock()
         mock.text_whisper_prompt.get.return_value = textbox_content
         return mock
@@ -744,6 +750,9 @@ class TestLoadUIFromConfigASRLanguage(unittest.TestCase):
         mock.var_backlog_policy = MagicMock()
         mock.text_blacklist = MagicMock()
         mock.var_obs_enabled = MagicMock()
+        mock.var_save_transcript = MagicMock()
+        mock.var_save_vtt = MagicMock()
+        mock.var_ws_port = MagicMock()
         mock.var_asr_lang = MagicMock()
         mock.text_whisper_prompt = MagicMock()
         mock.lbl_whisper_context_help = MagicMock()

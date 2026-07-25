@@ -72,6 +72,9 @@ TRANSLATIONS = {
             "   file:///.../subtitulos_obs.html?port=8765\n"
             "5. Listo! Los subtitulos apareceran en vivo."
         ),
+        "save_transcript": "Guardar transcripción (transcript.jsonl)",
+        "save_vtt": "Guardar subtítulos (subtitles.vtt)",
+        "ws_port_label": "Puerto WebSocket (base):",
         "obs_backlog": "Atraso en OBS:",
         "advanced_sub_config": "▼ Configuración avanzada",
         "hide_advanced_sub_config": "▲ Ocultar configuración avanzada",
@@ -147,6 +150,10 @@ TRANSLATIONS = {
         "status_ws_dead": "WS: caído",
         "status_ws_fallback": "WS: localhost:{port} (respaldo)",
         "obs_guide_port_note": "Puerto activo: {port} (el {base} estaba ocupado). Usa ?port={port} en la URL de OBS.",
+        "obs_guide_port_changed": "⚠ El puerto base cambió. Actualiza la URL de tu fuente de navegador en OBS a:\n{url}\ny recárgala (clic derecho ▸ Actualizar).",
+        "ws_port_changed_title": "Puerto de OBS cambiado",
+        "ws_port_changed_msg": "El puerto base ahora es {port}.\n\nTu fuente de navegador en OBS sigue apuntando al puerto anterior y dejará de recibir subtítulos.\n\nActualiza su URL a:\n{url}\n\nLuego recárgala en OBS (clic derecho ▸ Actualizar).",
+        "log_ws_port_changed": "[Sistema] ⚠ Puerto base cambiado a {port}. Actualiza la URL de OBS a: {url}",
         
         # Profiles Preset texts
         "profile_preset_fast_label": "Rápido",
@@ -240,6 +247,9 @@ TRANSLATIONS = {
             "   file:///.../subtitulos_obs.html?port=8765\n"
             "5. Ready! The subtitles will appear live."
         ),
+        "save_transcript": "Save transcript (transcript.jsonl)",
+        "save_vtt": "Save subtitles (subtitles.vtt)",
+        "ws_port_label": "WebSocket port (base):",
         "obs_backlog": "OBS Backlog:",
         "advanced_sub_config": "▼ Advanced Configuration",
         "hide_advanced_sub_config": "▲ Hide Advanced Configuration",
@@ -315,6 +325,10 @@ TRANSLATIONS = {
         "status_ws_dead": "WS: down",
         "status_ws_fallback": "WS: localhost:{port} (fallback)",
         "obs_guide_port_note": "Active port: {port} ({base} was busy). Use ?port={port} in the OBS URL.",
+        "obs_guide_port_changed": "⚠ The base port changed. Update your OBS browser source URL to:\n{url}\nthen refresh it (right-click ▸ Refresh).",
+        "ws_port_changed_title": "OBS port changed",
+        "ws_port_changed_msg": "The base port is now {port}.\n\nYour OBS browser source still points at the previous port and will stop receiving subtitles.\n\nUpdate its URL to:\n{url}\n\nThen refresh it in OBS (right-click ▸ Refresh).",
+        "log_ws_port_changed": "[System] ⚠ Base port changed to {port}. Update the OBS URL to: {url}",
         
         # Profiles Preset texts
         "profile_preset_fast_label": "Fast",

@@ -71,6 +71,8 @@ DEFAULT_CONFIG = {
     "profile_mode": "preset",
     "ws_port": 8765,
     "obs_enabled": True,
+    "save_transcript_enabled": True,  # Write transcript.jsonl to disk
+    "save_vtt_enabled": True,  # Write subtitles.vtt to disk
     "whisper_context_prompt_es": "",
     "whisper_context_prompt_en": "",
     "asr_language": "es",  # Idioma de voz (ASR): "es" o "en"
@@ -227,6 +229,11 @@ def _normalize_config(config):
     if not isinstance(config.get("obs_enabled"), bool):
         config["obs_enabled"] = bool(config.get("obs_enabled"))
         updated = True
+
+    for sink_key in ("save_transcript_enabled", "save_vtt_enabled"):
+        if not isinstance(config.get(sink_key), bool):
+            config[sink_key] = bool(config.get(sink_key))
+            updated = True
 
     if config.get("settings_navigation_mode") not in {"tabs", "dropdown"}:
         config["settings_navigation_mode"] = DEFAULT_CONFIG["settings_navigation_mode"]

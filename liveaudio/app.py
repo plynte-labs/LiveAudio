@@ -16,7 +16,7 @@ from liveaudio.utils.dllpath import ensure_torch_dlls
 
 ensure_torch_dlls()
 
-from liveaudio.utils.config import load_config, save_config
+from liveaudio.utils.config import load_config, save_config, _normalize_config
 from liveaudio.utils.i18n import t, set_language, autodetect_language, get_language
 from liveaudio.utils.crash_handler import install_crash_handler
 from liveaudio.utils.updater import check_for_updates_async, start_update, APP_VERSION
@@ -46,6 +46,12 @@ except Exception as e:  # pragma: no cover - depende de la versión de customtki
 def _asset_path(name: str) -> str:
     """Resolve a bundled asset to a filesystem path."""
     return os.fspath(resources.files("liveaudio.assets") / name)
+
+
+def _obs_overlay_url(port: int) -> str:
+    """Browser-source URL for the overlay, pinned to a specific base port."""
+    html_path = _asset_path("subtitulos_obs.html").replace("\\", "/").lstrip("/")
+    return f"file:///{html_path}?port={int(port)}"
 
 # Límite de colas IPC para prevenir OOM en sesiones largas
 QUEUE_MAXSIZE = 100
@@ -950,7 +956,33 @@ class LiveASRApp(ctk.CTk):
             variable=self.var_obs_enabled,
             command=self._on_obs_toggle,
         )
-        self.switch_obs_enabled.pack(anchor="w", padx=10, pady=(8, 10))
+        self.switch_obs_enabled.pack(anchor="w", padx=10, pady=(8, 4))
+
+        # Disk sink toggles — independent from OBS and from each other
+        self.var_save_transcript = ctk.BooleanVar(value=self.config_data.get("save_transcript_enabled", True))
+        self.switch_save_transcript = ctk.CTkSwitch(
+            tab_subtitulos,
+            text=t("save_transcript"),
+            variable=self.var_save_transcript,
+            command=self.on_setting_change,
+        )
+        self.switch_save_transcript.pack(anchor="w", padx=10, pady=(0, 4))
+
+        self.var_save_vtt = ctk.BooleanVar(value=self.config_data.get("save_vtt_enabled", True))
+        self.switch_save_vtt = ctk.CTkSwitch(
+            tab_subtitulos,
+            text=t("save_vtt"),
+            variable=self.var_save_vtt,
+            command=self.on_setting_change,
+        )
+        self.switch_save_vtt.pack(anchor="w", padx=10, pady=(0, 8))
+
+        # Base WebSocket port — validated/clamped by _normalize_config, applies on next Start
+        ctk.CTkLabel(tab_subtitulos, text=t("ws_port_label")).pack(anchor="w", padx=10)
+        self.var_ws_port = ctk.StringVar(value=str(self.config_data.get("ws_port", 8765)))
+        self.entry_ws_port = ctk.CTkEntry(tab_subtitulos, textvariable=self.var_ws_port, width=90)
+        self.entry_ws_port.pack(anchor="w", padx=10, pady=(0, 10))
+        self.var_ws_port.trace_add("write", lambda *a: self.on_setting_change())
 
         # Mini guía de OBS
         self.frame_obs_guide = ctk.CTkFrame(tab_subtitulos, fg_color="#1a2730", corner_radius=8)
@@ -1176,6 +1208,10 @@ class LiveASRApp(ctk.CTk):
         draft["subtitle_backlog_policy"] = backlog_val
         
         draft["obs_enabled"] = self.var_obs_enabled.get()
+        draft["save_transcript_enabled"] = self.var_save_transcript.get()
+        draft["save_vtt_enabled"] = self.var_save_vtt.get()
+        # Reuse the single source of ws_port validation (clamped to [1, 65535])
+        draft["ws_port"] = _normalize_config({"ws_port": self.var_ws_port.get()})[0]["ws_port"]
         # Preservar prompts de ambos idiomas desde draft_config (acumula cambios),
         # luego sobrescribir el del idioma activo con el contenido actual de la UI
         draft["whisper_context_prompt_es"] = self.draft_config.get(
@@ -1227,6 +1263,9 @@ class LiveASRApp(ctk.CTk):
         self.text_blacklist.delete("0.0", "end")
         self.text_blacklist.insert("0.0", config.get("blacklist", ""))
         self.var_obs_enabled.set(config.get("obs_enabled", True))
+        self.var_save_transcript.set(config.get("save_transcript_enabled", True))
+        self.var_save_vtt.set(config.get("save_vtt_enabled", True))
+        self.var_ws_port.set(str(config.get("ws_port", 8765)))
         # Cargar el prompt según el idioma de voz activo
         asr_lang = config.get("asr_language", "es")
         self.var_asr_lang.set("Español" if asr_lang == "es" else "English")
@@ -1402,6 +1441,27 @@ class LiveASRApp(ctk.CTk):
         """Handle OBS enable/disable toggle change."""
         self.on_setting_change()
 
+    def _warn_if_ws_port_changed(self, previous_config):
+        """Surface a base-port change: an overlay pinned to the old port scans
+        old_base..old_base+9 and would silently never find the server again.
+
+        There is no channel to reach that stranded overlay (it connects to the
+        port we just left), so the only honest fix is telling the user the new
+        URL and asking them to refresh the browser source.
+        """
+        new_port = self.config_data.get("ws_port")
+        if previous_config.get("ws_port") == new_port:
+            return None
+
+        url = _obs_overlay_url(new_port)
+        self.print_log(t("log_ws_port_changed", port=new_port, url=url))
+        if hasattr(self, "obs_guide_label"):
+            guide = t("obs_guide_steps", html_path=_asset_path("subtitulos_obs.html"))
+            self._obs_guide_base_text = guide
+            self.obs_guide_label.configure(text=f"{guide}\n\n{t('obs_guide_port_changed', url=url)}")
+        messagebox.showwarning(t("ws_port_changed_title"), t("ws_port_changed_msg", port=new_port, url=url))
+        return url
+
     def _pending_restart_flags(self, draft):
         needs_asr_restart = any(self.config_data.get(key) != draft.get(key) for key in ["device", "model_size", "cpu_threads"])
         needs_audio_restart = any(self.config_data.get(key) != draft.get(key) for key in ["audio_device", "silence_timeout", "max_chunk_duration", "vad_speech_pad_ms", "vad_threshold"])
@@ -1501,6 +1561,7 @@ class LiveASRApp(ctk.CTk):
             self.var_profile.set(preset_labels.get(self.config_data.get("selected_profile_id"), t("custom")))
             self.refresh_profile_status()
             self.print_log(t("log_config_applied"))
+            self._warn_if_ws_port_changed(previous_config)
         except Exception as e:
             self.config_data = previous_config
             for k, v in self.config_data.items():
