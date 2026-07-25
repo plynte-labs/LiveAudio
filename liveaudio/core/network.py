@@ -7,6 +7,8 @@ import os
 import queue
 import socket
 
+from urllib.parse import urlsplit
+
 from websockets.asyncio.server import serve, broadcast
 from liveaudio.core.diagnostics import create_store_from_config
 from liveaudio.utils.streams import make_streams_encoding_safe
@@ -21,11 +23,50 @@ WS_PORT_FALLBACK_RANGE = 10
 #     locales de OBS. Valor MEDIDO contra el OBS real del mantenedor
 #     (2026-07-24), no supuesto; no es "null", y una web no puede falsificarlo
 #     porque el navegador escribe Origin desde el origen real del documento.
+#   - Loopback (ver WS_LOOPBACK_HOSTS): cualquier origen http/https cuyo host
+#     sea exactamente localhost, 127.0.0.1 o ::1, en CUALQUIER puerto o sin
+#     puerto. Una web servida en local SI es un cliente navegador y SI manda
+#     Origin: suponer que toda integracion no-OBS seria un cliente no navegador
+#     sin Origin era falso, y bloqueaba en silencio integraciones legitimas
+#     (medido: http://localhost:1420, el frontend local de opencohost). El
+#     puerto de un servidor de desarrollo cambia, asi que no se permite un
+#     puerto literal.
 # Ausencia de cabecera Origin: se acepta aparte (ver _reject_foreign_origin).
 # Todo cliente no navegador (scripts, herramientas nativas, integraciones
 # futuras) no envia Origin, y un proceso no navegador puede falsificar
 # cualquier valor: eso queda fuera de este filtro por diseño.
+#
+# Por que admitir loopback sigue siendo seguro: una web remota NUNCA puede
+# presentar un Origin de loopback. El navegador escribe Origin desde el origen
+# real del documento y JS no puede sobrescribirlo, asi que una pagina de
+# evil.com manda siempre https://evil.com por mucho truco de DNS que haga. El
+# ataque que este filtro existe para parar — la web de paso abierta durante el
+# directo — sigue bloqueado por completo. Lo que se admite ahora de mas es una
+# pagina servida por un servidor web LOCAL, y es un intercambio aceptable:
+# quien puede levantar un servidor local puede igualmente conectarse como
+# cliente no navegador falsificando cualquier Origin, algo que este filtro
+# nunca pretendio parar. Cerrar eso exige el token de autenticacion, aplazado
+# a proposito por el mantenedor.
 WS_ALLOWED_ORIGINS = frozenset({"http://absolute"})
+WS_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def _origin_allowed(origin):
+    """Comprueba un unico valor de Origin contra la lista y la regla loopback.
+
+    Se PARSEA con urlsplit y se compara el hostname contra un conjunto exacto:
+    un startswith("http://localhost") aceptaria http://localhost.evil.com, que
+    es un dominio controlado por el atacante. urlsplit tambien desenvuelve el
+    IPv6 entre corchetes ("http://[::1]:8080" -> "::1") y el userinfo
+    ("http://localhost@evil.com" -> "evil.com").
+    """
+    if origin in WS_ALLOWED_ORIGINS:
+        return True
+    try:
+        parts = urlsplit(origin)
+    except ValueError:
+        return False  # Origin mal formado: falla cerrado, no revienta el hook.
+    return parts.scheme in ("http", "https") and parts.hostname in WS_LOOPBACK_HOSTS
 
 
 def port_available(port, host="127.0.0.1"):
@@ -116,7 +157,7 @@ def _reject_foreign_origin(connection, request, log_queue=None):
     origins = request.headers.get_all("Origin")
     if not origins:
         return None  # Cliente no navegador: no manda Origin.
-    if len(origins) == 1 and origins[0] in WS_ALLOWED_ORIGINS:
+    if len(origins) == 1 and _origin_allowed(origins[0]):
         return None
     # Varias cabeceras Origin nunca son legítimas: falla cerrado y se registran
     # todas, en vez de reventar dentro del hook y degradar a un 500 mudo.

@@ -23,6 +23,9 @@ from tests.helpers import MockQueue
 
 WEBSITE_ORIGIN = "https://microsoft.com"
 OBS_ORIGIN = "http://absolute"
+# The maintainer's own local integration (opencohost), served by a Vite/Tauri
+# dev server. Its port can change, so the rule is "any loopback host, any port".
+LOCAL_APP_ORIGIN = "http://localhost:1420"
 
 
 def _events(log_queue, event_type):
@@ -31,6 +34,15 @@ def _events(log_queue, event_type):
 
 def _log_messages(log_queue):
     return [event.get("message", "") for event in _events(log_queue, "log")]
+
+
+def _call_guard(headers, log_queue=None):
+    """Call the process_request hook directly. Returns (result, connection)."""
+    connection = MagicMock()
+    connection.respond.return_value = "REJECTED"
+    request = Request("/", Headers(headers))
+    result = network._reject_foreign_origin(connection, request, log_queue)
+    return result, connection
 
 
 class _OriginServerCase(unittest.TestCase):
@@ -95,6 +107,79 @@ class TestOriginAllowlist(_OriginServerCase):
         self.assertIn(OBS_ORIGIN, network.WS_ALLOWED_ORIGINS)
         self.assertNotIn(WEBSITE_ORIGIN, network.WS_ALLOWED_ORIGINS)
 
+    def test_local_web_app_origin_is_accepted(self):
+        """Regression: opencohost's frontend on http://localhost:1420 was blocked.
+
+        A locally served web app IS a browser client, so it does send an Origin.
+        The original design wrongly assumed every non-OBS integration would be a
+        non-browser client sending none.
+        """
+        result, log_queue, _ = self.run_handshake(origin=LOCAL_APP_ORIGIN)
+        self.assertIsInstance(result, dict, f"{LOCAL_APP_ORIGIN} must complete the handshake")
+        self.assertEqual(result["type"], "hello")
+        self.assertEqual(_log_messages(log_queue), [], "an allowed handshake must not log a rejection")
+
+
+class TestLoopbackOriginRule(unittest.TestCase):
+    """WSO-4: any http/https origin whose host is loopback, on any port.
+
+    The port of a local integration can change (dev servers pick their own), so
+    a literal port allowlist is not viable. Matching must parse the origin and
+    compare the hostname exactly — a prefix check would accept the
+    attacker-controlled domain localhost.evil.com.
+    """
+
+    ACCEPTED = (
+        "http://localhost:1420",   # the real-world case that regressed
+        "http://localhost",        # no explicit port
+        "http://127.0.0.1:5173",
+        "https://localhost:3000",
+        "http://[::1]:8080",       # IPv6 loopback is bracketed in an origin
+        "https://127.0.0.1",
+    )
+
+    REJECTED = (
+        "http://localhost.evil.com",   # prefix match would wrongly accept this
+        "https://localhost.evil.com",
+        "http://notlocalhost",
+        "http://127.0.0.1.evil.com",
+        "http://localhost@evil.com",   # userinfo trick: the real host is evil.com
+        "https://microsoft.com",
+    )
+
+    def test_loopback_origins_on_any_port_are_accepted(self):
+        for origin in self.ACCEPTED:
+            with self.subTest(origin=origin):
+                result, connection = _call_guard([("Origin", origin)])
+                self.assertIsNone(result, f"{origin} is loopback and must be allowed")
+                connection.respond.assert_not_called()
+
+    def test_non_loopback_origins_are_rejected(self):
+        for origin in self.REJECTED:
+            with self.subTest(origin=origin):
+                log_queue = MockQueue()
+                result, _ = _call_guard([("Origin", origin)], log_queue)
+                self.assertEqual(result, "REJECTED", f"{origin} is not loopback and must be rejected")
+                self.assertTrue(
+                    any(origin in message for message in _log_messages(log_queue)),
+                    f"the rejected Origin must appear verbatim in the log for {origin}",
+                )
+
+    def test_non_http_scheme_on_a_loopback_host_is_rejected(self):
+        for origin in ("file://localhost", "ftp://localhost:21", "ws://localhost:1420"):
+            with self.subTest(origin=origin):
+                result, _ = _call_guard([("Origin", origin)])
+                self.assertEqual(result, "REJECTED", f"{origin} is not an http(s) origin")
+
+    def test_malformed_origin_is_rejected_instead_of_crashing_the_handshake(self):
+        """A parse error inside the hook would degrade into a mute 500."""
+        result, _ = _call_guard([("Origin", "http://[::1")])
+        self.assertEqual(result, "REJECTED")
+
+    def test_duplicate_loopback_origins_are_still_rejected(self):
+        result, _ = _call_guard([("Origin", LOCAL_APP_ORIGIN), ("Origin", LOCAL_APP_ORIGIN)])
+        self.assertEqual(result, "REJECTED", "several Origin headers are never legitimate")
+
 
 class TestOriginRejectionIsLoud(_OriginServerCase):
     """WSO-2: a rejection must be visible in the console, the log and the GUI chip."""
@@ -134,13 +219,7 @@ class TestOriginRejectionIsLoud(_OriginServerCase):
 class TestOriginGuardUnit(unittest.TestCase):
     """Direct checks on the hook, including cases a real client cannot send."""
 
-    @staticmethod
-    def _call(headers, log_queue=None):
-        connection = MagicMock()
-        connection.respond.return_value = "REJECTED"
-        request = Request("/", Headers(headers))
-        result = network._reject_foreign_origin(connection, request, log_queue)
-        return result, connection
+    _call = staticmethod(_call_guard)
 
     def test_missing_origin_returns_none_to_continue_the_handshake(self):
         result, connection = self._call([])
