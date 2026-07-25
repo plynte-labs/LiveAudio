@@ -146,6 +146,7 @@ TRANSLATIONS = {
         "status_ws_port_busy": "WS: puerto ocupado",
         "status_ws_dead": "WS: caído",
         "status_ws_fallback": "WS: localhost:{port} (respaldo)",
+        "status_obs_origin_rejected": "OBS: origen rechazado",
         "obs_guide_port_note": "Puerto activo: {port} (el {base} estaba ocupado). Usa ?port={port} en la URL de OBS.",
         
         # Profiles Preset texts
@@ -314,6 +315,7 @@ TRANSLATIONS = {
         "status_ws_port_busy": "WS: port busy",
         "status_ws_dead": "WS: down",
         "status_ws_fallback": "WS: localhost:{port} (fallback)",
+        "status_obs_origin_rejected": "OBS: origin rejected",
         "obs_guide_port_note": "Active port: {port} ({base} was busy). Use ?port={port} in the OBS URL.",
         
         # Profiles Preset texts
