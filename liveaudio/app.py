@@ -289,10 +289,13 @@ class LiveASRApp(ctk.CTk):
         self._applying_settings = False
         self.is_running = False
         
-        # --- DEFENSA 2: Memoria Compartida ---
-        self.manager = mp.Manager()
-        self.shared_config = self.manager.dict(self.config_data)
-        
+        # --- DEFENSA 2: Memoria Compartida (creación diferida) ---
+        # mp.Manager() levanta un proceso Python extra y en spawn ese hijo
+        # reimporta app.py (customtkinter/PIL otra vez). Se crea al primer uso
+        # real (ver la property shared_config), no en cada arranque.
+        self._manager = None
+        self._shared_config = None
+
         # Colas IPC con límite de tamaño para prevenir OOM
         self.audio_queue = mp.Queue(maxsize=QUEUE_MAXSIZE)
         self.text_queue = mp.Queue(maxsize=QUEUE_MAXSIZE)
@@ -316,6 +319,21 @@ class LiveASRApp(ctk.CTk):
         self.screen_welcome.grid(row=0, column=0, sticky="nsew")
         self.after(100, self.process_logs)
         self.after(1000, self.check_updates)
+
+    @property
+    def shared_config(self):
+        """Dict compartido con los workers, creado al primer uso real.
+
+        La semilla se toma de self.config_data en ese momento, no de una copia
+        de __init__: los caminos que tocan shared_config (change_folder,
+        _on_welcome_nav_mode_change, apply_pending_settings) ya actualizaron
+        config_data antes de escribir acá, así que el estado inicial coincide
+        con el de la versión ansiosa.
+        """
+        if self._shared_config is None:
+            self._manager = mp.Manager()
+            self._shared_config = self._manager.dict(self.config_data)
+        return self._shared_config
 
     def check_updates(self):
         def on_update_result(available, tag):
@@ -1415,7 +1433,10 @@ class LiveASRApp(ctk.CTk):
         new_mode = "tabs" if selected_mode == t("tabs_horizontal") else "dropdown"
         self.config_data["settings_navigation_mode"] = new_mode
         save_config(self.config_data)
-        self.shared_config["settings_navigation_mode"] = new_mode
+        # No se propaga a shared_config: es estado puramente de UI y todas sus
+        # lecturas salen de config_data. Escribirlo aqui forzaria la creacion
+        # del Manager desde la pantalla de bienvenida, que es justo el coste de
+        # arranque que este acceso perezoso evita.
 
     def _rebuild_main_screen_dynamic(self):
         """Reconstruye la pantalla principal de forma dinámica en tiempo de ejecución."""
@@ -1972,10 +1993,13 @@ class LiveASRApp(ctk.CTk):
         # Cerrar el proceso del Manager (host del dict de config compartido).
         # Sin esto queda colgado tras un kill duro; el shutdown normal lo reclama
         # por atexit, pero cerrarlo explícito es más prolijo y determinístico.
-        try:
-            self.manager.shutdown()
-        except Exception:
-            pass
+        # Si nunca se creó (se abrió la app sin arrancar el motor) no hay nada
+        # que cerrar: no se levanta uno sólo para apagarlo.
+        if self._manager is not None:
+            try:
+                self._manager.shutdown()
+            except Exception:
+                pass
 
         self.destroy()
 
