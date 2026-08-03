@@ -1769,16 +1769,24 @@ class LiveASRApp(ctk.CTk):
             self.print_log(event.get("message", ""))
 
     def process_logs(self):
-        while True:
-            try:
-                msg = self.log_queue.get_nowait()
-                if isinstance(msg, dict):
-                    self.handle_event(msg)
-                else:
-                    self.print_log(msg)
-            except queue.Empty:
-                break
-        self.after(100, self.process_logs)
+        try:
+            while True:
+                try:
+                    msg = self.log_queue.get_nowait()
+                    try:
+                        if isinstance(msg, dict):
+                            self.handle_event(msg)
+                        else:
+                            self.print_log(msg)
+                    except Exception as e:
+                        self.print_log(f"[App Error] Event loop exception: {e}")
+                except queue.Empty:
+                    break
+                except (ValueError, OSError) as e:
+                    self.print_log(f"[App Error] Queue error: {e}")
+                    break
+        finally:
+            self.after(100, self.process_logs)
 
     def _collect_runtime_diagnostics(self):
         statuses = {key: label.cget("text") for key, label in self.status_labels.items()}

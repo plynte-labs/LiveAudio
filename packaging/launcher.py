@@ -295,9 +295,17 @@ def _prompt_migration(old_root, platform, environ):
                 new_root = os.path.join(new_dir, "LiveAudio")
                 try:
                     import shutil
-                    shutil.move(old_root, new_root)
-                    result_path[0] = new_root
+                    try:
+                        if os.path.exists(new_root):
+                            shutil.copytree(old_root, new_root, dirs_exist_ok=True)
+                        else:
+                            shutil.copytree(old_root, new_root)
+                    except Exception:
+                        shutil.rmtree(new_root, ignore_errors=True)
+                        raise
                     write_install_location(new_root, os.path.join(new_root, "hf-cache"), platform, environ)
+                    shutil.rmtree(old_root, ignore_errors=True)
+                    result_path[0] = new_root
                 except Exception as e:
                     import tkinter.messagebox as mb
                     mb.showerror("Error", f"Fallo al migrar: {e}", parent=root)

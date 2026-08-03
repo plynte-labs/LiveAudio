@@ -264,9 +264,12 @@ def _transcribe_with_timeout(model, audio_chunk, timeout_sec=ASR_TRANSCRIBE_TIME
             pass
 
     try:
-        with ThreadPoolExecutor(max_workers=1) as executor:
+        executor = ThreadPoolExecutor(max_workers=1)
+        try:
             future = executor.submit(_do_transcribe)
             segments, info = future.result(timeout=timeout_sec)
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
 
         # Clear CUDA cache periodically to prevent VRAM growth
         if device == "cuda":
@@ -341,6 +344,14 @@ class InterceptingWriter:
             parts = line.split('|')
             if len(parts) >= 3:
                 percent = parts[0].strip()
+                
+                current_time = time.time()
+                # Throttle updates to at most once per 0.1 seconds per percentage update
+                if (current_time - getattr(self, 'last_progress_time', 0)) < 0.1 and getattr(self, 'last_percent', None) == percent:
+                    return
+                self.last_progress_time = current_time
+                self.last_percent = percent
+                
                 stats_raw = parts[2].strip()
                 stats = stats_raw.split('[')[0].strip()
                 speed = ""

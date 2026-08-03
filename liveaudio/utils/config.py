@@ -32,10 +32,12 @@ def write_install_location(install_root, hf_home):
         "install_root": os.path.abspath(install_root),
         "hf_home": os.path.abspath(hf_home)
     }
-    tmp_path = path + ".tmp"
+    tmp_path = f"{path}.{os.getpid()}.tmp"
     try:
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=4)
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp_path, path)
     except BaseException:
         try:
@@ -367,6 +369,8 @@ def _save_config_no_lock(config):
     try:
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(config, f, indent=4, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp_path, config_path)
     except BaseException:
         try:
@@ -422,22 +426,26 @@ def migrate_install_root(src_root, dst_root):
     else:
         os.makedirs(dst_data, exist_ok=True)
 
-        config_src = os.path.join(src_data, "config.json")
-        if os.path.exists(config_src):
-            shutil.copy2(config_src, os.path.join(dst_data, "config.json"))
+        try:
+            config_src = os.path.join(src_data, "config.json")
+            if os.path.exists(config_src):
+                shutil.copy2(config_src, os.path.join(dst_data, "config.json"))
 
-        sessions_src = os.path.join(src_data, "sessions")
-        if os.path.exists(sessions_src):
-            sessions_dst = os.path.join(dst_data, "sessions")
-            os.makedirs(sessions_dst, exist_ok=True)
-            for item in os.listdir(sessions_src):
-                s_src = os.path.join(sessions_src, item)
-                s_dst = os.path.join(sessions_dst, item)
-                if not os.path.exists(s_dst):
-                    if os.path.isdir(s_src):
-                        shutil.copytree(s_src, s_dst)
-                    else:
-                        shutil.copy2(s_src, s_dst)
+            sessions_src = os.path.join(src_data, "sessions")
+            if os.path.exists(sessions_src):
+                sessions_dst = os.path.join(dst_data, "sessions")
+                os.makedirs(sessions_dst, exist_ok=True)
+                for item in os.listdir(sessions_src):
+                    s_src = os.path.join(sessions_src, item)
+                    s_dst = os.path.join(sessions_dst, item)
+                    if not os.path.exists(s_dst):
+                        if os.path.isdir(s_src):
+                            shutil.copytree(s_src, s_dst)
+                        else:
+                            shutil.copy2(s_src, s_dst)
+        except Exception:
+            shutil.rmtree(dst_data, ignore_errors=True)
+            raise
 
     # Clean the old install root to free up space (includes old venv and python files)
     if os.path.exists(src_root) and src_root != dst_root:
