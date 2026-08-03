@@ -4,6 +4,14 @@ Todos los cambios notables de LiveAudio se documentan aquí.
 
 ---
 
+## [1.2.5] — 2026-08-03
+
+### Corregido
+
+- **Carga instantánea de modelos ASR local (`local_files_only=True`)** — Reparada la demora síncrona de hasta 3 minutos producida por peticiones de red a Hugging Face en cada inicio. Ahora el motor carga maquetas en disco de forma instantánea (~0.6s) y degrada suavemente a CPU si CUDA falla.
+
+---
+
 ## [1.2.4] — 2026-08-03
 
 ### Agregado
