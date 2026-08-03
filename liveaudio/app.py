@@ -306,6 +306,7 @@ class LiveASRApp(ctk.CTk):
         self._log_lines = []
         self._advanced_visible = False
         self.status_labels = {}
+        self._asr_is_downloading = False
         self._pending_update_tag = None
         self._dismissed_update_tag = None
 
@@ -1317,7 +1318,10 @@ class LiveASRApp(ctk.CTk):
         has_pending = any(draft.get(key) != self.config_data.get(key) for key in draft.keys())
         if has_pending:
             self.lbl_pending.configure(text=t("pending_changes_btn"), text_color="#FFC107")
-            self.btn_apply.configure(state="normal")
+            if getattr(self, "_asr_is_downloading", False):
+                self.btn_apply.configure(state="disabled")
+            else:
+                self.btn_apply.configure(state="normal")
             self.btn_discard.configure(state="normal")
         else:
             self.lbl_pending.configure(text=t("active_config"), text_color="#8BC34A")
@@ -1712,6 +1716,16 @@ class LiveASRApp(ctk.CTk):
                     
             translated_text = t(found_key) if found_key else raw_text
             self.set_status(status_key, translated_text, state)
+            
+            if status_key == "asr":
+                was_downloading = getattr(self, "_asr_is_downloading", False)
+                
+                # Deshabilitar si está explícitamente en carga o descarga
+                is_loading = "cargando" in raw_text.lower() or "descargando" in raw_text.lower()
+                self._asr_is_downloading = event.get("is_download", is_loading)
+                
+                if was_downloading != self._asr_is_downloading:
+                    self.refresh_profile_status()
 
         elif event_type == "ws_port":
             port = int(event.get("port", 8765))

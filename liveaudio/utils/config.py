@@ -5,22 +5,56 @@ import multiprocessing as mp
 import time
 
 
+def get_global_appdata_dir():
+    if os.name == "nt":
+        base = os.environ.get("APPDATA") or os.path.expanduser("~")
+        return os.path.join(base, "LiveAudio")
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser(os.path.join("~", ".config"))
+        return os.path.join(base, "liveaudio")
+
+def read_install_location():
+    path = os.path.join(get_global_appdata_dir(), "install_location.json")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            if isinstance(data, dict) and "install_root" in data:
+                return data
+    except (OSError, ValueError):
+        pass
+    return None
+
+def write_install_location(install_root, hf_home):
+    config_dir = get_global_appdata_dir()
+    os.makedirs(config_dir, exist_ok=True)
+    path = os.path.join(config_dir, "install_location.json")
+    data = {
+        "install_root": os.path.abspath(install_root),
+        "hf_home": os.path.abspath(hf_home)
+    }
+    tmp_path = path + ".tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4)
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise
+
 def get_data_home():
     """Return the LiveAudio data home directory (not created here).
 
     Resolution order:
     1. LIVEAUDIO_HOME environment variable (explicit override / tests)
-    2. %APPDATA%\\LiveAudio on Windows
+    2. %APPDATA%\LiveAudio on Windows
     3. $XDG_CONFIG_HOME/liveaudio or ~/.config/liveaudio elsewhere
     """
     home = os.environ.get("LIVEAUDIO_HOME")
     if not home:
-        if os.name == "nt":
-            base = os.environ.get("APPDATA") or os.path.expanduser("~")
-            home = os.path.join(base, "LiveAudio")
-        else:
-            base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser(os.path.join("~", ".config"))
-            home = os.path.join(base, "liveaudio")
+        home = get_global_appdata_dir()
     return os.path.normpath(os.path.abspath(home))
 
 
@@ -376,6 +410,41 @@ def _migrate_legacy_config():
         shutil.copyfile(legacy_path, config_path)
     except OSError:
         pass
+
+def migrate_install_root(src_root, dst_root):
+    """Safely move data/ (config.json and sessions) from src_root to dst_root, then clean src_root."""
+    import shutil
+    src_data = os.path.join(src_root, "data")
+    dst_data = os.path.join(dst_root, "data")
+
+    if not os.path.exists(src_data) or src_data == dst_data:
+        pass
+    else:
+        os.makedirs(dst_data, exist_ok=True)
+
+        config_src = os.path.join(src_data, "config.json")
+        if os.path.exists(config_src):
+            shutil.copy2(config_src, os.path.join(dst_data, "config.json"))
+
+        sessions_src = os.path.join(src_data, "sessions")
+        if os.path.exists(sessions_src):
+            sessions_dst = os.path.join(dst_data, "sessions")
+            os.makedirs(sessions_dst, exist_ok=True)
+            for item in os.listdir(sessions_src):
+                s_src = os.path.join(sessions_src, item)
+                s_dst = os.path.join(sessions_dst, item)
+                if not os.path.exists(s_dst):
+                    if os.path.isdir(s_src):
+                        shutil.copytree(s_src, s_dst)
+                    else:
+                        shutil.copy2(s_src, s_dst)
+
+    # Clean the old install root to free up space (includes old venv and python files)
+    if os.path.exists(src_root) and src_root != dst_root:
+        try:
+            shutil.rmtree(src_root)
+        except Exception:
+            pass
 
 def load_config():
     """

@@ -346,12 +346,16 @@ class InterceptingWriter:
                 speed = ""
                 if ',' in stats_raw:
                     speed = stats_raw.split(',')[-1].replace(']', '').strip()
-                msg = f"{self.prefix} Descargando Whisper: {percent}"
+                msg = f"{self.prefix} PROGRESO {percent}"
                 if stats:
                     msg += f" ({stats})"
                 if speed:
                     msg += f" @ {speed}"
                 self._emit(msg)
+                try:
+                    self.log_queue.put_nowait({"type": "status", "key": "asr", "text": f"ASR: descargando {percent}", "state": "active", "is_download": True})
+                except Exception:
+                    pass
             else:
                 self._emit(f"{self.prefix} {line}")
         else:

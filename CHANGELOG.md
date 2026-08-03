@@ -4,6 +4,17 @@ Todos los cambios notables de LiveAudio se documentan aquí.
 
 ---
 
+## [1.2.6] — 2026-08-03
+
+### Agregado
+
+- **Asistente nativo de selección de rutas y migración** — El instalador incluye un diálogo visual nativo (`_prompt_migration`) que detecta instalaciones previas en `AppData` ofreciendo mantener la ubicación o migrar a una ruta personalizada (ej. Disco `E:\`), transfiriendo `data/` (`config.json` y `sessions/`) de forma segura y liberando espacio en `C:\`.
+- **Registro global de ubicación** — Persistencia de la ruta de instalación elegida en `%APPDATA%\LiveAudio\install_location.json` para ejecuciones futuras.
+- **Progreso en tiempo real de ASR** — Notificación continua y en paralelo del porcentaje de descarga/inicialización de modelos Whisper (ej. `[IA PROGRESO] 45% (185.0M/480.0M)`).
+- **Protección de hot-swap** — Deshabilitación automática del botón "Aplicar cambios" mientras la descarga o inicialización de ASR esté activa para prevenir la cancelación de cargas en progreso.
+
+---
+
 ## [1.2.5] — 2026-08-03
 
 ### Corregido

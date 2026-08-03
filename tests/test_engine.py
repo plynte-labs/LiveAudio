@@ -268,7 +268,7 @@ class TestInterceptingWriter(unittest.TestCase):
         
         self.assertFalse(q.empty())
         msg = q.get_nowait()
-        self.assertEqual(msg, {"type": "log", "message": "[TEST] Descargando Whisper: 45% (185.0M/480.0M) @ 39.8MB/s"})
+        self.assertEqual(msg, {"type": "log", "message": "[TEST] PROGRESO 45% (185.0M/480.0M) @ 39.8MB/s"})
 
     def test_handles_errors_and_warnings(self):
         import queue

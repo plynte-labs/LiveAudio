@@ -183,13 +183,59 @@ def load_release_meta(src_dir=None):
 # Install layout
 # ---------------------------------------------------------------------------
 
+def _global_appdata_dir(platform, environ):
+    if platform == "win32":
+        base = environ.get("APPDATA") or os.path.expanduser("~")
+        return os.path.join(base, "LiveAudio")
+    else:
+        base = environ.get("XDG_CONFIG_HOME") or os.path.expanduser(os.path.join("~", ".config"))
+        return os.path.join(base, "liveaudio")
+
+def read_install_location(platform=None, environ=None):
+    platform = platform or sys.platform
+    environ = os.environ if environ is None else environ
+    path = os.path.join(_global_appdata_dir(platform, environ), "install_location.json")
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+            if isinstance(data, dict) and "install_root" in data:
+                return data
+    except (OSError, ValueError):
+        pass
+    return None
+
+def write_install_location(install_root, hf_home, platform=None, environ=None):
+    platform = platform or sys.platform
+    environ = os.environ if environ is None else environ
+    config_dir = _global_appdata_dir(platform, environ)
+    os.makedirs(config_dir, exist_ok=True)
+    path = os.path.join(config_dir, "install_location.json")
+    data = {
+        "install_root": os.path.abspath(install_root),
+        "hf_home": os.path.abspath(hf_home)
+    }
+    fd, tmp = tempfile.mkstemp(prefix="install_location-", suffix=".tmp", dir=config_dir)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
 def resolve_install_root(platform=None, environ=None, launcher_dir=None):
     """Return (install_root, portable).
 
     Precedence:
     1. LIVEAUDIO_INSTALL_ROOT env var (testing/automation override)
     2. portable.marker next to the launcher -> <launcher dir>/data
-    3. %LOCALAPPDATA%\\LiveAudio (Windows) / ~/.local/share/liveaudio (Linux)
+    3. install_location.json in APPDATA
+    4. %LOCALAPPDATA%\\LiveAudio (Windows) / ~/.local/share/liveaudio (Linux)
     """
     platform = platform or sys.platform
     environ = os.environ if environ is None else environ
@@ -202,10 +248,70 @@ def resolve_install_root(platform=None, environ=None, launcher_dir=None):
     if os.path.isfile(os.path.join(launcher_dir, "portable.marker")):
         return os.path.join(launcher_dir, "data"), True
 
+    location_data = read_install_location(platform, environ)
+    if location_data and "install_root" in location_data:
+        return location_data["install_root"], False
+
     if platform == "win32":
         base = environ.get("LOCALAPPDATA") or os.path.expanduser("~")
-        return os.path.join(base, "LiveAudio"), False
+        default_root = os.path.join(base, "LiveAudio")
+        
+        if os.path.isdir(default_root) and os.path.isfile(os.path.join(default_root, "installed.json")):
+            migrated_root = _prompt_migration(default_root, platform, environ)
+            if migrated_root:
+                return migrated_root, False
+        return default_root, False
     return os.path.join(os.path.expanduser("~"), ".local", "share", "liveaudio"), False
+
+def _prompt_migration(old_root, platform, environ):
+    import tkinter as tk
+    from tkinter import filedialog
+    import threading
+
+    result_path = [None]
+    
+    def run_dialog():
+        root = tk.Tk()
+        root.title("LiveAudio - Migración")
+        root.geometry("450x180")
+        root.eval('tk::PlaceWindow . center')
+        
+        tk.Label(
+            root, text="Se ha detectado una instalación previa en tu disco C:.\nAhora puedes migrar LiveAudio a otra carpeta o disco.",
+            font=("Segoe UI", 10), justify="center"
+        ).pack(pady=20)
+        
+        btn_frame = tk.Frame(root)
+        btn_frame.pack(pady=10)
+        
+        def keep_c():
+            result_path[0] = old_root
+            write_install_location(old_root, os.path.join(old_root, "hf-cache"), platform, environ)
+            root.destroy()
+            
+        def migrate():
+            new_dir = filedialog.askdirectory(title="Selecciona la nueva carpeta para LiveAudio", parent=root)
+            if new_dir:
+                new_root = os.path.join(new_dir, "LiveAudio")
+                try:
+                    import shutil
+                    shutil.move(old_root, new_root)
+                    result_path[0] = new_root
+                    write_install_location(new_root, os.path.join(new_root, "hf-cache"), platform, environ)
+                except Exception as e:
+                    import tkinter.messagebox as mb
+                    mb.showerror("Error", f"Fallo al migrar: {e}", parent=root)
+                    result_path[0] = old_root
+                root.destroy()
+
+        tk.Button(btn_frame, text="Mantener en C:", command=keep_c, width=15).pack(side="left", padx=10)
+        tk.Button(btn_frame, text="Migrar a nueva ruta", command=migrate, width=20, bg="#3c9e66", fg="white").pack(side="left", padx=10)
+        
+        root.protocol("WM_DELETE_WINDOW", keep_c)
+        root.mainloop()
+
+    run_dialog()
+    return result_path[0]
 
 
 def resolve_app_home(install_root, environ=None):
@@ -753,7 +859,11 @@ def launch_app(install_root, portable, environ=None, platform=None, notify=None)
     if getattr(sys, "frozen", False):
         # Let the app's in-app updater find us to run `--update <tag>`.
         env["LIVEAUDIO_LAUNCHER"] = os.path.abspath(sys.executable)
-    if portable:
+    
+    location_data = read_install_location(platform, environ)
+    if location_data and "hf_home" in location_data:
+        env["HF_HOME"] = location_data["hf_home"]
+    elif portable:
         env["HF_HOME"] = os.path.join(install_root, "hf-cache")
     os.makedirs(env["LIVEAUDIO_HOME"], exist_ok=True)
     LOG.info("Launching %s (LIVEAUDIO_HOME=%s)", exe, env["LIVEAUDIO_HOME"])
