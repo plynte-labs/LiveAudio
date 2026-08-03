@@ -1587,7 +1587,8 @@ class LiveASRApp(ctk.CTk):
             self.var_profile.set(preset_labels.get(self.config_data.get("selected_profile_id"), t("custom")))
             self.refresh_profile_status()
             self.print_log(t("log_config_applied"))
-            self._warn_if_ws_port_changed(previous_config)
+            if hasattr(self, "_warn_if_ws_port_changed"):
+                self._warn_if_ws_port_changed(previous_config)
         except Exception as e:
             self.config_data = previous_config
             for k, v in self.config_data.items():

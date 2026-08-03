@@ -4,6 +4,25 @@ Todos los cambios notables de LiveAudio se documentan aquí.
 
 ---
 
+## [1.2.4] — 2026-08-03
+
+### Agregado
+
+- **Seguridad y compatibilidad de Origin en WebSocket** — El servidor WebSocket valida el Origin de las conexiones entrantes para bloquear accesos no autorizados desde navegadores externos, permitiendo únicamente integraciones locales loopback (localhost, 127.0.0.1 y ::1) y fuentes de navegador de OBS.
+- **Descubrimiento automático de puerto fallback WS** — Si el puerto principal de WebSocket está ocupado, se escanean y ofrecen automáticamente puertos alternativos desde la UI.
+- **Toggles independientes para sinks de disco y puerto WS** — Control independiente desde la interfaz para persistencia en archivo de texto o emisión WebSocket.
+
+### Corregido
+
+- **Recuperación de bloqueo silencioso de configuración** — Reparada la falla donde un bloqueo huérfano de `config.json` descartaba cambios de ajustes en silencio. Ahora las escrituras son atómicas y los bloqueos obsoletos (>30s) se limpian automáticamente.
+- **Visibilidad del Overlay OBS** — El renderizado de subtítulos en `subtitulos_obs.html` ya no depende de `requestAnimationFrame`, asegurando actualización continua aun cuando la pestaña o el navegador de OBS no esté visible/enfocado.
+
+### Rendimiento
+
+- **Inicialización diferida del Manager** — Postergación de la creación del `Manager` de multiprocessing hasta su primer uso real, reduciendo la huella de memoria y el tiempo de arranque inicial de la interfaz.
+
+---
+
 ## [1.2.3] — 2026-07-10
 
 ### Corregido

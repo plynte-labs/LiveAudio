@@ -41,6 +41,7 @@ def _make_app(config_data, draft):
     app._profile_id_for_current_values = lambda cfg: "balanced"
     app._pending_restart_flags = lambda cfg: (False, False)
     app._validate_draft_config = lambda cfg: None
+    app._warn_if_ws_port_changed = lambda prev: None
     app.refresh_profile_status = lambda: None
     app.after = lambda delay, callback: None
     app.print_log = app.logs.append
