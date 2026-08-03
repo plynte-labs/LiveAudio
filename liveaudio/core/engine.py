@@ -125,19 +125,24 @@ class SessionWriter:
                 break
             
             try:
-                record, vtt_start, vtt_end, texto_final, cue_counter = item
-                with open(self.jsonl_path, "a", encoding="utf-8") as f:
-                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
-                
-                with open(self.vtt_path, "a", encoding="utf-8") as f:
-                    f.write(f"{cue_counter}\n{vtt_start} --> {vtt_end}\n{texto_final}\n\n#cue:{cue_counter}\n")
+                record, vtt_start, vtt_end, texto_final, cue_counter, write_transcript, write_vtt = item
+                if write_transcript:
+                    with open(self.jsonl_path, "a", encoding="utf-8") as f:
+                        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+                if write_vtt:
+                    with open(self.vtt_path, "a", encoding="utf-8") as f:
+                        f.write(f"{cue_counter}\n{vtt_start} --> {vtt_end}\n{texto_final}\n\n#cue:{cue_counter}\n")
             except Exception:
                 pass
             finally:
                 self.queue.task_done()
 
-    def write_record(self, record, vtt_start, vtt_end, texto_final, cue_counter):
-        self.queue.put((record, vtt_start, vtt_end, texto_final, cue_counter))
+    def write_record(self, record, vtt_start, vtt_end, texto_final, cue_counter, write_transcript=True, write_vtt=True):
+        """Queue one record. Each artifact is gated independently by its own flag."""
+        if not (write_transcript or write_vtt):
+            return
+        self.queue.put((record, vtt_start, vtt_end, texto_final, cue_counter, write_transcript, write_vtt))
 
     def stop(self):
         self.queue.put(None)
@@ -192,6 +197,19 @@ def _config_float(shared_config, key, default):
         return float(shared_config.get(key, default))
     except (TypeError, ValueError):
         return default
+
+
+def _disk_sink_decision(shared_config, cue_counter):
+    """Resolve the per-utterance disk sinks, read live from shared_config.
+
+    Returns (save_transcript, save_vtt, cue_counter). A suppressed cue must not
+    consume a cue number, so VTT numbering stays contiguous across an OFF period.
+    """
+    save_transcript = bool(shared_config.get("save_transcript_enabled", True))
+    save_vtt = bool(shared_config.get("save_vtt_enabled", True))
+    if save_vtt:
+        cue_counter += 1
+    return save_transcript, save_vtt, cue_counter
 
 
 def _obs_emit_decision(shared_config, queue_delay):
@@ -537,11 +555,15 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
                     "device": shared_config["device"],
                 }
                 
-                cue_counter += 1
+                # Disk sink gates, read live per utterance like obs_enabled below.
+                save_transcript, save_vtt, cue_counter = _disk_sink_decision(shared_config, cue_counter)
                 vtt_start = _format_vtt_time(queue_delay)
                 vtt_end = _format_vtt_time(queue_delay + latency)
-                
-                session_writer.write_record(transcript_record, vtt_start, vtt_end, texto_final, cue_counter)
+
+                session_writer.write_record(
+                    transcript_record, vtt_start, vtt_end, texto_final, cue_counter,
+                    write_transcript=save_transcript, write_vtt=save_vtt,
+                )
 
                 # OBS enabled gate: skip WebSocket emission when disabled
                 obs_enabled = shared_config.get("obs_enabled", True)

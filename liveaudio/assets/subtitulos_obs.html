@@ -293,6 +293,9 @@
         const RIBBON_MIN_LINES = 1;
         const RIBBON_MAX_LINES_CEILING = 8;
         const RIBBON_DEFAULT_LINES = 3;
+        const WS_PORT_FALLBACK_RANGE = 10;
+        const HELLO_TIMEOUT_MS = 2000;
+        const WS_PROTO = 1;
 
         // --- URL Param Parser: read ?style= on load ---
         const urlParams = new URLSearchParams(window.location.search);
@@ -586,18 +589,44 @@
             processQueue(); // Process next in queue
         }
 
+        const requestedPort = parseInt(urlParams.get('port') || '8765', 10);
+        const wsBasePort = Math.max(1, Math.min(65535, Number.isNaN(requestedPort) ? 8765 : requestedPort));
+        const wsLastPort = Math.min(wsBasePort + WS_PORT_FALLBACK_RANGE - 1, 65535);
+        let wsCandidate = wsBasePort;
+        let wsBackoffMs = 1000;
+        let wsState = 'CLOSED';
+
         function connect() {
-            // Read port from query parameter (?port=XXXX), default to 8765
-            const params = new URLSearchParams(window.location.search);
-            const wsPort = params.get('port') || '8765';
-            const wsUrl = `ws://127.0.0.1:${wsPort}`;
-            ws = new WebSocket(wsUrl);
+            const candidate = wsCandidate;
+            const wsPort = candidate;
+            wsState = 'CONNECTING';
+            const socket = new WebSocket(`ws://127.0.0.1:${wsPort}`);
+            let helloTimer = null;
+            ws = socket;
+
+            socket.onopen = () => {
+                if (ws !== socket) return;
+                wsState = 'AWAIT_HELLO';
+                helloTimer = setTimeout(() => {
+                    if (ws === socket && wsState === 'AWAIT_HELLO') socket.close();
+                }, HELLO_TIMEOUT_MS);
+            };
             
-            ws.onopen = () => console.log('Conectado al motor ASR');
-            
-            ws.onmessage = (event) => {
+            socket.onmessage = (event) => {
+                if (ws !== socket) return;
                 try {
                     const data = JSON.parse(event.data);
+                    if (wsState !== 'ACTIVE') {
+                        if (data && data.type === 'hello' && data.app === 'liveaudio' &&
+                            Number.isInteger(data.proto) && data.proto >= WS_PROTO) {
+                            clearTimeout(helloTimer);
+                            wsState = 'ACTIVE';
+                            wsBackoffMs = 1000;
+                            return;
+                        }
+                        if (data && data.type === 'hello') socket.close();
+                        return;
+                    }
                     // Handle theme messages
                     if (data && data.type === 'theme' && data.tokens) {
                         applyTheme(data.tokens);
@@ -620,9 +649,23 @@
                 }
             };
 
-            ws.onclose = () => {
-                console.log('Desconectado. Reintentando...');
-                setTimeout(connect, 3000);
+            socket.onclose = () => {
+                clearTimeout(helloTimer);
+                if (ws !== socket) return;
+                const wasActive = wsState === 'ACTIVE';
+                wsState = 'CLOSED';
+                if (wasActive) {
+                    wsCandidate = wsBasePort;
+                } else if (candidate < wsLastPort) {
+                    wsCandidate = candidate + 1;
+                    setTimeout(connect, 0);
+                    return;
+                } else {
+                    wsCandidate = wsBasePort;
+                }
+                const delay = wsBackoffMs;
+                wsBackoffMs = Math.min(wsBackoffMs * 2, 8000);
+                setTimeout(connect, delay);
             };
         }
 
@@ -847,20 +890,35 @@
                 sub.classList.add('visible');
                 
             } else {
-                // Para Default y Neon, es texto plano
+                // Para Default y Neon, es texto plano. El reveal se programa tras
+                // el appendChild (ver mas abajo): estos estilos transicionan por CSS
+                // y necesitan que el estado inicial (opacity:0) este comprometido
+                // ANTES de anadir .visible.
                 sub.textContent = safeText;
-                
-                // Pequeño timeout para permitir que el DOM se actualice antes de animar
-                requestAnimationFrame(() => {
-                    setTimeout(() => sub.classList.add('visible'), 20);
-                });
             }
-            
+
             container.appendChild(sub);
 
             // FLIP play pass: glide the surviving ribbon lines to their new
             // positions (no-op in single mode and in the headless harness).
             if (renderStacked) flipPlayRibbon(container, flipFirst, sub);
+
+            // Reveal de los estilos que transicionan por CSS (default, neon, minimal,
+            // bold). Los de @keyframes (karaoke, rgb, typewriter) ya se marcaron
+            // .visible arriba de forma sincrona y no entran aqui.
+            //
+            // Leer offsetHeight fuerza un reflow SINCRONO, que compromete el estado
+            // inicial (.sub-box -> opacity:0) antes de que el timer de 20ms anada
+            // .visible; sin ese flush el navegador coalesce ambos estados y se salta
+            // la transicion. Esto sustituye a un requestAnimationFrame: OBS CEF
+            // SUSPENDE los callbacks de rAF mientras el documento esta oculto (escena
+            // inactiva o pestana en segundo plano) mientras los setTimeout siguen
+            // corriendo, asi que un reveal via rAF dejaba subtitulos invisibles para
+            // siempre mientras sus timers de expiry si vencian.
+            if (!sub.classList.contains('visible')) {
+                void sub.offsetHeight; // force reflow: flush the pre-transition state
+                setTimeout(() => sub.classList.add('visible'), 20);
+            }
 
             // --- Animación de salida unificada ---
             // El TIMING (5000ms hide / 650ms cleanup, stagger por palabra) es identico
@@ -873,6 +931,46 @@
                 hideTimeout = setTimeout(() => runExpiry(sub, safeStyle, false), 5000);
             }
         }
+
+        // --- Reset duro al volver a ser visible ---------------------------------
+        // Mientras el documento esta oculto (escena OBS inactiva o pestana en segundo
+        // plano) el overlay SIGUE recibiendo por WebSocket y renderizando a ciegas.
+        // Todo lo que quede en vuelo al reaparecer pertenece, por definicion, a audio
+        // que el espectador ya se perdio. Regla de producto para toda salida de la app:
+        // cuando una salida se reanuda, NUNCA reproduce lo que se perdio. Asi que al
+        // volver a visible tiramos todo — sin revelarlo ni animarlo — y solo se
+        // renderizan los subtitulos que lleguen DESPUES.
+        function resetOverlayOnResume() {
+            // Timers compartidos del path single + los de la maquina de estados.
+            clearTimeout(hideTimeout);
+            clearTimeout(cleanupTimeout);
+            clearTimeout(debounceTimer);
+            clearTimeout(demoteTimer);
+            hideTimeout = cleanupTimeout = debounceTimer = demoteTimer = null;
+
+            // Cajas vivas: se desprenden SIN anadir .visible ni .hiding, para que no
+            // haya ni flash de entrada ni fade de salida al reaparecer la escena.
+            for (const box of container.querySelectorAll('.sub-box')) {
+                if (box._hideTimer) clearTimeout(box._hideTimer);
+                if (box._cleanupTimer) clearTimeout(box._cleanupTimer);
+                box._hideTimer = box._cleanupTimer = null;
+                if (box.parentNode) box.parentNode.removeChild(box);
+            }
+
+            // Cola y gates del path single.
+            pendingQueue = [];
+            isShowing = false;
+            lastShowTime = 0;
+            // Maquina adaptativa: pizarra limpia en SINGLE, sin latch de replay vivo.
+            adaptiveState = 'SINGLE';
+            replayActive = false;
+            lastReplayAt = 0;
+            setRibbonActive(false);
+        }
+
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden) resetOverlayOnResume();
+        });
 
         connect();
     </script>

@@ -1210,8 +1210,8 @@ def _bootstrap_gui(meta, install_root, portable, device, no_launch, notes=()):
 def _fast_path_gui(version, install_root, portable):
     """Windows fast path: minimal splash until the app window appears.
 
-    The app imports torch at module level before creating its window, so a
-    cold start can take 60+ seconds with zero feedback. Reuse the existing
+    A cold start still spends seconds on interpreter and GUI-toolkit imports
+    before the first window paints, with zero feedback. Reuse the existing
     splash (TkReporter) so users know something is happening.
     """
     try:

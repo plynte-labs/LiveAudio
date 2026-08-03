@@ -1,14 +1,72 @@
 # SPDX-License-Identifier: MIT
 import asyncio
 import errno
+import http
 import json
 import os
 import queue
 import socket
 
+from urllib.parse import urlsplit
+
 from websockets.asyncio.server import serve, broadcast
 from liveaudio.core.diagnostics import create_store_from_config
 from liveaudio.utils.streams import make_streams_encoding_safe
+
+WS_PORT_FALLBACK_RANGE = 10
+
+# Origenes permitidos en el handshake WebSocket. El navegador NO aplica
+# same-origin a los WebSockets: cualquier web abierta mientras se transmite
+# podria conectarse a ws://127.0.0.1:8765 y leer la transcripcion en vivo, asi
+# que filtrar por Origin es responsabilidad del servidor.
+#   - "http://absolute": host interno de CEF para las fuentes de navegador
+#     locales de OBS. Valor MEDIDO contra el OBS real del mantenedor
+#     (2026-07-24), no supuesto; no es "null", y una web no puede falsificarlo
+#     porque el navegador escribe Origin desde el origen real del documento.
+#   - Loopback (ver WS_LOOPBACK_HOSTS): cualquier origen http/https cuyo host
+#     sea exactamente localhost, 127.0.0.1 o ::1, en CUALQUIER puerto o sin
+#     puerto. Una web servida en local SI es un cliente navegador y SI manda
+#     Origin: suponer que toda integracion no-OBS seria un cliente no navegador
+#     sin Origin era falso, y bloqueaba en silencio integraciones legitimas
+#     (medido: http://localhost:1420, el frontend local de opencohost). El
+#     puerto de un servidor de desarrollo cambia, asi que no se permite un
+#     puerto literal.
+# Ausencia de cabecera Origin: se acepta aparte (ver _reject_foreign_origin).
+# Todo cliente no navegador (scripts, herramientas nativas, integraciones
+# futuras) no envia Origin, y un proceso no navegador puede falsificar
+# cualquier valor: eso queda fuera de este filtro por diseño.
+#
+# Por que admitir loopback sigue siendo seguro: una web remota NUNCA puede
+# presentar un Origin de loopback. El navegador escribe Origin desde el origen
+# real del documento y JS no puede sobrescribirlo, asi que una pagina de
+# evil.com manda siempre https://evil.com por mucho truco de DNS que haga. El
+# ataque que este filtro existe para parar — la web de paso abierta durante el
+# directo — sigue bloqueado por completo. Lo que se admite ahora de mas es una
+# pagina servida por un servidor web LOCAL, y es un intercambio aceptable:
+# quien puede levantar un servidor local puede igualmente conectarse como
+# cliente no navegador falsificando cualquier Origin, algo que este filtro
+# nunca pretendio parar. Cerrar eso exige el token de autenticacion, aplazado
+# a proposito por el mantenedor.
+WS_ALLOWED_ORIGINS = frozenset({"http://absolute"})
+WS_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def _origin_allowed(origin):
+    """Comprueba un unico valor de Origin contra la lista y la regla loopback.
+
+    Se PARSEA con urlsplit y se compara el hostname contra un conjunto exacto:
+    un startswith("http://localhost") aceptaria http://localhost.evil.com, que
+    es un dominio controlado por el atacante. urlsplit tambien desenvuelve el
+    IPv6 entre corchetes ("http://[::1]:8080" -> "::1") y el userinfo
+    ("http://localhost@evil.com" -> "evil.com").
+    """
+    if origin in WS_ALLOWED_ORIGINS:
+        return True
+    try:
+        parts = urlsplit(origin)
+    except ValueError:
+        return False  # Origin mal formado: falla cerrado, no revienta el hook.
+    return parts.scheme in ("http", "https") and parts.hostname in WS_LOOPBACK_HOSTS
 
 
 def port_available(port, host="127.0.0.1"):
@@ -30,6 +88,12 @@ def port_available(port, host="127.0.0.1"):
         return True
     except OSError:
         return False
+
+
+def port_range_available(base, host="127.0.0.1"):
+    """Return whether any candidate in the bounded fallback range is free."""
+    top_port = min(base + WS_PORT_FALLBACK_RANGE - 1, 65535)
+    return any(port_available(port, host) for port in range(base, top_port + 1))
 
 
 def _emit(log_queue, event):
@@ -78,7 +142,33 @@ def _record_network_runtime_health(
         diagnostics_store.record_state("ws.runtime", payload)
 
 
-async def _handle_client(websocket, clients, log_queue, diagnostics_store=None):
+def _reject_foreign_origin(connection, request, log_queue=None):
+    """Hook process_request: corta el handshake si el Origin no está permitido.
+
+    Se filtra aquí y no con el parámetro origins= de serve() a propósito: ese
+    parámetro responde 403 antes de que corra el handler, así que el rechazo
+    sería mudo. Si una versión futura de OBS cambiara su origen interno, el
+    overlay moriría en silencio — exactamente el fallo que este proyecto ya
+    peleó dos veces (#9, #11). Aquí el rechazo se ve en consola, en el log
+    (con el Origin recibido, para diagnosticarlo de un vistazo) y en el chip.
+
+    Devuelve None para continuar el handshake, o una Response para abortarlo.
+    """
+    origins = request.headers.get_all("Origin")
+    if not origins:
+        return None  # Cliente no navegador: no manda Origin.
+    if len(origins) == 1 and _origin_allowed(origins[0]):
+        return None
+    # Varias cabeceras Origin nunca son legítimas: falla cerrado y se registran
+    # todas, en vez de reventar dentro del hook y degradar a un 500 mudo.
+    received = ", ".join(origins)
+    _emit_log(log_queue, f"[WebSocket] Conexion rechazada por Origin no permitido: {received}")
+    _emit(log_queue, {"type": "status", "key": "obs", "text": "OBS: origen rechazado", "state": "warn"})
+    print(f"[WebSocket] Conexion rechazada por Origin no permitido: {received}")
+    return connection.respond(http.HTTPStatus.FORBIDDEN, "Origen no permitido\n")
+
+
+async def _handle_client(websocket, clients, log_queue, diagnostics_store=None, effective_port=8765):
     """Handler para cada conexión WebSocket entrante."""
     remote = websocket.remote_address
     if remote and remote[0] not in ("127.0.0.1", "::1", "localhost"):
@@ -96,6 +186,9 @@ async def _handle_client(websocket, clients, log_queue, diagnostics_store=None):
     print(f"[WebSocket] Cliente conectado: {client_id}")
 
     try:
+        await websocket.send(json.dumps({
+            "type": "hello", "app": "liveaudio", "proto": 1, "port": effective_port,
+        }))
         async for message in websocket:
             pass  # Client messages ignored (OBS browser source is receive-only)
     except Exception:
@@ -259,13 +352,44 @@ def run_ws_server(text_queue, log_queue=None, port=8765, diagnostics_store=None,
     async def main():
         clients = set()
 
-        async def handle_client(websocket):
-            await _handle_client(websocket, clients, log_queue, diagnostics_store=diagnostics_store)
+        def check_origin(connection, request):
+            return _reject_foreign_origin(connection, request, log_queue)
 
-        async with serve(handle_client, "127.0.0.1", port, ping_interval=10, ping_timeout=5) as server:
-            _emit(log_queue, {"type": "status", "key": "ws", "text": f"WS: localhost:{port}", "state": "ok"})
-            # Ejecutar el polling de la cola en paralelo con el servidor
-            await _poll_queue(text_queue, server, log_queue, diagnostics_store=diagnostics_store)
+        last_bind_error = None
+        top_port = min(port + WS_PORT_FALLBACK_RANGE - 1, 65535)
+        for candidate in range(port, top_port + 1):
+            async def handle_client(websocket, effective_port=candidate):
+                await _handle_client(
+                    websocket, clients, log_queue,
+                    diagnostics_store=diagnostics_store,
+                    effective_port=effective_port,
+                )
+            try:
+                server_ctx = serve(
+                    handle_client, "127.0.0.1", candidate,
+                    ping_interval=10, ping_timeout=5, process_request=check_origin,
+                )
+                server = await server_ctx.__aenter__()
+            except OSError as bind_error:
+                if bind_error.errno in (errno.EADDRINUSE, 10048):
+                    last_bind_error = bind_error
+                    continue
+                raise
+            try:
+                if candidate != port:
+                    _emit_log(log_queue, f"[WebSocket] Puerto {port} ocupado; usando puerto de respaldo {candidate}")
+                    print(f"[WebSocket] Puerto {port} ocupado; usando puerto de respaldo {candidate}")
+                _emit(log_queue, {"type": "status", "key": "ws", "text": f"WS: localhost:{candidate}", "state": "ok"})
+                # Puerto efectivo hacia la GUI (WPF-3), antes de servir la cola.
+                _emit(log_queue, {"type": "ws_port", "port": candidate, "base": port})
+                # Ejecutar el polling de la cola en paralelo con el servidor
+                await _poll_queue(text_queue, server, log_queue, diagnostics_store=diagnostics_store)
+            finally:
+                await server_ctx.__aexit__(None, None, None)
+            return
+
+        # Rango agotado (WPF-1): degrada al fail-fast existente (dialogo + monitor).
+        raise last_bind_error
 
     try:
         asyncio.run(main())

@@ -16,7 +16,7 @@ from liveaudio.utils.dllpath import ensure_torch_dlls
 
 ensure_torch_dlls()
 
-from liveaudio.utils.config import load_config, save_config
+from liveaudio.utils.config import load_config, save_config, _normalize_config
 from liveaudio.utils.i18n import t, set_language, autodetect_language, get_language
 from liveaudio.utils.crash_handler import install_crash_handler
 from liveaudio.utils.updater import check_for_updates_async, start_update, APP_VERSION
@@ -26,7 +26,7 @@ from liveaudio.utils.updater import check_for_updates_async, start_update, APP_V
 # Así la GUI (y el proceso ws, que reimporta app.py como __mp_main__) nunca cargan
 # torch ni faster_whisper. list_audio_devices vive en un módulo libre de torch.
 from liveaudio.core.devices import list_audio_devices
-from liveaudio.core.network import run_ws_server, port_available
+from liveaudio.core.network import run_ws_server, port_range_available
 from liveaudio.core.diagnostics import build_diagnostics_report, normalize_export_dir
 
 ctk.set_appearance_mode("dark")
@@ -46,6 +46,12 @@ except Exception as e:  # pragma: no cover - depende de la versión de customtki
 def _asset_path(name: str) -> str:
     """Resolve a bundled asset to a filesystem path."""
     return os.fspath(resources.files("liveaudio.assets") / name)
+
+
+def _obs_overlay_url(port: int) -> str:
+    """Browser-source URL for the overlay, pinned to a specific base port."""
+    html_path = _asset_path("subtitulos_obs.html").replace("\\", "/").lstrip("/")
+    return f"file:///{html_path}?port={int(port)}"
 
 # Límite de colas IPC para prevenir OOM en sesiones largas
 QUEUE_MAXSIZE = 100
@@ -283,10 +289,13 @@ class LiveASRApp(ctk.CTk):
         self._applying_settings = False
         self.is_running = False
         
-        # --- DEFENSA 2: Memoria Compartida ---
-        self.manager = mp.Manager()
-        self.shared_config = self.manager.dict(self.config_data)
-        
+        # --- DEFENSA 2: Memoria Compartida (creación diferida) ---
+        # mp.Manager() levanta un proceso Python extra y en spawn ese hijo
+        # reimporta app.py (customtkinter/PIL otra vez). Se crea al primer uso
+        # real (ver la property shared_config), no en cada arranque.
+        self._manager = None
+        self._shared_config = None
+
         # Colas IPC con límite de tamaño para prevenir OOM
         self.audio_queue = mp.Queue(maxsize=QUEUE_MAXSIZE)
         self.text_queue = mp.Queue(maxsize=QUEUE_MAXSIZE)
@@ -310,6 +319,21 @@ class LiveASRApp(ctk.CTk):
         self.screen_welcome.grid(row=0, column=0, sticky="nsew")
         self.after(100, self.process_logs)
         self.after(1000, self.check_updates)
+
+    @property
+    def shared_config(self):
+        """Dict compartido con los workers, creado al primer uso real.
+
+        La semilla se toma de self.config_data en ese momento, no de una copia
+        de __init__: los caminos que tocan shared_config (change_folder,
+        _on_welcome_nav_mode_change, apply_pending_settings) ya actualizaron
+        config_data antes de escribir acá, así que el estado inicial coincide
+        con el de la versión ansiosa.
+        """
+        if self._shared_config is None:
+            self._manager = mp.Manager()
+            self._shared_config = self._manager.dict(self.config_data)
+        return self._shared_config
 
     def check_updates(self):
         def on_update_result(available, tag):
@@ -950,7 +974,33 @@ class LiveASRApp(ctk.CTk):
             variable=self.var_obs_enabled,
             command=self._on_obs_toggle,
         )
-        self.switch_obs_enabled.pack(anchor="w", padx=10, pady=(8, 10))
+        self.switch_obs_enabled.pack(anchor="w", padx=10, pady=(8, 4))
+
+        # Disk sink toggles — independent from OBS and from each other
+        self.var_save_transcript = ctk.BooleanVar(value=self.config_data.get("save_transcript_enabled", True))
+        self.switch_save_transcript = ctk.CTkSwitch(
+            tab_subtitulos,
+            text=t("save_transcript"),
+            variable=self.var_save_transcript,
+            command=self.on_setting_change,
+        )
+        self.switch_save_transcript.pack(anchor="w", padx=10, pady=(0, 4))
+
+        self.var_save_vtt = ctk.BooleanVar(value=self.config_data.get("save_vtt_enabled", True))
+        self.switch_save_vtt = ctk.CTkSwitch(
+            tab_subtitulos,
+            text=t("save_vtt"),
+            variable=self.var_save_vtt,
+            command=self.on_setting_change,
+        )
+        self.switch_save_vtt.pack(anchor="w", padx=10, pady=(0, 8))
+
+        # Base WebSocket port — validated/clamped by _normalize_config, applies on next Start
+        ctk.CTkLabel(tab_subtitulos, text=t("ws_port_label")).pack(anchor="w", padx=10)
+        self.var_ws_port = ctk.StringVar(value=str(self.config_data.get("ws_port", 8765)))
+        self.entry_ws_port = ctk.CTkEntry(tab_subtitulos, textvariable=self.var_ws_port, width=90)
+        self.entry_ws_port.pack(anchor="w", padx=10, pady=(0, 10))
+        self.var_ws_port.trace_add("write", lambda *a: self.on_setting_change())
 
         # Mini guía de OBS
         self.frame_obs_guide = ctk.CTkFrame(tab_subtitulos, fg_color="#1a2730", corner_radius=8)
@@ -963,15 +1013,17 @@ class LiveASRApp(ctk.CTk):
         ).pack(anchor="w", padx=14, pady=(10, 4))
         
         guide_steps = t("obs_guide_steps", html_path=_asset_path("subtitulos_obs.html"))
+        self._obs_guide_base_text = guide_steps
         
-        ctk.CTkLabel(
+        self.obs_guide_label = ctk.CTkLabel(
             self.frame_obs_guide,
             text=guide_steps,
             wraplength=250,
             justify="left",
             font=ctk.CTkFont(size=11),
             text_color="#B0BEC5",
-        ).pack(anchor="w", padx=14, pady=(0, 10))
+        )
+        self.obs_guide_label.pack(anchor="w", padx=14, pady=(0, 10))
 
         # OBS backlog policy (basic)
         ctk.CTkLabel(tab_subtitulos, text=t("obs_backlog")).pack(anchor="w", padx=10)
@@ -1174,6 +1226,10 @@ class LiveASRApp(ctk.CTk):
         draft["subtitle_backlog_policy"] = backlog_val
         
         draft["obs_enabled"] = self.var_obs_enabled.get()
+        draft["save_transcript_enabled"] = self.var_save_transcript.get()
+        draft["save_vtt_enabled"] = self.var_save_vtt.get()
+        # Reuse the single source of ws_port validation (clamped to [1, 65535])
+        draft["ws_port"] = _normalize_config({"ws_port": self.var_ws_port.get()})[0]["ws_port"]
         # Preservar prompts de ambos idiomas desde draft_config (acumula cambios),
         # luego sobrescribir el del idioma activo con el contenido actual de la UI
         draft["whisper_context_prompt_es"] = self.draft_config.get(
@@ -1225,6 +1281,9 @@ class LiveASRApp(ctk.CTk):
         self.text_blacklist.delete("0.0", "end")
         self.text_blacklist.insert("0.0", config.get("blacklist", ""))
         self.var_obs_enabled.set(config.get("obs_enabled", True))
+        self.var_save_transcript.set(config.get("save_transcript_enabled", True))
+        self.var_save_vtt.set(config.get("save_vtt_enabled", True))
+        self.var_ws_port.set(str(config.get("ws_port", 8765)))
         # Cargar el prompt según el idioma de voz activo
         asr_lang = config.get("asr_language", "es")
         self.var_asr_lang.set("Español" if asr_lang == "es" else "English")
@@ -1374,7 +1433,10 @@ class LiveASRApp(ctk.CTk):
         new_mode = "tabs" if selected_mode == t("tabs_horizontal") else "dropdown"
         self.config_data["settings_navigation_mode"] = new_mode
         save_config(self.config_data)
-        self.shared_config["settings_navigation_mode"] = new_mode
+        # No se propaga a shared_config: es estado puramente de UI y todas sus
+        # lecturas salen de config_data. Escribirlo aqui forzaria la creacion
+        # del Manager desde la pantalla de bienvenida, que es justo el coste de
+        # arranque que este acceso perezoso evita.
 
     def _rebuild_main_screen_dynamic(self):
         """Reconstruye la pantalla principal de forma dinámica en tiempo de ejecución."""
@@ -1399,6 +1461,27 @@ class LiveASRApp(ctk.CTk):
     def _on_obs_toggle(self, *args):
         """Handle OBS enable/disable toggle change."""
         self.on_setting_change()
+
+    def _warn_if_ws_port_changed(self, previous_config):
+        """Surface a base-port change: an overlay pinned to the old port scans
+        old_base..old_base+9 and would silently never find the server again.
+
+        There is no channel to reach that stranded overlay (it connects to the
+        port we just left), so the only honest fix is telling the user the new
+        URL and asking them to refresh the browser source.
+        """
+        new_port = self.config_data.get("ws_port")
+        if previous_config.get("ws_port") == new_port:
+            return None
+
+        url = _obs_overlay_url(new_port)
+        self.print_log(t("log_ws_port_changed", port=new_port, url=url))
+        if hasattr(self, "obs_guide_label"):
+            guide = t("obs_guide_steps", html_path=_asset_path("subtitulos_obs.html"))
+            self._obs_guide_base_text = guide
+            self.obs_guide_label.configure(text=f"{guide}\n\n{t('obs_guide_port_changed', url=url)}")
+        messagebox.showwarning(t("ws_port_changed_title"), t("ws_port_changed_msg", port=new_port, url=url))
+        return url
 
     def _pending_restart_flags(self, draft):
         needs_asr_restart = any(self.config_data.get(key) != draft.get(key) for key in ["device", "model_size", "cpu_threads"])
@@ -1499,6 +1582,7 @@ class LiveASRApp(ctk.CTk):
             self.var_profile.set(preset_labels.get(self.config_data.get("selected_profile_id"), t("custom")))
             self.refresh_profile_status()
             self.print_log(t("log_config_applied"))
+            self._warn_if_ws_port_changed(previous_config)
         except Exception as e:
             self.config_data = previous_config
             for k, v in self.config_data.items():
@@ -1622,6 +1706,23 @@ class LiveASRApp(ctk.CTk):
                     
             translated_text = t(found_key) if found_key else raw_text
             self.set_status(status_key, translated_text, state)
+
+        elif event_type == "ws_port":
+            port = int(event.get("port", 8765))
+            base = int(event.get("base", port))
+            self._ws_effective_port = port
+            if port != base:
+                self.set_status("ws", t("status_ws_fallback", port=port), "ok")
+                if hasattr(self, "obs_guide_label"):
+                    guide = t("obs_guide_steps", html_path=_asset_path("subtitulos_obs.html"))
+                    note = t("obs_guide_port_note", port=port, base=base)
+                    self.obs_guide_label.configure(text=f"{guide}\n\n{note}")
+            else:
+                self.set_status("ws", f"WS: localhost:{port}", "ok")
+                if hasattr(self, "obs_guide_label"):
+                    guide = t("obs_guide_steps", html_path=_asset_path("subtitulos_obs.html"))
+                    self._obs_guide_base_text = guide
+                    self.obs_guide_label.configure(text=guide)
             
         elif event_type == "transcript":
             latency = event.get("latency")
@@ -1759,9 +1860,10 @@ class LiveASRApp(ctk.CTk):
             # Pre-flight: si otra aplicación ya ocupa el puerto WS, el proceso
             # hijo moriría en silencio. Fallar acá, antes de arrancar nada.
             ws_port = self.shared_config.get("ws_port", 8765)
-            if not port_available(ws_port):
-                messagebox.showerror(t("ws_port_busy_title"), t("ws_port_busy_msg").format(port=ws_port))
-                self.print_log(t("log_ws_port_busy").format(port=ws_port))
+            if not port_range_available(ws_port):
+                end_port = min(ws_port + 9, 65535)
+                messagebox.showerror(t("ws_port_busy_title"), t("ws_port_busy_msg").format(port=ws_port, end_port=end_port))
+                self.print_log(t("log_ws_port_busy").format(port=ws_port, end_port=end_port))
                 self.set_status("ws", t("status_ws_port_busy"), "error")
                 return
             self.is_running = True
@@ -1891,10 +1993,13 @@ class LiveASRApp(ctk.CTk):
         # Cerrar el proceso del Manager (host del dict de config compartido).
         # Sin esto queda colgado tras un kill duro; el shutdown normal lo reclama
         # por atexit, pero cerrarlo explícito es más prolijo y determinístico.
-        try:
-            self.manager.shutdown()
-        except Exception:
-            pass
+        # Si nunca se creó (se abrió la app sin arrancar el motor) no hay nada
+        # que cerrar: no se levanta uno sólo para apagarlo.
+        if self._manager is not None:
+            try:
+                self._manager.shutdown()
+            except Exception:
+                pass
 
         self.destroy()
 

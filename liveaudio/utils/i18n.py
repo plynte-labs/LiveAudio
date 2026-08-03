@@ -72,6 +72,9 @@ TRANSLATIONS = {
             "   file:///.../subtitulos_obs.html?port=8765\n"
             "5. Listo! Los subtitulos apareceran en vivo."
         ),
+        "save_transcript": "Guardar transcripción (transcript.jsonl)",
+        "save_vtt": "Guardar subtítulos (subtitles.vtt)",
+        "ws_port_label": "Puerto WebSocket (base):",
         "obs_backlog": "Atraso en OBS:",
         "advanced_sub_config": "▼ Configuración avanzada",
         "hide_advanced_sub_config": "▲ Ocultar configuración avanzada",
@@ -110,7 +113,7 @@ TRANSLATIONS = {
         "error_applying_title": "Error al aplicar",
         "error_applying_msg": "No se pudieron aplicar los cambios:\n{}",
         "ws_port_busy_title": "Puerto en uso",
-        "ws_port_busy_msg": "No se puede iniciar el servidor de subtítulos: el puerto {port} está en uso por otra aplicación.\n\n• Cierra la aplicación que está usando el puerto {port}, o\n• Cambia \"ws_port\" en config.json y actualiza la URL del Browser Source en OBS con ?port=",
+        "ws_port_busy_msg": "No se puede iniciar el servidor de subtítulos: los puertos {port}-{end_port} están en uso por otras aplicaciones.\n\n• Cierra las aplicaciones que usan ese rango, o\n• Cambia \"ws_port\" en config.json.",
 
         # Updates
         "update_available_banner": "✨ ¡Nueva versión {} disponible! Haz clic para ver las novedades.",
@@ -145,6 +148,13 @@ TRANSLATIONS = {
         "status_ws_backpressure": "WS: backpressure",
         "status_ws_port_busy": "WS: puerto ocupado",
         "status_ws_dead": "WS: caído",
+        "status_ws_fallback": "WS: localhost:{port} (respaldo)",
+        "status_obs_origin_rejected": "OBS: origen rechazado",
+        "obs_guide_port_note": "Puerto activo: {port} (el {base} estaba ocupado). Usa ?port={port} en la URL de OBS.",
+        "obs_guide_port_changed": "⚠ El puerto base cambió. Actualiza la URL de tu fuente de navegador en OBS a:\n{url}\ny recárgala (clic derecho ▸ Actualizar).",
+        "ws_port_changed_title": "Puerto de OBS cambiado",
+        "ws_port_changed_msg": "El puerto base ahora es {port}.\n\nTu fuente de navegador en OBS sigue apuntando al puerto anterior y dejará de recibir subtítulos.\n\nActualiza su URL a:\n{url}\n\nLuego recárgala en OBS (clic derecho ▸ Actualizar).",
+        "log_ws_port_changed": "[Sistema] ⚠ Puerto base cambiado a {port}. Actualiza la URL de OBS a: {url}",
         
         # Profiles Preset texts
         "profile_preset_fast_label": "Rápido",
@@ -164,7 +174,7 @@ TRANSLATIONS = {
         "log_config_error": "[Sistema] Error al aplicar cambios: {}",
         "log_hot_swap": "\n[Sistema] Aplicando cambios con hot-swap en vivo...",
         "log_hot_swap_failed": "El hot-swap no pudo arrancar los procesos de audio/ASR.",
-        "log_ws_port_busy": "[WebSocket] El puerto {port} está en uso por otra aplicación. Cierra esa aplicación o cambia \"ws_port\" en config.json.",
+        "log_ws_port_busy": "[WebSocket] Los puertos {port}-{end_port} están en uso. Cierra esas aplicaciones o cambia \"ws_port\" en config.json.",
         "log_ws_dead": "[WebSocket] El servidor de subtítulos se detuvo inesperadamente. Los subtítulos NO están llegando a OBS. Detén y vuelve a iniciar el sistema.",
         
         # Backlog Policy Labels
@@ -238,6 +248,9 @@ TRANSLATIONS = {
             "   file:///.../subtitulos_obs.html?port=8765\n"
             "5. Ready! The subtitles will appear live."
         ),
+        "save_transcript": "Save transcript (transcript.jsonl)",
+        "save_vtt": "Save subtitles (subtitles.vtt)",
+        "ws_port_label": "WebSocket port (base):",
         "obs_backlog": "OBS Backlog:",
         "advanced_sub_config": "▼ Advanced Configuration",
         "hide_advanced_sub_config": "▲ Hide Advanced Configuration",
@@ -276,7 +289,7 @@ TRANSLATIONS = {
         "error_applying_title": "Error applying",
         "error_applying_msg": "Could not apply changes:\n{}",
         "ws_port_busy_title": "Port in use",
-        "ws_port_busy_msg": "Cannot start the subtitle server: port {port} is already in use by another application.\n\n• Close the application using port {port}, or\n• Change \"ws_port\" in config.json and update the OBS Browser Source URL with ?port=",
+        "ws_port_busy_msg": "Cannot start the subtitle server: ports {port}-{end_port} are already in use by other applications.\n\n• Close the applications using that range, or\n• Change \"ws_port\" in config.json.",
 
         # Updates
         "update_available_banner": "✨ New version {} available! Click to see what's new.",
@@ -311,6 +324,13 @@ TRANSLATIONS = {
         "status_ws_backpressure": "WS: backpressure",
         "status_ws_port_busy": "WS: port busy",
         "status_ws_dead": "WS: down",
+        "status_ws_fallback": "WS: localhost:{port} (fallback)",
+        "status_obs_origin_rejected": "OBS: origin rejected",
+        "obs_guide_port_note": "Active port: {port} ({base} was busy). Use ?port={port} in the OBS URL.",
+        "obs_guide_port_changed": "⚠ The base port changed. Update your OBS browser source URL to:\n{url}\nthen refresh it (right-click ▸ Refresh).",
+        "ws_port_changed_title": "OBS port changed",
+        "ws_port_changed_msg": "The base port is now {port}.\n\nYour OBS browser source still points at the previous port and will stop receiving subtitles.\n\nUpdate its URL to:\n{url}\n\nThen refresh it in OBS (right-click ▸ Refresh).",
+        "log_ws_port_changed": "[System] ⚠ Base port changed to {port}. Update the OBS URL to: {url}",
         
         # Profiles Preset texts
         "profile_preset_fast_label": "Fast",
@@ -330,7 +350,7 @@ TRANSLATIONS = {
         "log_config_error": "[System] Error applying changes: {}",
         "log_hot_swap": "\n[System] Applying changes with live hot-swap...",
         "log_hot_swap_failed": "Hot-swap could not start audio/ASR processes.",
-        "log_ws_port_busy": "[WebSocket] Port {port} is in use by another application. Close that application or change \"ws_port\" in config.json.",
+        "log_ws_port_busy": "[WebSocket] Ports {port}-{end_port} are in use. Close those applications or change \"ws_port\" in config.json.",
         "log_ws_dead": "[WebSocket] The subtitle server stopped unexpectedly. Subtitles are NOT reaching OBS. Stop and start the system again.",
         
         # Backlog Policy Labels
