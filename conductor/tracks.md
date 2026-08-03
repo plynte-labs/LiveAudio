@@ -55,24 +55,57 @@ This file tracks major LiveAudio tracks. Each track should have its own detailed
 
 ---
 
-- [~] **Track: VAD Onset Grace & Configurable Silero Pre-roll**
+- [x] **Track: VAD Onset Grace & Configurable Silero Pre-roll**
   *Link: [./tracks/vad-onset-grace_20260619/](./tracks/vad-onset-grace_20260619/)*
-  *Status: [~] In Progress on branch `feature/vad-onset-grace` (strict TDD). Was: proposed. Make the Silero VAD onset pre-roll configurable (today hardcoded `pre_buffer=deque(maxlen=3)` ≈ 96ms at audio.py:308) so soft word onsets stop getting clipped; expose `vad_speech_pad_ms` and `vad_threshold`. INDEPENDENT — touches only audio.py/config.py/app.py; can run in parallel with the subtitle tracks.*
+  *Status: completed. Made the Silero VAD onset pre-roll configurable (replaced the hardcoded `pre_buffer=deque(maxlen=3)` ≈ 96ms at audio.py:308) so soft word onsets stop getting clipped; exposed `vad_speech_pad_ms` and `vad_threshold`. Merged via PR #4 (2026-06-20), commits `67bf887` / `4d86eba` on master.*
 
 ---
 
-- [~] **Track: Subtitle Legibility & Animation Polish (OBS Overlay)**
+- [x] **Track: Subtitle Legibility & Animation Polish (OBS Overlay)**
   *Link: [./tracks/subtitle-legibility-anim_20260619/](./tracks/subtitle-legibility-anim_20260619/)*
-  *Status: [~] In Progress (strict TDD; batched on the `feature/vad-onset-grace` working tree, to be split into `feature/subtitle-legibility-anim` at commit time). Was: proposed. Reconcile the `--sub-animation-duration` mismatch (0.2s CSS vs 0.4s JS), raise `.style-minimal` legibility, lift the small-source font clamp floor, and cap per-word reveal stagger so long phrases appear fast. Edits `subtitulos_obs.html`. SHARES that file with the ribbon track → must land FIRST.*
+  *Status: completed. Reconciled the `--sub-animation-duration` mismatch (0.2s CSS vs 0.4s JS), raised `.style-minimal` legibility, lifted the small-source font clamp floor, and capped per-word reveal stagger so long phrases appear fast. Edits `subtitulos_obs.html`. Merged via PR #7 (2026-06-20), commit `ab20acc`; PR #5 (earlier version of this same branch, targeted at `feature/vad-onset-grace`) was closed/superseded.*
 
 ---
 
-- [~] **Track: Vertical Ribbon Subtitle Buffer for OBS Overlay**
+- [x] **Track: Vertical Ribbon Subtitle Buffer for OBS Overlay**
   *Link: [./tracks/subtitle-ribbon-buffer_20260619/](./tracks/subtitle-ribbon-buffer_20260619/)*
-  *Status: [~] Implemented + dual-reviewed across 3 judgment-day cycles (final: pass-with-notes, state machine sound + memory safe); pending commit/merge. Default `adaptive`, strict TDD, node runtime harness, batched working tree. ADAPTIVE vertical "ribbon" buffer: one subtitle at a time under normal pacing, auto-stacks the N most-recent lines ONLY when subtitles accumulate/queue up (keyed off the existing `pendingQueue` + `is_replay` catch-up signals), then collapses back — so steady speech never shows an oversized text block (today `showSubtitle()` shows one at a time, subtitulos_obs.html:418). Modes `single|ribbon|adaptive`, **default `adaptive`** (LOCKED). Direction (OD-1, newest-on-top) + default/threshold (OD-6) + engine-hint defer (OD-5) RESOLVED. Edits `subtitulos_obs.html` → DEPENDS on the legibility track landing first (workflow.md:49 overlap rule).*
+  *Status: completed. Implemented + dual-reviewed across 3 judgment-day cycles (final: pass-with-notes, state machine sound + memory safe). Default `adaptive`, strict TDD, node runtime harness. ADAPTIVE vertical "ribbon" buffer: one subtitle at a time under normal pacing, auto-stacks the N most-recent lines ONLY when subtitles accumulate/queue up (keyed off the existing `pendingQueue` + `is_replay` catch-up signals), then collapses back — so steady speech never shows an oversized text block. Modes `single|ribbon|adaptive`, **default `adaptive`** (LOCKED). Direction (OD-1, newest-on-top) + default/threshold (OD-6) + engine-hint defer (OD-5) RESOLVED. Merged via PR #6 (2026-06-20), commit `c414edb`, landing after the legibility track as required.*
 
 ---
 
 - [ ] **Track: Test-suite & launch-readiness cleanup (collateral — DEFERRED)**
   *Link: N/A — noted follow-up; no track folder yet.*
   *Status: 🔲 proposed. Collateral issues surfaced during the VAD/subtitle work, intentionally deferred OUT of their tracks (not bugs introduced by them): (1) `.atl/skill-registry.md` carries absolute Windows paths (`C:\Users\...`) after a `gentle-ai skill-registry refresh`, failing `tests/test_public_launch_readiness.py::test_skill_registry_has_no_absolute_windows_paths` — regenerate with relative paths or revert that working-tree change. (2) Pre-existing `tests/test_audio.py::TestVadThresholdEnforcement` + `tests/test_noise_detection.py` re-implement the VAD check locally with `>=`, contradicting the production strict `>` — route through a shared helper so the suite documents one correct boundary. (3) Adaptive-ribbon LOW edges (from Track B re-judge, not blocking): (a) the SINGLE↔RIBBON flap can recur only when `subtitle_catchup_interval_sec > ~5.65s` (slider max is 10s, but all profiles use 0.8–2.0s and default 1.5s) — consider tying the slider max to ~5s; (b) a non-replay live line interleaved between spaced replay payloads momentarily demotes (`subtitulos_obs.html` adaptive enqueue `replayActive = !!isReplay`) — arguable "caught up" semantics, decide if it should latch instead.*
+
+---
+
+- [~] **Track: Automatic WebSocket Port Fallback & Overlay Endpoint Identification**
+  *Link: N/A - no Conductor track folder created; tracked via PR #12.*
+  *Status: open PR #12 (`feat/ws-port-fallback` → `master`), commit `7d82cc5`. Server-side bind fallback walks `base..base+9` on `EADDRINUSE`/WinSock `10048` and announces the effective port to the GUI; the OBS overlay now identifies its server via a `hello` handshake before rendering anything, closing the "wrong socket" gap behind issue #9's incident. Closes issue #11. Manually validated end-to-end against real OBS.*
+  *Pending: review and merge.*
+
+---
+
+- [~] **Track: Independent Output Sink Toggles & UI WebSocket Port**
+  *Link: N/A - no Conductor track folder created; tracked via PR #13.*
+  *Status: open PR #13 (`feat/output-sink-toggles`), stacked on #12. Commit `491eb52`. Adds independent `save_transcript_enabled` / `save_vtt_enabled` disk toggles (transcript persistence was previously unconditional) and a `ws_port` field in the UI, warning when the base port changes since a pinned overlay only scans `base..base+9`.*
+  *Pending: merge of #12, then review and merge.*
+
+---
+
+- [~] **Track: OBS Overlay Visibility Fix (Hidden-Scene Reveal)**
+  *Link: N/A - no Conductor track folder created; tracked via PR #14.*
+  *Status: open PR #14 (`fix/overlay-visibility`), stacked on #12. Commit `4d6bac4`. Subtitles never revealed while the OBS scene was hidden because the reveal was gated behind `requestAnimationFrame`, which browsers suspend when the document is hidden, while the expiry `setTimeout`s kept firing. Replaced with a synchronous reflow force; added a `visibilitychange` hard reset so a resumed overlay never replays what was missed.*
+  *Pending: merge of #12, then review and merge.*
+
+---
+
+- [~] **Track: Defer Manager Startup for Faster Launch**
+  *Link: N/A - no Conductor track folder created; tracked via PR #15.*
+  *Status: open PR #15 (`perf/defer-manager-startup`), stacked on #13 (itself stacked on #12). Commit `315eeed`. Moved `mp.Manager()` out of `LiveASRApp.__init__` into a lazy accessor, removing a measured 455-478ms from every launch that was previously paid even when the user never pressed Start.*
+  *Pending: merge of #12 and #13, then review and merge.*
+
+---
+
+- **Note: stale branch triage**
+  *Status: local branch `audit-ui-security-privacy` deleted on 2026-07-24 after triage — one docs-only commit (`dcdf5c8`), never pushed to the remote; all five findings from its audit report verified as already implemented on master.*
