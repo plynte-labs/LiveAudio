@@ -450,14 +450,31 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
             model_kwargs["cpu_threads"] = int(shared_config["cpu_threads"])
 
         model_load_started_at = time.time()
-        model = WhisperModel(**model_kwargs)
+        try:
+            # Intento 1: Carga instantánea desde caché local sin peticiones de red síncronas (0.6s)
+            model = WhisperModel(**dict(model_kwargs, local_files_only=True))
+        except Exception:
+            _emit_log(log_queue, f"[IA] Modelo no encontrado en caché local. Consultando Hugging Face...")
+            try:
+                model = WhisperModel(**model_kwargs)
+            except Exception as load_err:
+                if shared_config["device"] == "cuda":
+                    _emit_log(log_queue, f"[IA ADVERTENCIA] Falló la carga en CUDA ({load_err}). Reintentando en CPU...")
+                    cpu_kwargs = dict(model_kwargs, device="cpu", compute_type="int8", cpu_threads=int(shared_config.get("cpu_threads", 4)))
+                    try:
+                        model = WhisperModel(**dict(cpu_kwargs, local_files_only=True))
+                    except Exception:
+                        model = WhisperModel(**cpu_kwargs)
+                else:
+                    raise load_err
+
         _record_asr_runtime_health(
             diagnostics_store,
             model_name=clean_model_name,
             model_load_sec=time.time() - model_load_started_at,
         )
         _emit_status(log_queue, "asr", "ASR: listo", "ok")
-        _emit_log(log_queue, "[IA] Modelo cargado y listo.")
+        _emit_log(log_queue, f"[IA] Modelo cargado y listo en {time.time() - model_load_started_at:.2f}s.")
 
         # --- GESTIÓN ESTRICTA DE SESIÓN ---
         os.makedirs(session_dir, exist_ok=True)
