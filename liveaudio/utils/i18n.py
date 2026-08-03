@@ -174,6 +174,7 @@ TRANSLATIONS = {
         "log_config_error": "[Sistema] Error al aplicar cambios: {}",
         "log_hot_swap": "\n[Sistema] Aplicando cambios con hot-swap en vivo...",
         "log_hot_swap_failed": "El hot-swap no pudo arrancar los procesos de audio/ASR.",
+        "log_config_save_failed": "No se pudo guardar config.json en disco. Revisa la consola: puede haber otra instancia de LiveAudio abierta o un bloqueo huérfano.",
         "log_ws_port_busy": "[WebSocket] Los puertos {port}-{end_port} están en uso. Cierra esas aplicaciones o cambia \"ws_port\" en config.json.",
         "log_ws_dead": "[WebSocket] El servidor de subtítulos se detuvo inesperadamente. Los subtítulos NO están llegando a OBS. Detén y vuelve a iniciar el sistema.",
         
@@ -350,6 +351,7 @@ TRANSLATIONS = {
         "log_config_error": "[System] Error applying changes: {}",
         "log_hot_swap": "\n[System] Applying changes with live hot-swap...",
         "log_hot_swap_failed": "Hot-swap could not start audio/ASR processes.",
+        "log_config_save_failed": "Could not save config.json to disk. Check the console: another LiveAudio instance may be open, or an orphaned lock is in the way.",
         "log_ws_port_busy": "[WebSocket] Ports {port}-{end_port} are in use. Close those applications or change \"ws_port\" in config.json.",
         "log_ws_dead": "[WebSocket] The subtitle server stopped unexpectedly. Subtitles are NOT reaching OBS. Stop and start the system again.",
         

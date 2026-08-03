@@ -1568,6 +1568,12 @@ class LiveASRApp(ctk.CTk):
                 if not self.hot_swap_engine():
                     raise RuntimeError(t("log_hot_swap_failed"))
 
+            # Guardar ANTES de programar cualquier reconstrucción de UI: si el
+            # guardado falla, el except revierte config_data y la UI no puede
+            # quedarse a medio aplicar (idioma nuevo con config vieja).
+            if not save_config(self.config_data):
+                raise RuntimeError(t("log_config_save_failed"))
+
             if previous_config.get("settings_navigation_mode") != self.config_data.get("settings_navigation_mode"):
                 # Reconstruir de forma diferida para evitar warnings de destrucción durante el propio callback del botón
                 self.after(50, self._rebuild_main_screen_dynamic)
@@ -1577,7 +1583,6 @@ class LiveASRApp(ctk.CTk):
                 set_language(self.config_data.get("language") or autodetect_language())
                 self.after(50, self._rebuild_ui)
 
-            save_config(self.config_data)
             self.draft_config = copy.deepcopy(self.config_data)
             self.var_profile.set(preset_labels.get(self.config_data.get("selected_profile_id"), t("custom")))
             self.refresh_profile_status()

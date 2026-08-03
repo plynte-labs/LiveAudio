@@ -1,23 +1,10 @@
 # SPDX-License-Identifier: MIT
 """Shared pytest configuration.
 
-Points the LiveAudio data home at a throwaway directory BEFORE any test
-imports liveaudio.utils.config, so test runs never touch the real
-%APPDATA%\\LiveAudio (or ~/.config/liveaudio) of the developer machine.
+The data-home redirect now lives in ``tests/__init__.py`` so that both pytest
+and ``python -m unittest discover`` get it. Importing it here fails loudly if
+the package bootstrap is ever skipped, instead of letting a test run write to
+the developer's real %APPDATA%\\LiveAudio.
 """
 
-import atexit
-import json
-import os
-import shutil
-import tempfile
-
-_home = tempfile.mkdtemp(prefix="liveaudio-test-home-")
-os.environ["LIVEAUDIO_HOME"] = _home
-
-# Seed an empty config so tests that mock os.path.exists/json.load can still
-# open the real file underneath.
-with open(os.path.join(_home, "config.json"), "w", encoding="utf-8") as _fh:
-    json.dump({}, _fh)
-
-atexit.register(shutil.rmtree, _home, True)
+from tests import LIVEAUDIO_TEST_HOME  # noqa: F401
