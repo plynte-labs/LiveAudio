@@ -18,7 +18,7 @@ import tempfile
 
 LIVEAUDIO_TEST_HOME = os.environ.get("LIVEAUDIO_TEST_HOME")
 
-if not LIVEAUDIO_TEST_HOME:
+if not LIVEAUDIO_TEST_HOME or not os.path.isdir(LIVEAUDIO_TEST_HOME):
     LIVEAUDIO_TEST_HOME = tempfile.mkdtemp(prefix="liveaudio-test-home-")
     os.environ["LIVEAUDIO_TEST_HOME"] = LIVEAUDIO_TEST_HOME
     atexit.register(shutil.rmtree, LIVEAUDIO_TEST_HOME, True)
@@ -29,5 +29,8 @@ os.environ["LIVEAUDIO_HOME"] = LIVEAUDIO_TEST_HOME
 # open the real file underneath.
 _seed = os.path.join(LIVEAUDIO_TEST_HOME, "config.json")
 if not os.path.exists(_seed):
-    with open(_seed, "w", encoding="utf-8") as _fh:
-        json.dump({}, _fh)
+    try:
+        with open(_seed, "w", encoding="utf-8") as _fh:
+            json.dump({}, _fh)
+    except OSError:
+        pass

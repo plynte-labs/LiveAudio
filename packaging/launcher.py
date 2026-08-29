@@ -260,8 +260,70 @@ def resolve_install_root(platform=None, environ=None, launcher_dir=None):
             migrated_root = _prompt_migration(default_root, platform, environ)
             if migrated_root:
                 return migrated_root, False
+            return default_root, False
+
+        chosen_root = _prompt_first_install(default_root, platform, environ)
+        if chosen_root:
+            return chosen_root, False
         return default_root, False
     return os.path.join(os.path.expanduser("~"), ".local", "share", "liveaudio"), False
+
+def _prompt_first_install(default_root, platform, environ):
+    import tkinter as tk
+    from tkinter import filedialog
+
+    result_path = [default_root]
+
+    def run_dialog():
+        root = tk.Tk()
+        root.title("LiveAudio - Instalación")
+        root.geometry("480x200")
+        root.configure(bg="#111b1e")
+        root.eval('tk::PlaceWindow . center')
+
+        tk.Label(
+            root,
+            text="Selecciona la ruta de instalación para LiveAudio:",
+            font=("Segoe UI", 10, "bold"),
+            bg="#111b1e",
+            fg="#e8f0ee",
+        ).pack(pady=(15, 5))
+
+        path_var = tk.StringVar(value=default_root)
+
+        entry_frame = tk.Frame(root, bg="#111b1e")
+        entry_frame.pack(fill="x", padx=20, pady=10)
+
+        entry = tk.Entry(entry_frame, textvariable=path_var, font=("Segoe UI", 9), bg="#16242a", fg="#e8f0ee", insertbackground="white")
+        entry.pack(side="left", fill="x", expand=True, padx=(0, 5))
+
+        def browse():
+            folder = filedialog.askdirectory(title="Seleccionar carpeta de instalación", parent=root)
+            if folder:
+                path_var.set(os.path.join(folder, "LiveAudio"))
+
+        tk.Button(entry_frame, text="Buscar...", command=browse, bg="#16242a", fg="#e8f0ee").pack(side="right")
+
+        def confirm():
+            chosen = os.path.abspath(path_var.get())
+            write_install_location(chosen, os.path.join(chosen, "hf-cache"), platform, environ)
+            result_path[0] = chosen
+            root.destroy()
+
+        btn_frame = tk.Frame(root, bg="#111b1e")
+        btn_frame.pack(pady=15)
+
+        tk.Button(btn_frame, text="Instalar aquí", command=confirm, width=18, bg="#3c9e66", fg="white", font=("Segoe UI", 10, "bold")).pack()
+
+        root.protocol("WM_DELETE_WINDOW", confirm)
+        root.mainloop()
+
+    try:
+        run_dialog()
+    except Exception:
+        pass
+    return result_path[0]
+
 
 def _prompt_migration(old_root, platform, environ):
     import tkinter as tk
