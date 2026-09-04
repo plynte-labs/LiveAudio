@@ -454,6 +454,42 @@ def migrate_install_root(src_root, dst_root):
         except Exception:
             pass
 
+def _apply_cuda_fallback_in_memory(config):
+    """Force device to CPU when CUDA is unavailable. In-memory only, no disk writes."""
+    try:
+        from liveaudio.utils.cuda import cuda_is_available
+        if config.get("device") == "cuda" and not cuda_is_available():
+            config["device"] = "cpu"
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def load_config_readonly():
+    """Load config as an in-memory snapshot. NEVER writes to disk.
+
+    Unlike load_config(), this skips the legacy CWD migration, never creates
+    an initial config.json, and never persists normalization. Missing or
+    corrupt files fall back to safe in-memory defaults.
+
+    Returns (config, info) with info {"source", "error_code"}; error_code is
+    None on a clean file read, else a sanitized code (no paths, no content).
+    """
+    try:
+        with open(_config_file(), "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        if not isinstance(raw, dict):
+            raise ValueError("config root is not an object")
+        source, error_code = "file", None
+    except FileNotFoundError:
+        raw, source, error_code = {}, "defaults-missing-file", "config-missing-defaults"
+    except (OSError, ValueError):
+        raw, source, error_code = {}, "defaults-corrupt-file", "config-corrupt-defaults"
+    config, _updated = _normalize_config(dict(raw))
+    _apply_cuda_fallback_in_memory(config)
+    return config, {"source": source, "error_code": error_code}
+
 def load_config():
     """
     Carga la configuracion desde config.json.
@@ -473,13 +509,8 @@ def load_config():
 
         config, updated = _normalize_config(config)
 
-        try:
-            from liveaudio.utils.cuda import cuda_is_available
-            if config.get("device") == "cuda" and not cuda_is_available():
-                config["device"] = "cpu"
-                updated = True
-        except Exception:
-            pass
+        if _apply_cuda_fallback_in_memory(config):
+            updated = True
 
         if updated:
             # La migracion/normalizacion tambien debe persistirse o avisar:

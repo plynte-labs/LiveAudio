@@ -214,7 +214,30 @@ LiveAudio always saves valid transcriptions to the session (`transcript.jsonl` a
 |---|---|
 | `Auto` | Sends fresh subtitles. Short backlogs are emitted with pacing. If delay exceeds `subtitle_max_live_delay_sec`, they are saved but not shown in OBS. |
 | `Live only` | Saves everything, but only shows subtitles within the configured max delay in OBS. |
-| `Send all` | Sends everything to OBS even if it arrives late. Useful if you prefer full visual fidelity over avoiding bursts. |
+| `Send all` | Sends everything to OBS even if it arrives late. Useful if you prefer full visual fidelity over avoiding bursts. After a long freeze the replay buffer is bounded (256 messages, drop-oldest) so the live edge is preserved. |
+
+---
+
+## Headless service mode (integrators)
+
+LiveAudio can run as a **headless backend with no window**, spawned by an owner process (e.g. opencohost):
+
+```bash
+liveaudio-service --parent-pid <PID> [--health-file <path>]
+```
+
+> **Supported entry point:** on an installed Windows build, `liveaudio-service` (console script) is the ONLY supported headless path. The installed `liveaudio` GUI executable has no console/stdout, so `liveaudio --service ...` only works from a source checkout in a terminal — it is a dev convenience, not the integration contract.
+
+- **Process ownership:** the service lives until the owner dies (parent-PID watchdog, Windows + POSIX, machine-local PIDs only). There is no TCP control plane. Only one service instance runs per data home (stale locks are reclaimed).
+- **Lazy ASR:** the supervisor and WebSocket start immediately; audio/ASR load only on the first WS client. Before that the service reports `asr_state: unavailable` (≈ `stt_unreachable`).
+- **Config snapshot:** the service reads the CTK-saved config read-only and never writes `config.json`. Changing settings requires restarting the service (no hot reload).
+- **Port discovery:** same `base..base+9` fallback as the GUI (10 candidates from `ws_port`); the effective port is announced via `hello.port`, the `ws_port` stdout event, and health. Never assume a fixed port.
+- **Health:** versioned JSON lines on stdout (`service_state`, `ws_port`, `asr_state`, `fatal`) plus an optional atomic health-file snapshot. No transcripts, audio, logs, or private paths are ever emitted.
+- **Backlog bound:** `send_all` replays at most the last 256 subtitles (drop-oldest) after a freeze — the live edge, not the full history.
+- **Glossary:** *base port* = configured `ws_port`; *effective port* = port actually bound; *scope* = saved `save_transcript`/`save_vtt`/`obs_enabled`/`ws_port`/backlog settings the service obeys; *dueño-por-proceso* = single owner process via watchdog.
+- **Known limitation:** parent-PID checks are TOCTOU against OS PID reuse — if the owner dies and its PID is reassigned before the next 1 s poll, the service briefly considers the parent alive. A new owner cannot adopt it anyway (instance lock rejects a second service).
+
+> **Note:** reader-side auto-discovery lives in the VoiceAI unit (`feature/liveaudio-service-client`), AFTER this LiveAudio unit. Suggested order: LiveAudio first, VoiceAI second. This track ships the LiveAudio side only.
 
 ---
 

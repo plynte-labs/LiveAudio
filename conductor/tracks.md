@@ -109,3 +109,9 @@ This file tracks major LiveAudio tracks. Each track should have its own detailed
 
 - **Note: stale branch triage**
   *Status: local branch `audit-ui-security-privacy` deleted on 2026-07-24 after triage — one docs-only commit (`dcdf5c8`), never pushed to the remote; all five findings from its audit report verified as already implemented on master.*
+
+---
+
+- [~] **Track: Modo servicio backend headless (opencohost)**
+  *Link: [./tracks/service-backend_20260903/](./tracks/service-backend_20260903/)*
+  *Status: in progress. Unidad 1 implementada sin commit en `feature/service-backend` (T1-T6, T8 hechos; T7/T9/T10 parciales; TBD-1..TBD-5 cerrados por auditor; corrección normativa `base..base+9`). Segunda unidad pendiente: auto-discovery VoiceAI + changelog espejo.*

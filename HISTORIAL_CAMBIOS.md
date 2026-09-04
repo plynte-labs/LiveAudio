@@ -108,3 +108,24 @@ Se reorganizaron los archivos para que coincidieran con lo descrito en la docume
     *   **Por qué:** Centraliza las instrucciones operativas para cualquier agente que trabaje en este repositorio.
 *   **Cambio:** Se registraron tracks completados en `conductor/tracks.md`: backlog OBS (`e6575b2`), equipo especializado (`1644b11`), perfiles/apply flow (`26598e8`).
     *   **Por qué:** Mantiene historial trazable entre commits y decisiones de producto.
+
+## 11. Modo Servicio Backend Headless — Unidad 1 (2026-09-03, track `service-backend_20260903`, sin commit)
+
+*   **Cambio:** Nuevo runtime headless `liveaudio/service/` (paquete: fachada + `errors`/`watchdog`/`health`/`lock`/`supervisor`) y dispatcher `liveaudio/cli.py`; vía soportada `liveaudio-service --parent-pid PID` (script de consola; el GUI instalado no tiene stdout, `liveaudio --service` solo vale en checkout de desarrollo). Sin ventana CTK y sin cargar CTK/torch en el padre.
+    *   **Por qué:** Permite que opencohost levante LiveAudio como backend sin los 3 pasos manuales de la GUI, con ciclo de vida atado al dueño y sin superficie TCP nueva.
+*   **Cambio:** El lock de instancia crea `LIVEAUDIO_HOME` en instalación fresca y mapea fallos OS a `ServiceError` sanitizado (`service-lock-unwritable`); shutdown con fallback `terminate→kill`, cierre de colas mp y `Manager.shutdown` garantizado si `start()` falla tras crearlo.
+    *   **Por qué:** Higiene de recursos en instalaciones frescas y ante hijos tercos; sin fugas de Manager/colas en ningún camino de fallo.
+*   **Cambio:** Nueva API `load_config_readonly()` en `utils/config.py` (reutiliza normalización; jamás escribe) y snapshot de config al spawn; el servicio obedece alcance/puerto/backlog guardados desde CTK.
+    *   **Por qué:** Garantiza que el servicio nunca modifique ni "repare" la config del usuario; cambios CTK requieren reiniciar el servicio.
+*   **Cambio:** Arranque perezoso: supervisor + WS inmediatos, audio/ASR solo al primer cliente WS (ganchos opcionales `on_first_client`/`first_client_event` en `run_ws_server`, compatibles hacia atrás); estados `asr_state` (`unavailable`/`starting`/`loading`/`ready`/`failed`); `hello` intacto (`proto:1` + puerto efectivo).
+    *   **Por qué:** Whisper no se carga hasta el primer uso real; el estado de carga es observable sin romper el protocolo del overlay.
+*   **Cambio:** Corrección normativa: `WS_PORT_FALLBACK_RANGE=10` son candidatos `base..base+9` (no `base..base+10`); spec/plan/tasks del track corregidos. Fail-fast con `port-range-exhausted` si el rango se agota; pre-flight antes de spawnear.
+    *   **Por qué:** El código ya implementaba `base..base+9`; la documentación del track contradecía al código.
+*   **Cambio:** `replay_buffer` acotado a 256 mensajes con drop-oldest, contador `ws.replay_drops` y log acotado (respeta cada política; `send_all` conserva el borde en vivo en freezes largos).
+    *   **Por qué:** El buffer sin cota era riesgo OOM; la mitigación estructural reemplaza el "solo documentar" sin cambiar semántica de políticas.
+*   **Cambio:** Health por stdout JSON Lines versionado (`service_state`/`ws_port`/`asr_state`/`fatal`) + snapshot atómico opcional (`--health-file`, sin rotación); scrub anti-fugas (cero transcripts/logs/audio/paths).
+    *   **Por qué:** Observabilidad sin PII para el proceso dueño; si el health-file falla, avisa una vez por stdout y sigue sirviendo.
+*   **Cambio:** Docs de comportamiento implementado (`README`, `GETTING_STARTED`, `WEBSOCKET_OBS`): handshake `hello`, fallback y descubrimiento, recv-only, Origin loopback incl. `http://localhost:1420`, glosario base/efectivo.
+    *   **Por qué:** Un integrador puede hacer spawn y descubrir el puerto sin leer código. El auto-discovery lado lector vive en la unidad VoiceAI real (`feature/liveaudio-service-client`), DESPUÉS de esta unidad LiveAudio (sin cambios en VoiceAI en este track).
+*   **Deuda registrada:** reciclaje del hijo ASR a N=3 timeouts (el timeout `ThreadPool` no mata el hilo; requiere refactor mayor). Mitigación actual: techo 3-fallos/5min con backoff + fail-fast por muerte de hijo.
+*   **Limitación documentada:** el watchdog por PID es TOCTOU ante reuso de PID por el OS (PIDs locales a la máquina); el lock de instancia impide que un dueño nuevo adopte el servicio. Ver `liveaudio/service/watchdog.py`.

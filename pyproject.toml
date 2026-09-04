@@ -32,7 +32,10 @@ cu121 = [
 ]
 
 [project.gui-scripts]
-liveaudio = "liveaudio.app:main"
+liveaudio = "liveaudio.cli:main"
+
+[project.scripts]
+liveaudio-service = "liveaudio.service:main"
 
 [project.urls]
 Homepage = "https://github.com/plynte-labs/LiveAudio"

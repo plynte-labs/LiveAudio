@@ -161,6 +161,18 @@ Resumen rápido:
 3. Ajusta el ancho y alto (recomendado: 1920x200).
 4. Inicia LiveAudio y los subtítulos aparecerán automáticamente.
 
+### 6.1. Modo servicio headless (integradores, opcional)
+
+Para embeber LiveAudio como backend sin ventana (p. ej. desde opencohost):
+
+```bash
+liveaudio-service --parent-pid <PID> [--health-file <ruta>]
+```
+
+> Vía soportada: en Windows instalado, `liveaudio-service` (script de consola) es la ÚNICA vía headless soportada — el ejecutable GUI instalado no tiene stdout. `liveaudio --service` solo funciona desde un checkout en terminal (desarrollo).
+
+El servicio vive hasta que el proceso dueño termina (watchdog por PID local a la máquina, sin puerto de control nuevo), obedece la configuración guardada desde la interfaz en modo solo-lectura (cambiar ajustes exige reiniciar el servicio), carga Whisper de forma perezosa al primer cliente WebSocket, y anuncia el puerto efectivo (`base..base+9`) vía `hello.port` y eventos JSON en stdout. `send_all` reemite como máximo los últimos 256 subtítulos tras un freeze (borde en vivo, no historial completo). Detalles del protocolo en [WEBSOCKET_OBS.md](WEBSOCKET_OBS.md). El auto-discovery del lado lector vive en la unidad VoiceAI (`feature/liveaudio-service-client`), DESPUÉS de esta unidad LiveAudio: este modo expone el contrato, no lo consume.
+
 ---
 
 ## 7. Estructura de archivos generados
