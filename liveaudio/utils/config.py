@@ -5,6 +5,11 @@ import multiprocessing as mp
 import time
 
 
+def valid_language(value):
+    """Return the persisted language only when it is part of the UI contract."""
+    return value if value in ("es", "en") else None
+
+
 def get_global_appdata_dir():
     if os.name == "nt":
         base = os.environ.get("APPDATA") or os.path.expanduser("~")
@@ -24,7 +29,7 @@ def read_install_location():
         pass
     return None
 
-def write_install_location(install_root, hf_home):
+def write_install_location(install_root, hf_home, language=None):
     config_dir = get_global_appdata_dir()
     os.makedirs(config_dir, exist_ok=True)
     path = os.path.join(config_dir, "install_location.json")
@@ -32,6 +37,9 @@ def write_install_location(install_root, hf_home):
         "install_root": os.path.abspath(install_root),
         "hf_home": os.path.abspath(hf_home)
     }
+    language = valid_language(language)
+    if language is not None:
+        data["language"] = language
     tmp_path = f"{path}.{os.getpid()}.tmp"
     try:
         with open(tmp_path, "w", encoding="utf-8") as f:
@@ -107,6 +115,7 @@ DEFAULT_CONFIG = {
     "profile_mode": "preset",
     "ws_port": 8765,
     "obs_enabled": True,
+    "prewarm": True,  # T4/D5: prewarm default true; first use downloads model (uses network)
     "save_transcript_enabled": True,  # Write transcript.jsonl to disk
     "save_vtt_enabled": True,  # Write subtitles.vtt to disk
     "whisper_context_prompt_es": "",
@@ -190,6 +199,10 @@ def _normalize_config(config):
 
     if not isinstance(config.get("continuous_session"), bool):
         config["continuous_session"] = bool(config.get("continuous_session"))
+        updated = True
+
+    if not isinstance(config.get("prewarm"), bool):
+        config["prewarm"] = bool(config.get("prewarm", True))
         updated = True
 
     if not isinstance(config.get("blacklist"), str) or not config.get("blacklist", "").strip():

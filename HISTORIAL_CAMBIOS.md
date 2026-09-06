@@ -129,3 +129,32 @@ Se reorganizaron los archivos para que coincidieran con lo descrito en la docume
     *   **Por qué:** Un integrador puede hacer spawn y descubrir el puerto sin leer código. El auto-discovery lado lector vive en la unidad VoiceAI real (`feature/liveaudio-service-client`), DESPUÉS de esta unidad LiveAudio (sin cambios en VoiceAI en este track).
 *   **Deuda registrada:** reciclaje del hijo ASR a N=3 timeouts (el timeout `ThreadPool` no mata el hilo; requiere refactor mayor). Mitigación actual: techo 3-fallos/5min con backoff + fail-fast por muerte de hijo.
 *   **Limitación documentada:** el watchdog por PID es TOCTOU ante reuso de PID por el OS (PIDs locales a la máquina); el lock de instancia impide que un dueño nuevo adopte el servicio. Ver `liveaudio/service/watchdog.py`.
+
+## 12. Progreso honesto de primer uso / First-use startup progress (2026-09-05, track `firstuse-startup-progress_20260905`, rama `feature/firstuse-startup-progress`, sin commit)
+
+## 13. Unified first-run launcher and app experience (2026-09-05, track `unified-first-run_20260905`, uncommitted)
+
+* **Checkpoint status:** Partial implementation checkpoint. The entries below describe candidate behavior and approved scope; they do not close the full ES/EN checklist, VAD/supervisor integration, supported-runtime validation, review, VM, or manual E2E gates.
+
+* **Change:** Added an atomic six-field launcher handoff, truthful indeterminate dependency progress, and the shared ES/EN phase vocabulary. Launcher window visibility is explicitly separate from ASR readiness.
+* **Change:** VAD now reports structured indeterminate provisioning heartbeats and stable `provision-*` failures, without disabling TLS verification. A phase retry preserves ASR and queues only after the failed producer has exited and joined.
+* **Safety:** `--reinstall` continues to leave `hf-cache` untouched. Launcher-side Whisper downloads, new IPC, mirrors, custom resume, and simulated progress remain out of scope.
+* **Verification:** Automated tests are recorded in the track validation report. Collective review, VM v2, E2E-1–E2E-10, and first-use M1–M8 are still pending.
+
+*   **Cambio:** El supervisor emite `asr_state` honesto (`downloading/loading/transcribing/ready/stalled/failed`) + espejo legacy (`loading/ready/failed`) para OpenCohost; el progreso viaja como evento estructurado `{phase,percent,attempt,code}` con % monotónico por intento.
+    *   **Por qué:** El primer uso mostraba un "cargando" genérico y perdía el % de descarga; ahora el streamer sabe si el modelo está descargando, detenido, listo o fallido.
+*   **Cambio:** Heartbeat pre-import (REQ-6 opción a): el hijo ASR emite `phase: importing` vía `put_nowait` antes del import pesado torch/faster-whisper; el watchdog lo trata como `loading` y el silencio desde el inicio cuenta para stalled-import.
+    *   **Por qué:** Cubre el gap donde el import pesado pasaba minutos sin ningún evento observable.
+*   **Cambio:** Botón Reintentar manual (visible solo en stalled/failed): intento nuevo, % a 0 una sola vez y luego monotónico; la GUI descarta eventos de intentos viejos. Sin auto-retry. Switch de prewarm en la pestaña Modelo con copy ES/EN aprobada (misma config que `--prewarm/--lazy`, default true).
+    *   **Por qué:** Recuperación manual predecible + control visible de la descarga en primer uso.
+*   **Cambio:** Catálogo `provision-*` con hint ES/EN de una línea (`model-not-found` reservado a ausencia real); TLS acotado con patrón save/restore + código `provision-tls`; docs (`README`, `GETTING_STARTED`) con tabla de estados, códigos y tiempos por modelo + matriz manual M1-M8 en el track.
+    *   **Por qué:** Fallos accionables sin tracebacks en UI y cerrabilidad con validación manual.
+
+*   **Change:** Supervisor emits honest `asr_state` (`downloading/loading/transcribing/ready/stalled/failed`) + legacy mirror (`loading/ready/failed`) for OpenCohost; progress travels as a structured `{phase,percent,attempt,code}` event with per-attempt monotonic %.
+    *   **Why:** First use showed a generic loading state and dropped download %; streamers now see downloading, stalled, ready, or failed.
+*   **Change:** Pre-import heartbeat (REQ-6 option a): the ASR child emits `phase: importing` via `put_nowait` before the heavy torch/faster-whisper import; the watchdog treats it as `loading`, and silence since start counts toward stalled-import.
+    *   **Why:** Closes the gap where the heavy import stalled for minutes with zero observable events.
+*   **Change:** Manual Retry button (visible only on stalled/failed): new attempt, % to 0 exactly once then monotonic; the GUI drops stale-attempt events. No auto-retry. Prewarm switch in the Model tab with approved ES/EN copy (same config as `--prewarm/--lazy`, default true).
+    *   **Why:** Predictable manual recovery + visible first-use download control.
+*   **Change:** `provision-*` catalog with one-line ES/EN hints (`model-not-found` reserved for real absence); scoped TLS via save/restore + `provision-tls` code; docs (`README`, `GETTING_STARTED`) with state table, codes, and per-model times + manual matrix M1-M8 in the track.
+    *   **Why:** Actionable failures with no UI tracebacks, closable with manual validation.

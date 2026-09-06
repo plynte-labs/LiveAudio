@@ -16,7 +16,7 @@ from liveaudio.utils.dllpath import ensure_torch_dlls
 
 ensure_torch_dlls()
 
-from liveaudio.utils.config import load_config, save_config, _normalize_config
+from liveaudio.utils.config import load_config, save_config, _normalize_config, read_install_location, valid_language
 from liveaudio.utils.i18n import t, set_language, autodetect_language, get_language
 from liveaudio.utils.crash_handler import install_crash_handler
 from liveaudio.utils.updater import check_for_updates_async, start_update, APP_VERSION
@@ -28,6 +28,7 @@ from liveaudio.utils.updater import check_for_updates_async, start_update, APP_V
 from liveaudio.core.devices import list_audio_devices
 from liveaudio.core.network import run_ws_server, port_range_available
 from liveaudio.core.diagnostics import build_diagnostics_report, normalize_export_dir
+from liveaudio.core.first_run import handoff_path, validate_handoff
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("green")
@@ -46,6 +47,38 @@ except Exception as e:  # pragma: no cover - depende de la versión de customtki
 def _asset_path(name: str) -> str:
     """Resolve a bundled asset to a filesystem path."""
     return os.fspath(resources.files("liveaudio.assets") / name)
+
+
+def _asr_event_superseded(last_attempt, event):
+    """True when a structured ASR event belongs to an older attempt.
+
+    The GUI consumes ``attempt`` so a delayed event from a previous attempt
+    never overwrites the fresh attempt's display (no inherited stale %).
+    Missing/unparseable attempt counts as current (applies).
+    """
+    try:
+        ev_attempt = event.get("attempt", None)
+        if ev_attempt is None:
+            return False
+        return int(ev_attempt) < int(last_attempt)
+    except (TypeError, ValueError, AttributeError):
+        return False
+
+
+def _vad_event_superseded(last_attempt, event):
+    """Apply the same stale-attempt rule to VAD provisioning events."""
+    return _asr_event_superseded(last_attempt, event)
+
+
+def _accepted_launcher_handoff():
+    """Accept only the local snapshot that matches the installed launcher."""
+    if not os.environ.get("LIVEAUDIO_LAUNCHER"):
+        return None
+    location = read_install_location() or {}
+    install_root = location.get("install_root")
+    if not isinstance(install_root, str):
+        return None
+    return validate_handoff(handoff_path(install_root), install_root, APP_VERSION)
 
 
 def _obs_overlay_url(port: int) -> str:
@@ -278,10 +311,18 @@ class LiveASRApp(ctk.CTk):
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
         self.config_data = load_config()
+        self._first_run_handoff = _accepted_launcher_handoff()
         # --- CONFIGURACIÓN DE IDIOMA ---
-        lang = self.config_data.get("language")
+        lang = valid_language(self.config_data.get("language"))
+        if self._first_run_handoff is not None:
+            location_language = valid_language((read_install_location() or {}).get("language"))
+            if location_language is not None:
+                lang = location_language
+                if self.config_data.get("language") != lang:
+                    self.config_data["language"] = lang
+                    save_config(self.config_data)
         if not lang:
-            lang = autodetect_language()
+            lang = valid_language((read_install_location() or {}).get("language")) or autodetect_language()
         set_language(lang)
 
         self.draft_config = copy.deepcopy(self.config_data)
@@ -307,6 +348,10 @@ class LiveASRApp(ctk.CTk):
         self._advanced_visible = False
         self.status_labels = {}
         self._asr_is_downloading = False
+        self._asr_attempt = 1
+        self.btn_asr_retry = None
+        self._vad_attempt = 1
+        self.btn_vad_retry = None
         self._pending_update_tag = None
         self._dismissed_update_tag = None
 
@@ -318,8 +363,14 @@ class LiveASRApp(ctk.CTk):
         self.build_welcome_screen()
         self.build_main_screen()
         self.screen_welcome.grid(row=0, column=0, sticky="nsew")
+        self._first_run_phase = None
+        self.after_idle(self._mark_first_run_painted)
         self.after(100, self.process_logs)
         self.after(1000, self.check_updates)
+
+    def _mark_first_run_painted(self):
+        """Phase 4 belongs to the app only after its own widgets can paint."""
+        self._first_run_phase = 4
 
     @property
     def shared_config(self):
@@ -877,6 +928,26 @@ class LiveASRApp(ctk.CTk):
         )
         self.lbl_whisper_context_help.pack(anchor="w", padx=10, pady=(0, 0))
 
+        # Prewarm (track firstuse T4/D5, REQ-8): same "prewarm" config key as
+        # --prewarm/--lazy (default true, unchanged). Explicit first-use
+        # download/network copy from the approved ES/EN strings.
+        self.var_prewarm = ctk.BooleanVar(value=self.config_data.get("prewarm", True))
+        self.switch_prewarm = ctk.CTkSwitch(
+            tab_model,
+            text=t("prewarm_toggle_label"),
+            variable=self.var_prewarm,
+            command=self.on_setting_change,
+        )
+        self.switch_prewarm.pack(anchor="w", padx=10, pady=(10, 0))
+        ctk.CTkLabel(
+            tab_model,
+            text=t("prewarm_toggle_desc"),
+            wraplength=260,
+            justify="left",
+            font=ctk.CTkFont(size=10),
+            text_color="#AEB8BC",
+        ).pack(anchor="w", padx=10, pady=(0, 15))
+
         # --- Sliders de Latencia ---
         ctk.CTkLabel(tab_audio, text=t("latency_control"), font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=10, pady=(10, 0))
         
@@ -1129,6 +1200,29 @@ class LiveASRApp(ctk.CTk):
             pill.grid(row=0, column=idx, sticky="ew", padx=3, pady=4)
             self.status_labels[key] = pill
 
+        # Manual ASR retry (track firstuse T2/D3): visible only on
+        # stalled/failed. No auto-retry: the user presses Reintentar.
+        self.btn_asr_retry = ctk.CTkButton(
+            frame_status,
+            text=t("asr_retry_action"),
+            height=28,
+            fg_color="#7A4B00",
+            hover_color="#9A6100",
+            command=self.request_asr_retry,
+        )
+        self.btn_asr_retry.grid(row=1, column=2, sticky="ew", padx=3, pady=(0, 4))
+        self.btn_asr_retry.grid_forget()
+        self.btn_vad_retry = ctk.CTkButton(
+            frame_status,
+            text=t("vad_retry_action"),
+            height=28,
+            fg_color="#7A4B00",
+            hover_color="#9A6100",
+            command=self.request_vad_retry,
+        )
+        self.btn_vad_retry.grid(row=1, column=1, sticky="ew", padx=3, pady=(0, 4))
+        self.btn_vad_retry.grid_forget()
+
         frame_privacy = ctk.CTkFrame(frame_der, fg_color="#1f2a2d")
         frame_privacy.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 8))
         frame_privacy.grid_columnconfigure(0, weight=1)
@@ -1229,6 +1323,7 @@ class LiveASRApp(ctk.CTk):
         draft["obs_enabled"] = self.var_obs_enabled.get()
         draft["save_transcript_enabled"] = self.var_save_transcript.get()
         draft["save_vtt_enabled"] = self.var_save_vtt.get()
+        draft["prewarm"] = self.var_prewarm.get()
         # Reuse the single source of ws_port validation (clamped to [1, 65535])
         draft["ws_port"] = _normalize_config({"ws_port": self.var_ws_port.get()})[0]["ws_port"]
         # Preservar prompts de ambos idiomas desde draft_config (acumula cambios),
@@ -1284,6 +1379,7 @@ class LiveASRApp(ctk.CTk):
         self.var_obs_enabled.set(config.get("obs_enabled", True))
         self.var_save_transcript.set(config.get("save_transcript_enabled", True))
         self.var_save_vtt.set(config.get("save_vtt_enabled", True))
+        self.var_prewarm.set(config.get("prewarm", True))
         self.var_ws_port.set(str(config.get("ws_port", 8765)))
         # Cargar el prompt según el idioma de voz activo
         asr_lang = config.get("asr_language", "es")
@@ -1715,17 +1811,123 @@ class LiveASRApp(ctk.CTk):
                     found_key = "status_audio_listening"
                     
             translated_text = t(found_key) if found_key else raw_text
-            self.set_status(status_key, translated_text, state)
-            
+            if status_key not in ("asr", "vad"):
+                self.set_status(status_key, translated_text, state)
+
             if status_key == "asr":
+                from liveaudio.core.provisioning import HONEST_ASR_STATES, PROVISION_I18N_KEYS
                 was_downloading = getattr(self, "_asr_is_downloading", False)
-                
-                # Deshabilitar si está explícitamente en carga o descarga
-                is_loading = "cargando" in raw_text.lower() or "descargando" in raw_text.lower()
-                self._asr_is_downloading = event.get("is_download", is_loading)
-                
+
+                phase = event.get("phase")
+                honest = phase if phase in HONEST_ASR_STATES else None
+                if honest is None and phase == "importing":
+                    # REQ-6 pre-import heartbeat: child alive, engine not yet
+                    # emitting. Render as loading, never blank the pill.
+                    honest = "loading"
+                if honest is None and state in HONEST_ASR_STATES:
+                    honest = state
+                percent = event.get("percent")
+                code = event.get("code")
+                attempt = event.get("attempt")
+                if attempt is not None:
+                    # Consume attempt: stale events from a previous attempt
+                    # never inherit their old % over the fresh attempt.
+                    if _asr_event_superseded(self._asr_attempt, event):
+                        return
+                    try:
+                        self._asr_attempt = max(int(self._asr_attempt or 1), int(attempt))
+                    except (TypeError, ValueError):
+                        pass
+
+                if honest is not None or percent is not None or code is not None:
+                    # Structured path (T1): render from phase/percent/code keys.
+                    # Never reverse-match the human-readable text here.
+                    if honest == "downloading":
+                        if percent is not None:
+                            try:
+                                pct = "%g" % float(percent)
+                            except (TypeError, ValueError):
+                                pct = "?"
+                            if pct == "?":
+                                translated_text = t("status_asr_downloading_indeterminate")
+                            else:
+                                translated_text = t("status_asr_downloading", percent=pct)
+                        else:
+                            translated_text = t("status_asr_downloading_indeterminate")
+                        pill_state = "active"
+                    elif honest == "transcribing":
+                        translated_text = t("status_asr_transcribing")
+                        pill_state = "active"
+                    elif honest == "loading":
+                        translated_text = t("status_asr_loading")
+                        pill_state = "active"
+                    elif honest == "ready":
+                        translated_text = t("status_asr_ready")
+                        pill_state = "ok"
+                    elif honest == "stalled":
+                        translated_text = t("status_asr_stalled")
+                        pill_state = "warn"
+                    elif honest == "failed":
+                        hint_key = PROVISION_I18N_KEYS.get(code, "provision_unknown_hint")
+                        translated_text = t(hint_key)
+                        pill_state = "error"
+                        self.print_log(f"[IA] {code or 'provision-unknown'}: {translated_text}")
+                    else:
+                        translated_text = t("status_asr_loading")
+                        pill_state = "active"
+                    self.set_status(status_key, translated_text, pill_state)
+
+                    self._asr_is_downloading = bool(
+                        honest == "downloading" or event.get("is_download", False))
+                    # Manual retry offer only on actionable states.
+                    try:
+                        if honest in ("stalled", "failed"):
+                            self.btn_asr_retry.grid(row=1, column=2, sticky="ew", padx=3, pady=(0, 4))
+                        else:
+                            self.btn_asr_retry.grid_forget()
+                    except Exception:
+                        pass
+                else:
+                    # LEGACY fallback for old child events without structured
+                    # fields: keep the is_download flag, literal sniff last.
+                    is_loading = "cargando" in raw_text.lower() or "descargando" in raw_text.lower()
+                    self._asr_is_downloading = event.get("is_download", is_loading)
+                    self.set_status(status_key, translated_text, state)
+
                 if was_downloading != self._asr_is_downloading:
                     self.refresh_profile_status()
+
+            elif status_key == "vad":
+                attempt = event.get("attempt")
+                if attempt is not None:
+                    if _vad_event_superseded(self._vad_attempt, event):
+                        return
+                    try:
+                        self._vad_attempt = max(int(self._vad_attempt or 1), int(attempt))
+                    except (TypeError, ValueError):
+                        pass
+                phase = event.get("phase")
+                code = event.get("code")
+                if phase == "provisioning":
+                    translated_text = t("status_vad_preparing")
+                    pill_state = "active"
+                elif phase == "ready":
+                    translated_text = t("status_vad_ready")
+                    pill_state = "ok"
+                elif phase == "failed":
+                    from liveaudio.core.provisioning import PROVISION_I18N_KEYS
+                    translated_text = t(PROVISION_I18N_KEYS.get(code, "provision_unknown_hint"))
+                    pill_state = "error"
+                else:
+                    pill_state = state
+                self.set_status("vad", translated_text, pill_state)
+                try:
+                    if phase == "failed":
+                        self.btn_vad_retry.grid(row=1, column=1, sticky="ew", padx=3, pady=(0, 4))
+                    else:
+                        self.btn_vad_retry.grid_forget()
+                except Exception:
+                    pass
 
         elif event_type == "ws_port":
             port = int(event.get("port", 8765))
@@ -1870,6 +2072,70 @@ class LiveASRApp(ctk.CTk):
         self.p_ia.start()
         self.after(3000, self.refresh_profile_status)
         return self.p_audio.is_alive() and self.p_ia.is_alive()
+
+    def request_asr_retry(self):
+        """Manual ASR retry (track firstuse T2/D3).
+
+        New attempt: % resets to 0 exactly once (fresh child), then monotonic
+        per attempt. Manual only — never auto-retried.
+        """
+        try:
+            current = int(self.shared_config.get("asr_attempt", self._asr_attempt or 1))
+        except (TypeError, ValueError):
+            current = self._asr_attempt or 1
+        new_attempt = current + 1
+        try:
+            self.shared_config["asr_attempt"] = new_attempt
+        except Exception:
+            pass
+        self._asr_attempt = new_attempt
+        self.set_status("asr", t("status_asr_loading"), "active")
+        try:
+            if self.btn_asr_retry is not None:
+                self.btn_asr_retry.grid_forget()
+        except Exception:
+            pass
+        if self.is_running:
+            self.hot_swap_engine()
+
+    def request_vad_retry(self):
+        """Replace only a verified-dead, pre-ready audio producer.
+
+        The ASR child and its queue remain intact. A live producer is never
+        force-replaced because it could still write to the shared queue.
+        """
+        if not self.is_running or self.p_audio is None:
+            return False
+        try:
+            if self.p_audio.is_alive():
+                self.set_status("vad", t("vad_full_restart_required"), "warn")
+                self.print_log("[VAD] producer is still alive; full restart required")
+                return False
+            self.p_audio.join(timeout=0)
+            if self.p_audio.is_alive():
+                self.set_status("vad", t("vad_full_restart_required"), "warn")
+                return False
+        except Exception:
+            self.set_status("vad", t("vad_full_restart_required"), "warn")
+            return False
+        self._vad_attempt += 1
+        try:
+            self.shared_config["vad_attempt"] = self._vad_attempt
+        except Exception:
+            pass
+        from liveaudio.core.workers import run_audio
+        self.p_audio = mp.Process(
+            target=run_audio,
+            args=(self.audio_queue, self.shared_config, self.log_queue),
+            daemon=True,
+        )
+        self.p_audio.start()
+        self.set_status("vad", t("status_vad_preparing"), "active")
+        try:
+            self.btn_vad_retry.grid_forget()
+        except Exception:
+            pass
+        return self.p_audio.is_alive()
 
     def toggle_system(self):
         if not self.is_running and self._ui_ready:

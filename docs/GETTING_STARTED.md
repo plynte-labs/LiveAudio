@@ -150,6 +150,44 @@ Separa cada palabra o frase con comas. Puedes personalizarla a tu gusto.
 
 ---
 
+## 5.5. Primera descarga del modelo: estados, códigos y tiempos
+
+En un equipo limpio, el pill ASR muestra el estado real de la descarga de Whisper
+(en vez de un "cargando" genérico):
+
+| Estado | Significado | Qué hacer |
+|---|---|---|
+| `ASR: descargando N%` | Descarga con progreso real (0–100, monotónico por intento) | Esperar; el % nunca retrocede salvo al Reintentar |
+| `ASR: descargando…` | Descargando pero sin % parseable (indeterminado) | Esperar; nunca es un 0% congelado |
+| `ASR: cargando` / `ASR: transcribiendo` | Cargando el modelo / calentando | Esperar |
+| `ASR: detenido. Pulsa Reintentar.` | 120–180 s sin ningún evento/progreso (stalled) | Pulsar **Reintentar** (intento nuevo, % a 0 una vez, luego monotónico) |
+| `ASR: listo` | Modelo cargado | Stremear |
+| Error + código | Fallo de aprovisionamiento (ver tabla) | Seguir el hint de una línea y Reintentar |
+
+Códigos `provision-*` (remediation de una línea, sin tracebacks en la UI):
+
+| Código | Qué hacer |
+|---|---|
+| `model-not-found` (solo ante ausencia real) | Revisa el nombre del modelo y reintenta |
+| `provision-cache-corrupt` | Caché dañada — reintenta para redescargar |
+| `provision-network` | Sin conexión — revisa tu red y reintenta |
+| `provision-auth` | Acceso denegado — revisa credenciales y reintenta |
+| `provision-disk-full` | Disco lleno — libera espacio y reintenta |
+| `provision-timeout-stalled` | La descarga tardó demasiado — reintenta |
+| `provision-tls` | Fallo de conexión segura — reintenta |
+| `provision-unknown` | Error inesperado al preparar el modelo |
+
+Tiempos esperados por modelo (orientativo; el tiempo es proporcional a tu conexión —
+guía a ~50 Mbps): `tiny` ~150 MB ≈ 30 s · `base` ~300 MB ≈ 1 min ·
+`small` ~480 MB ≈ 1.5 min · `turbo` ~1.5 GB ≈ 4–5 min · Silero VAD ~2 MB ≈
+instantáneo. Después, la app funciona totalmente offline.
+
+> El switch **Precalentar modelo al iniciar** (pestaña Modelo) controla la descarga en
+> primer uso (usa red). Viene activo por defecto; es la misma opción que
+> `--prewarm` / `--lazy` del modo servicio.
+
+---
+
 ## 6. Integrar con OBS Studio
 
 Consulta la guía completa en [WEBSOCKET_OBS.md](WEBSOCKET_OBS.md).
@@ -262,6 +300,14 @@ Si necesitás más detalle puntual, subí `diagnostics_level` a `deep` temporalm
 ---
 
 ## 10. Consejos de rendimiento
+
+## 10.1 Recorrido unificado de primera ejecución
+
+El checkpoint actual alinea el launcher y la app con la misma secuencia: seleccion de instalacion, uv, codigo, dependencias, apertura de LiveAudio, VAD, Whisper y listo para iniciar. El handoff y la copia de fases estan presentes, pero la experiencia unificada completa sigue pendiente de runtime empaquetado, revision, VM y evidencia manual. **Abriendo LiveAudio** significa que la ventana ya es visible; no significa que Whisper este listo.
+
+`uv sync`, VAD y la carga posterior a la descarga son indeterminados cuando no hay evidencia real por bytes o tqdm; el fix de porcentajes globales esta registrado, pero aun requiere validacion en Python 3.11 y runtime empaquetado. La implementacion candidata clasifica fallos VAD como `provision-network`, `provision-tls` o `provision-cache-corrupt`; **Reintentar fase** y su limite de productor requieren evidencia manual antes de considerarse cerrados.
+
+
 
 - **Cierra programas innecesarios** mientras streameas para liberar CPU/GPU.
 - **Usa SSD** para la carpeta de sesiones; escribir VTT/JSONL en disco lento puede causar micro-lag.

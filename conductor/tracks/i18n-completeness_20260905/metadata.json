@@ -1,0 +1,8 @@
+{
+  "track_id": "i18n-completeness_20260905",
+  "type": "bug",
+  "status": "new",
+  "created_at": "2026-09-05T06:15:00Z",
+  "updated_at": "2026-09-05T06:15:00Z",
+  "description": "Exploratory-audit proposal: ES/EN completeness (stable_streaming silent no-op key mismatch, Spanish-only and English-only remainders, keyed dynamic status events replacing reverse-matched literals, save_config=False honesty). Read-only findings from Engram #6431/session #6433. PO approval pending; nothing implemented."
+}

@@ -239,6 +239,39 @@ liveaudio-service --parent-pid <PID> [--health-file <path>]
 
 > **Note:** reader-side auto-discovery lives in the VoiceAI unit (`feature/liveaudio-service-client`), AFTER this LiveAudio unit. Suggested order: LiveAudio first, VoiceAI second. This track ships the LiveAudio side only.
 
+## First-use model download: states, codes, times
+
+On a clean machine the ASR pill (GUI) and `asr_state` (service) are honest about
+Whisper provisioning instead of a generic loading spinner:
+
+| State | What it means | What to do |
+|---|---|---|
+| `downloading N%` | Model downloading with real progress (0–100, monotonic per attempt) | Wait; `N%` never moves backward except on manual retry |
+| `downloading…` | Downloading but progress unparseable (indeterminate fallback) | Wait; never a frozen 0% |
+| `loading` / `transcribing` | Model loading / warming up | Wait |
+| `stalled` | 120–180 s with zero events/progress | Press **Retry** (new attempt, `%` restarts once, then monotonic) |
+| `ready` | Model loaded | Stream |
+| `failed` + code | Provisioning failed (see codes below) | Follow the one-line hint, then Retry |
+
+Failure codes (`provision-*`, one-line remediation, no tracebacks in UI):
+
+| Code | Remediation |
+|---|---|
+| `model-not-found` (real absence only) | Check the model name and retry |
+| `provision-cache-corrupt` | Retry to re-download |
+| `provision-network` | Check your network and retry |
+| `provision-auth` | Check credentials and retry |
+| `provision-disk-full` | Free disk space and retry |
+| `provision-timeout-stalled` | Download took too long — retry |
+| `provision-tls` | Secure connection failed — retry |
+| `provision-unknown` | Unexpected error while preparing the model |
+
+Expected first-download sizes (time ∝ your connection; rough guide at ~50 Mbps:
+`tiny` ~150 MB ≈ 30 s · `base` ~300 MB ≈ 1 min · `small` ~480 MB ≈ 1.5 min ·
+`turbo` ~1.5 GB ≈ 4–5 min · Silero VAD ~2 MB ≈ instant). After that the app works
+fully offline. Service integrators: `asr_state_legacy` collapses these to
+`loading/ready/failed` for OpenCohost compat; a manual retry is a new `attempt`.
+
 ---
 
 ## Troubleshooting
@@ -277,6 +310,21 @@ Press **Export diagnostics** in the main UI to generate a local JSON report.
 ---
 
 ## Contributing
+
+## Unified first-run experience
+
+The current checkpoint is aligning installation and first model preparation
+around one ES/EN checklist: installation selection, uv, LiveAudio code,
+dependencies, opening the app, VAD, Whisper, and ready to start. The handoff
+and phase vocabulary are present, but the full unified UX is not closed: clean
+packaged runtime, review, VM, and manual evidence remain pending. The launcher
+percentage fix is recorded; indeterminate work must never use a simulated
+percentage.
+
+The candidate includes VAD `provision-network`, `provision-tls`, and
+`provision-cache-corrupt` remediation and a conservative retry boundary. Full
+VAD/supervisor integration and no-burst behavior still require supported-runtime
+and manual evidence. No OBS subtitle should be sent during provisioning recovery.
 
 Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
 

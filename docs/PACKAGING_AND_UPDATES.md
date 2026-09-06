@@ -148,6 +148,23 @@ matches, the launcher reports "already up to date" and exits.
 
 ## 5. Troubleshooting
 
+## 5.1 Unified first-run boundary (checkpoint)
+
+The candidate deliberately uses two sequential windows. The launcher can
+report that **Opening LiveAudio** has reached a visible window, but this never
+means Whisper is ready. It writes a local atomic handoff before starting the
+app; malformed or stale handoff data is ignored safely by the app. This
+boundary is implemented in the current checkpoint, but its clean packaged
+runtime and manual E2E proof are still pending.
+
+`uv sync`, VAD preparation, and post-download model loading are indeterminate
+unless the underlying operation provides real byte or tqdm evidence. The
+launcher does not download Whisper, keep an IPC connection open, or present
+global 100% as transcription readiness.
+
+`--reinstall` replaces `app/` and its virtual environment only. It preserves
+`hf-cache` unconditionally; this MVP has no model-purge command or UI.
+
 | Problem | What to do |
 |---|---|
 | Interrupted download of the big CUDA install | Just re-run the launcher. `uv` caches per-wheel, so completed wheels are not re-downloaded; the source zip is re-fetched and checksum-verified. |

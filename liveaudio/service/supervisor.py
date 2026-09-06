@@ -16,6 +16,16 @@ import os
 import threading
 import time
 
+from liveaudio.core.provisioning import (
+    ABSOLUTE_STARTUP_SEC,
+    DEFAULT_STALL_SEC,
+    HONEST_ASR_STATES,
+    STALL_MAX_SEC,
+    STALL_MIN_SEC,
+    asr_state_legacy,
+    clamp_percent,
+    monotonic_percent,
+)
 from liveaudio.service.errors import ServiceError
 from liveaudio.service.watchdog import is_parent_alive
 
@@ -92,6 +102,26 @@ class ProcessSupervisor:
         self.effective_port = None
         self.prewarm = bool(config.get("prewarm", prewarm))
         self.asr_state = "starting" if self.prewarm else "unavailable"  # pre-first-client ~= stt_unreachable
+        # First-use startup progress (T1-T3): honest provisioning state.
+        self.asr_phase = None
+        self.asr_percent = None
+        self.asr_attempt = 1
+        self.asr_code = None
+        try:
+            stall = float(config.get("startup_stall_sec", DEFAULT_STALL_SEC))
+        except (TypeError, ValueError):
+            stall = DEFAULT_STALL_SEC
+        self.stall_sec = max(STALL_MIN_SEC, min(STALL_MAX_SEC, stall))
+        try:
+            absolute = float(config.get("absolute_startup_sec", ABSOLUTE_STARTUP_SEC))
+        except (TypeError, ValueError):
+            absolute = ABSOLUTE_STARTUP_SEC
+        self.absolute_startup_sec = max(self.stall_sec, absolute)
+        self._startup_began_at = None
+        self._last_asr_event_at = None
+        self._stalled_emitted = False
+        self._startup_advisory_emitted = False
+        self._last_emitted_percent = None
         self.state = "starting"
         self.error_code = None
         self.manager = None
@@ -184,7 +214,12 @@ class ProcessSupervisor:
         self.procs["asr"] = p_asr
         self.audio_started = True
         self.asr_state = "starting"
-        self.emitter.emit("asr_state", {"asr_state": self.asr_state})
+        now = self._clock()
+        if self._startup_began_at is None:
+            self._startup_began_at = now
+        self._last_asr_event_at = now
+        self.emitter.emit("asr_state", {"asr_state": self.asr_state,
+                                        "asr_state_legacy": asr_state_legacy("loading")})
 
     def _maybe_start_lazy(self):
         if self.audio_started:
@@ -215,8 +250,116 @@ class ProcessSupervisor:
         except Exception:
             return False
 
+    @staticmethod
+    def _honest_state_from(msg):
+        """Resolve the honest asr_state for a status event (T1/D2).
+
+        Prefers the structured ``phase``; falls back to the legacy
+        active/ok/error wire for old child events, using is_download to keep
+        in-flight downloads honest instead of collapsing them to loading.
+        """
+        phase = msg.get("phase")
+        if phase == "importing":
+            # REQ-6 pre-import heartbeat (workers.run_asr): the child is
+            # alive but hasn't reached engine status emission yet. Honest
+            # "loading" + watchdog clock refresh; silence since provisioning
+            # start still trips stalled-import in _check_provisioning_watchdog.
+            return "loading"
+        if phase in HONEST_ASR_STATES:
+            return phase
+        if msg.get("percent") is not None or msg.get("is_download"):
+            return "downloading"
+        state = msg.get("state")
+        if state in HONEST_ASR_STATES:
+            return state
+        return {"active": "loading", "ok": "ready", "error": "failed"}.get(state)
+
+    def _ingest_asr_status(self, msg):
+        honest = self._honest_state_from(msg)
+        if not honest:
+            return
+        # F1 (D3): consume attempt. A delayed event from a previous attempt
+        # must never overwrite the fresh attempt's display (no inherited
+        # stale % jump, e.g. 0->77 after a manual retry). Missing or
+        # unparseable attempt counts as current (applies) — same rule as
+        # the GUI guard (_asr_event_superseded in app.py). A stale event
+        # touches nothing: no %, no watchdog clock, no emit.
+        try:
+            ev_attempt = msg.get("attempt", None)
+            if ev_attempt is not None:
+                ev_attempt = int(ev_attempt)
+                current = int(self.asr_attempt or 0)
+                if ev_attempt < current:
+                    return
+                if ev_attempt > current:
+                    self.asr_attempt = ev_attempt
+        except (TypeError, ValueError, AttributeError):
+            pass
+        now = self._clock()
+        self._last_asr_event_at = now
+        raw_percent = msg.get("percent")
+        if raw_percent is not None:
+            try:
+                candidate = clamp_percent(float(raw_percent))
+            except (TypeError, ValueError):
+                candidate = None
+            if candidate is not None:
+                previous = self.asr_percent if self.asr_percent is not None else 0.0
+                self.asr_percent = monotonic_percent(previous, candidate)
+        elif honest == "downloading" and self.asr_percent is None:
+            self.asr_percent = None  # indeterminate fallback: no frozen 0%
+        if msg.get("code") is not None:
+            self.asr_code = msg.get("code")
+        elif honest == "failed":
+            # Runtime failure without a provisioning code: never show a stale
+            # code from an earlier provisioning phase (GUI falls back to
+            # provision-unknown hint).
+            self.asr_code = None
+        elif honest != "stalled":
+            self.asr_code = None
+        if honest in ("downloading", "loading", "transcribing"):
+            # Resumed progress clears a previous stall; ready clears latched flags.
+            if self._stalled_emitted and honest == "downloading":
+                self._stalled_emitted = False
+        if honest == "ready":
+            self._stalled_emitted = False
+            self._startup_advisory_emitted = False
+        if honest != self.asr_state:
+            self.asr_state = honest
+            self.asr_phase = honest
+            self._last_emitted_percent = None
+            self._emit_asr_state()
+        elif raw_percent is not None:
+            bucket = int(self.asr_percent) if self.asr_percent is not None else None
+            if bucket != self._last_emitted_percent:
+                self._emit_asr_state()
+
+    def _emit_asr_state(self):
+        if self.asr_percent is not None:
+            self._last_emitted_percent = int(self.asr_percent)
+        fields = {
+            "asr_state": self.asr_state,
+            "asr_state_legacy": asr_state_legacy(self.asr_state),
+            "phase": self.asr_phase or self.asr_state,
+            "attempt": self.asr_attempt,
+            "code": self.asr_code,
+        }
+        if self.asr_percent is not None:
+            fields["percent"] = float(self.asr_percent)
+        if self.asr_state == "downloading":
+            fields["is_download"] = True
+        self.emitter.emit("asr_state", fields)
+        self._write_health()
+
     def _pump_log_queue(self):
-        """Drain structured child signals (bounded). Never raises, never logs text."""
+        """Drain structured child signals (bounded). Never raises, never logs text.
+
+        Status events are prioritized over log noise: the tick drains up to
+        LOG_PUMP_MAX_PER_TICK messages via get_nowait (never blocks ASR) and
+        applies ASR status last-write-wins so a percent is never dropped
+        behind a burst of log lines.
+        """
+        pending_status = None
         for _ in range(LOG_PUMP_MAX_PER_TICK):
             try:
                 msg = self.log_queue.get_nowait()
@@ -236,14 +379,61 @@ class ProcessSupervisor:
                     })
                     self._write_health()
                 elif msg.get("type") == "status" and msg.get("key") == "asr":
-                    state = msg.get("state")
-                    mapped = {"active": "loading", "ok": "ready", "error": "failed"}.get(state)
-                    if mapped and mapped != self.asr_state:
-                        self.asr_state = mapped
-                        self.emitter.emit("asr_state", {"asr_state": self.asr_state})
-                        self._write_health()
+                    pending_status = msg  # status wins over interleaved logs
             except Exception:
                 continue
+        if pending_status is not None:
+            try:
+                self._ingest_asr_status(pending_status)
+            except Exception:
+                pass
+
+    def _check_provisioning_watchdog(self):
+        """Conservative startup/stall watchdog (T2/D3).
+
+        Stall (120-180s, default 150s) with zero events/progress while still
+        provisioning -> ``stalled`` + manual retry offer. Slow-but-progressing
+        only gets the advisory copy. NEVER kills: no terminate/kill path here,
+        independent of the process-liveness watchdog in _check_children.
+        """
+        if self._startup_began_at is None:
+            return
+        if self.asr_state not in ("starting", "downloading", "loading",
+                                  "transcribing", "stalled"):
+            return
+        now = self._clock()
+        last = self._last_asr_event_at if self._last_asr_event_at is not None else self._startup_began_at
+        if self.asr_state != "stalled" and (now - last) >= self.stall_sec:
+            self.asr_state = "stalled"
+            self.asr_phase = "stalled"
+            self.asr_code = "provision-timeout-stalled"
+            self._stalled_emitted = True
+            self._emit_asr_state()
+            return
+        if (not self._startup_advisory_emitted
+                and (now - self._startup_began_at) >= self.absolute_startup_sec
+                and self.asr_state != "stalled"):
+            self._startup_advisory_emitted = True
+            self.emitter.emit("warning", {"code": "provision-timeout-stalled",
+                                          "advisory": True,
+                                          "i18n_key": "status_asr_startup_slow"})
+
+    def request_asr_retry(self):
+        """Manual retry (D3): new attempt, % resets to 0 exactly once, then monotonic."""
+        self.asr_attempt = int(self.asr_attempt or 0) + 1
+        self.asr_percent = 0.0
+        self.asr_code = None
+        self._stalled_emitted = False
+        self._startup_advisory_emitted = False
+        self._last_emitted_percent = None
+        now = self._clock()
+        self._startup_began_at = now
+        self._last_asr_event_at = now
+        if self.asr_state in ("stalled", "failed"):
+            self.asr_state = "loading"
+            self.asr_phase = "loading"
+        self._emit_asr_state()
+        return self.asr_attempt
 
     def _check_children(self):
         if self._pending_restart_at is not None:
@@ -279,6 +469,12 @@ class ProcessSupervisor:
             raise ServiceError("parent-dead")
         self._pump_log_queue()
         self._maybe_start_lazy()
+        # REQ-6 (decided: option a, PO 2026-09-05): the ASR child emits a
+        # pre-import heartbeat (phase "importing" via put_nowait in
+        # workers.run_asr) before the heavy torch/faster-whisper import.
+        # It resolves to "loading" and refreshes the watchdog clock above;
+        # silence since provisioning start still trips stalled-import.
+        self._check_provisioning_watchdog()
         self._check_children()
         self._run_pending_restart()
 
@@ -315,6 +511,11 @@ class ProcessSupervisor:
             "base_port": self.base_port,
             "effective_port": self.effective_port,
             "asr_state": self.asr_state,
+            "asr_state_legacy": asr_state_legacy(self.asr_state),
+            "asr_phase": self.asr_phase or self.asr_state,
+            "asr_percent": self.asr_percent,
+            "asr_attempt": self.asr_attempt,
+            "asr_code": self.asr_code,
             "children": {name: self._is_alive(proc) for name, proc in self.procs.items()},
             "error_code": self.error_code,
         }

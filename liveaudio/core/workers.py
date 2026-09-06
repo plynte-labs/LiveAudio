@@ -12,6 +12,16 @@ child process actually runs it.
 
 
 def run_asr(*args):
+    # REQ-6 (option a, PO 2026-09-05): pre-import heartbeat. The heavy
+    # torch/faster-whisper import below can stall for minutes with zero
+    # events; prove the child is alive first via put_nowait (never blocks).
+    try:
+        log_queue = args[2] if len(args) > 2 else None
+        if log_queue is not None:
+            log_queue.put_nowait({"type": "status", "key": "asr",
+                                  "state": "active", "phase": "importing"})
+    except Exception:
+        pass
     from liveaudio.core.engine import asr_consumer
     asr_consumer(*args)
 

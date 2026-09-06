@@ -171,9 +171,14 @@ def _sanitize_text(text: str, max_chars: int = MAX_TRANSCRIPT_CHARS) -> str:
     return clean
 
 
-def _emit_status(log_queue, key, text, state="idle"):
+def _emit_status(log_queue, key, text, state="idle", **extras):
     try:
-        log_queue.put_nowait({"type": "status", "key": key, "text": text, "state": state})
+        event = {"type": "status", "key": key, "text": text, "state": state}
+        for field in ("phase", "percent", "attempt", "code",
+                      "is_download", "asr_state_legacy"):
+            if field in extras and extras[field] is not None:
+                event[field] = extras[field]
+        log_queue.put_nowait(event)
     except Exception:
         pass
 
@@ -306,12 +311,20 @@ def _transcribe_with_timeout(model, audio_chunk, timeout_sec=ASR_TRANSCRIBE_TIME
         return None, None
 
 class InterceptingWriter:
-    """Redirects stdout/stderr writes to the UI log queue, parsing tqdm progress bars."""
-    def __init__(self, log_queue, original_stream=None, prefix="[IA]"):
+    """Redirects stdout/stderr writes to the UI log queue, parsing tqdm progress bars.
+
+    Download percent travels ONLY as a structured ``status`` event on the
+    log_queue channel (phase/percent/attempt/code, put_nowait, throttled,
+    monotonic per attempt) — never via text_queue/WS subtitle payloads.
+    """
+    def __init__(self, log_queue, original_stream=None, prefix="[IA]", attempt=1):
         self.log_queue = log_queue
         self.original_stream = original_stream
         self.prefix = prefix
         self.buffer = ""
+        self.attempt = int(attempt or 1)
+        self._last_percent = None
+        self.last_progress_time = 0.0
 
     def write(self, data):
         if self.original_stream:
@@ -337,42 +350,72 @@ class InterceptingWriter:
                 self._handle_line(line)
 
     def _handle_progress(self, line):
+        from liveaudio.core.provisioning import (
+            asr_state_legacy,
+            clamp_percent,
+            monotonic_percent,
+            parse_tqdm_percent,
+        )
         line = line.strip()
         if not line:
             return
-        if "%" in line and "|" in line:
+        percent = parse_tqdm_percent(line) if ("%" in line and "|" in line) else None
+        if percent is not None:
+            percent = clamp_percent(percent)
+            if self._last_percent is not None:
+                percent = monotonic_percent(self._last_percent, percent)
+
+            current_time = time.time()
+            # Throttle: at most one structured emit per 0.1s for the same value;
+            # always emit when the percent actually advanced.
+            if (percent == self._last_percent
+                    and (current_time - getattr(self, 'last_progress_time', 0)) < 0.1):
+                return
+            self.last_progress_time = current_time
+            self._last_percent = percent
+
+            display = ("%g" % percent)
+            msg = f"{self.prefix} PROGRESO {display}%"
             parts = line.split('|')
             if len(parts) >= 3:
-                percent = parts[0].strip()
-                
-                current_time = time.time()
-                # Throttle updates to at most once per 0.1 seconds per percentage update
-                if (current_time - getattr(self, 'last_progress_time', 0)) < 0.1 and getattr(self, 'last_percent', None) == percent:
-                    return
-                self.last_progress_time = current_time
-                self.last_percent = percent
-                
                 stats_raw = parts[2].strip()
                 stats = stats_raw.split('[')[0].strip()
                 speed = ""
                 if ',' in stats_raw:
                     speed = stats_raw.split(',')[-1].replace(']', '').strip()
-                msg = f"{self.prefix} PROGRESO {percent}"
                 if stats:
                     msg += f" ({stats})"
                 if speed:
                     msg += f" @ {speed}"
-                self._emit(msg)
-                try:
-                    self.log_queue.put_nowait({"type": "status", "key": "asr", "text": f"ASR: descargando {percent}", "state": "active", "is_download": True})
-                except Exception:
-                    pass
-            else:
-                self._emit(f"{self.prefix} {line}")
-        else:
-            low = line.lower()
-            if any(k in low for k in ("fetching", "download", "model", "progress")):
-                self._emit(f"{self.prefix} {line}")
+            self._emit(msg)
+            try:
+                self.log_queue.put_nowait({
+                    "type": "status", "key": "asr",
+                    "text": f"ASR: descargando {display}%",
+                    "state": "downloading", "phase": "downloading",
+                    "percent": percent, "attempt": self.attempt,
+                    "code": None, "is_download": True,
+                    "asr_state_legacy": asr_state_legacy("downloading"),
+                })
+            except Exception:
+                pass
+            return
+        low = line.lower()
+        if any(k in low for k in ("fetching", "download", "model", "progress")):
+            self._emit(f"{self.prefix} {line}")
+            try:
+                self.log_queue.put_nowait({
+                    "type": "status", "key": "asr",
+                    "text": "ASR: descargando",
+                    "state": "downloading", "phase": "downloading",
+                    "percent": None, "attempt": self.attempt,
+                    "code": None, "is_download": True,
+                    "asr_state_legacy": asr_state_legacy("downloading"),
+                })
+            except Exception:
+                pass
+        elif "%" in line and "|" in line:
+            self._emit(f"{self.prefix} {line}")
 
     def _handle_line(self, line):
         line = line.strip()
@@ -417,6 +460,31 @@ class InterceptingWriter:
         return False
 
 
+def _scoped_unverified_context_for_provisioning(load_fn):
+    """Run a provisioning download with a scoped unverified TLS context (T4/D4).
+
+    Scope (exact): only the synchronous model-provisioning call runs under
+    ``ssl._create_unverified_context``; the previous default context is
+    always restored in ``finally`` — same save/restore pattern as
+    ``liveaudio/core/audio.py:157-179`` for the Silero VAD download.
+    No HTTP-stack migration. TLS failures surface as ``provision-tls``.
+    """
+    import ssl
+    orig_context = getattr(ssl, "_create_default_https_context", None)
+    try:
+        ssl._create_default_https_context = ssl._create_unverified_context
+    except Exception:
+        pass
+    try:
+        return load_fn()
+    finally:
+        if orig_context is not None:
+            try:
+                ssl._create_default_https_context = orig_context
+            except Exception:
+                pass
+
+
 def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queue, shared_config: dict, session_dir: str, diagnostics_store=None):
     import sys
     import io
@@ -428,14 +496,17 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
     # Redirigir stdout/stderr para capturar el progreso de descarga y advertencias en el log de la UI
     original_stdout = sys.stdout
     original_stderr = sys.stderr
-    sys.stdout = InterceptingWriter(log_queue, original_stream=original_stdout, prefix="[IA]")
-    sys.stderr = InterceptingWriter(log_queue, original_stream=original_stderr, prefix="[IA]")
-
-    import ssl
     try:
-        ssl._create_default_https_context = ssl._create_unverified_context
-    except Exception:
-        pass
+        _attempt = int((shared_config or {}).get("asr_attempt", 1))
+    except (TypeError, ValueError):
+        _attempt = 1
+    sys.stdout = InterceptingWriter(log_queue, original_stream=original_stdout, prefix="[IA]", attempt=_attempt)
+    sys.stderr = InterceptingWriter(log_queue, original_stream=original_stderr, prefix="[IA]", attempt=_attempt)
+
+    from liveaudio.core.provisioning import (
+        asr_state_legacy,
+        classify_provisioning_error,
+    )
 
     session_writer = None
     shutdown_started_at = None
@@ -451,8 +522,10 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
         if has_queued_audio_item and queued_audio_item is None:
             return
 
-        clean_model_name = shared_config["model_size"].split()[0] 
-        _emit_status(log_queue, "asr", "ASR: cargando", "active")
+        clean_model_name = shared_config["model_size"].split()[0]
+        _emit_status(log_queue, "asr", "ASR: cargando", "loading",
+                     phase="loading", is_download=False,
+                     asr_state_legacy=asr_state_legacy("loading"))
         _emit_log(log_queue, f"[IA] Cargando Whisper ({clean_model_name}) en {shared_config['device'].upper()}...")
         diagnostics_store = diagnostics_store or create_store_from_config(dict(shared_config))
         
@@ -467,20 +540,43 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
         model_load_started_at = time.time()
         try:
             # Intento 1: Carga instantánea desde caché local sin peticiones de red síncronas (0.6s)
-            model = WhisperModel(**dict(model_kwargs, local_files_only=True))
-        except Exception:
-            _emit_log(log_queue, f"[IA] Modelo no encontrado en caché local. Consultando Hugging Face...")
+            model = _scoped_unverified_context_for_provisioning(
+                lambda: WhisperModel(**dict(model_kwargs, local_files_only=True)))
+        except Exception as cache_err:
+            # "Modelo no encontrado" is RESERVED for real absence (D7): a broad
+            # cache exception must map to the provision-* catalog instead.
+            code = classify_provisioning_error(cache_err)
+            if code == "model-not-found":
+                _emit_log(log_queue, f"[IA] Modelo no encontrado en caché local. Consultando Hugging Face...")
+            else:
+                _emit_log(log_queue, f"[IA ERROR] provisioning {code} ({type(cache_err).__name__})")
             try:
-                model = WhisperModel(**model_kwargs)
+                model = _scoped_unverified_context_for_provisioning(
+                    lambda: WhisperModel(**model_kwargs))
             except Exception as load_err:
-                if shared_config["device"] == "cuda":
-                    _emit_log(log_queue, f"[IA ADVERTENCIA] Falló la carga en CUDA ({load_err}). Reintentando en CPU...")
+                code = classify_provisioning_error(load_err)
+                if shared_config["device"] == "cuda" and code != "provision-tls":
+                    _emit_log(log_queue, f"[IA ADVERTENCIA] Falló la carga en CUDA ({type(load_err).__name__}). Reintentando en CPU...")
                     cpu_kwargs = dict(model_kwargs, device="cpu", compute_type="int8", cpu_threads=int(shared_config.get("cpu_threads", 4)))
                     try:
-                        model = WhisperModel(**dict(cpu_kwargs, local_files_only=True))
+                        model = _scoped_unverified_context_for_provisioning(
+                            lambda: WhisperModel(**dict(cpu_kwargs, local_files_only=True)))
                     except Exception:
-                        model = WhisperModel(**cpu_kwargs)
+                        try:
+                            model = _scoped_unverified_context_for_provisioning(
+                                lambda: WhisperModel(**cpu_kwargs))
+                        except Exception as cpu_err:
+                            code = classify_provisioning_error(cpu_err)
+                            _emit_status(log_queue, "asr", "ASR: error", "failed",
+                                         phase="failed", code=code, is_download=False,
+                                         asr_state_legacy=asr_state_legacy("failed"))
+                            _emit_log(log_queue, f"[IA ERROR] provisioning {code} ({type(cpu_err).__name__})")
+                            raise cpu_err
                 else:
+                    _emit_status(log_queue, "asr", "ASR: error", "failed",
+                                 phase="failed", code=code, is_download=False,
+                                 asr_state_legacy=asr_state_legacy("failed"))
+                    _emit_log(log_queue, f"[IA ERROR] provisioning {code} ({type(load_err).__name__})")
                     raise load_err
 
         _record_asr_runtime_health(
@@ -488,7 +584,9 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
             model_name=clean_model_name,
             model_load_sec=time.time() - model_load_started_at,
         )
-        _emit_status(log_queue, "asr", "ASR: listo", "ok")
+        _emit_status(log_queue, "asr", "ASR: listo", "ready",
+                     phase="ready", is_download=False,
+                     asr_state_legacy=asr_state_legacy("ready"))
         _emit_log(log_queue, f"[IA] Modelo cargado y listo en {time.time() - model_load_started_at:.2f}s.")
 
         # --- GESTIÓN ESTRICTA DE SESIÓN ---
@@ -536,7 +634,9 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
             utterance_id = f"{int(created_at * 1000)}-{sequence}"
 
             start_time = time.time()
-            _emit_status(log_queue, "asr", "ASR: transcribiendo", "active")
+            _emit_status(log_queue, "asr", "ASR: transcribiendo", "transcribing",
+                         phase="transcribing", is_download=False,
+                         asr_state_legacy=asr_state_legacy("transcribing"))
 
             # Leer idioma de voz y prompt de contexto en caliente desde shared_config
             asr_lang = shared_config.get("asr_language") or "es"
@@ -556,7 +656,9 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
                     queue_delay=queue_delay,
                     timed_out=True,
                 )
-                _emit_status(log_queue, "asr", "ASR: listo", "ok")
+                _emit_status(log_queue, "asr", "ASR: listo", "ready",
+                             phase="ready", is_download=False,
+                             asr_state_legacy=asr_state_legacy("ready"))
                 continue
 
             # Leemos la blacklist en TIEMPO REAL desde la memoria compartida
@@ -619,7 +721,9 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
                         "obs_emitted": False,
                         "reason": "obs_disabled",
                     })
-                    _emit_status(log_queue, "asr", "ASR: listo", "ok")
+                    _emit_status(log_queue, "asr", "ASR: listo", "ready",
+                                 phase="ready", is_download=False,
+                                 asr_state_legacy=asr_state_legacy("ready"))
                     continue
 
                 # Empaquetamos enviando el estilo actualizado en TIEMPO REAL
@@ -705,11 +809,16 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
                         "reason": "backlog_policy",
                     })
                     _emit_log(log_queue, f"[IA] Subtitulo atrasado {total_delay:.1f}s guardado; omitido en OBS por politica live.")
-            _emit_status(log_queue, "asr", "ASR: listo", "ok")
+            _emit_status(log_queue, "asr", "ASR: listo", "ready",
+                         phase="ready", is_download=False,
+                         asr_state_legacy=asr_state_legacy("ready"))
 
     except Exception as e:
-        _emit_status(log_queue, "asr", "ASR: error", "error")
-        _emit_log(log_queue, f"[IA ERROR] {str(e)}")
+        _emit_status(log_queue, "asr", "ASR: error", "failed",
+                     phase="failed", code=classify_provisioning_error(e),
+                     is_download=False,
+                     asr_state_legacy=asr_state_legacy("failed"))
+        _emit_log(log_queue, f"[IA ERROR] {type(e).__name__}")
     finally:
         shutdown_started_at = time.time()
         if session_writer is not None:

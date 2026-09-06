@@ -12,6 +12,7 @@ import sounddevice as sd
 import torch
 import warnings
 from liveaudio.core.diagnostics import create_store_from_config
+from liveaudio.core.provisioning import classify_provisioning_error
 from liveaudio.utils.streams import make_streams_encoding_safe
 # La enumeración de dispositivos vive en un módulo libre de torch para que la
 # GUI pueda listarlos sin importar torch. Se reexporta aquí por compatibilidad
@@ -30,6 +31,45 @@ VAD_THRESHOLD = 0.5  # Probabilidad mínima para considerar que hay voz (0.0 a 1
 # 500 chunks * 32ms = 16 segundos de buffer. Más que suficiente para absorber
 # cualquier pico de CPU sin perder audio.
 RING_BUFFER_MAX_CHUNKS = 500
+
+
+class VadProvisionHeartbeat:
+    """Emit indeterminate VAD liveness without blocking capture or downloads."""
+
+    def __init__(self, emit, interval=5.0, attempt=1):
+        self._emit = emit
+        self._interval = max(float(interval), 0.01)
+        self._attempt = attempt
+        self._stopped = threading.Event()
+        self._thread = None
+
+    def _tick(self):
+        while not self._stopped.wait(self._interval):
+            try:
+                self._emit({
+                    "type": "status", "key": "vad", "text": "VAD: preparing",
+                    "state": "active", "phase": "provisioning", "attempt": self._attempt,
+                })
+            except Exception:
+                pass
+
+    def start(self):
+        if self._thread is not None:
+            return
+        try:
+            self._emit({
+                "type": "status", "key": "vad", "text": "VAD: preparing",
+                "state": "active", "phase": "provisioning", "attempt": self._attempt,
+            })
+        except Exception:
+            pass
+        self._thread = threading.Thread(target=self._tick, name="VAD-Provision-Heartbeat", daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._stopped.set()
+        if self._thread is not None:
+            self._thread.join(timeout=self._interval + 0.1)
 
 
 def vad_pre_buffer_chunks(vad_speech_pad_ms):
@@ -126,10 +166,12 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
                 pass
         print(msg)
 
-    def _status(key, text, state="idle"):
+    def _status(key, text, state="idle", **fields):
         if log_queue:
             try:
-                log_queue.put_nowait({"type": "status", "key": key, "text": text, "state": state})
+                event = {"type": "status", "key": key, "text": text, "state": state}
+                event.update(fields)
+                log_queue.put_nowait(event)
             except Exception:
                 pass
 
@@ -143,9 +185,18 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
     MAX_CHUNKS_LIMIT = int((SAMPLE_RATE / CHUNK_SIZE) * max_sec)
     PRE_BUFFER_CHUNKS = vad_pre_buffer_chunks(vad_speech_pad_ms)
 
-    _status("vad", "VAD: cargando", "active")
+    try:
+        vad_attempt = int(config.get("vad_attempt", 1))
+    except (TypeError, ValueError):
+        vad_attempt = 1
+    _status("vad", "VAD: preparing", "active", phase="provisioning", attempt=vad_attempt)
     _log("[Productor] Cargando modelo Silero VAD en CPU...")
     # El VAD es extremadamente ligero, lo corremos en CPU para reservar la VRAM de la GPU
+    heartbeat = VadProvisionHeartbeat(
+        lambda event: log_queue.put_nowait(event) if log_queue is not None else None,
+        attempt=vad_attempt,
+    )
+    heartbeat.start()
     try:
         hub_dir = torch.hub.get_dir()
         ruta_local_vad = os.path.join(hub_dir, 'snakers4_silero-vad_master')
@@ -154,29 +205,14 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
         if not os.path.exists(ruta_local_vad) or not os.path.exists(os.path.join(ruta_local_vad, 'hubconf.py')):
             _log("[Productor] Caché de Silero VAD no encontrado. Descargando automáticamente desde GitHub...")
             
-            # Desactivar verificación de certificados SSL temporalmente para evitar fallos en Windows limpio sin certificados actualizados
-            import ssl
-            orig_context = getattr(ssl, '_create_default_https_context', None)
-            try:
-                ssl._create_default_https_context = ssl._create_unverified_context
-            except Exception:
-                pass
-                
-            try:
-                model, utils = torch.hub.load(
-                    repo_or_dir='snakers4/silero-vad',
-                    model='silero_vad',
-                    source='github',
-                    force_reload=False,
-                    onnx=False,
-                    trust_repo=True
-                )
-            finally:
-                if orig_context is not None:
-                    try:
-                        ssl._create_default_https_context = orig_context
-                    except Exception:
-                        pass
+            model, utils = torch.hub.load(
+                repo_or_dir='snakers4/silero-vad',
+                model='silero_vad',
+                source='github',
+                force_reload=False,
+                onnx=False,
+                trust_repo=True
+            )
         else:
             model, utils = torch.hub.load(
                 repo_or_dir=ruta_local_vad,
@@ -186,11 +222,14 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
                 onnx=False,
                 trust_repo=True
             )
-        _status("vad", "VAD: listo", "ok")
+        _status("vad", "VAD: ready", "ok", phase="ready", attempt=vad_attempt)
     except Exception as e:
-        _log(f"[Productor] ERROR cargando modelo VAD: {e}. Verifica conexion a internet o descarga manualmente Silero VAD.")
-        _status("vad", "VAD: error de carga", "error")
+        code = classify_provisioning_error(e)
+        _log(f"[Productor] VAD provisioning failed: {code} ({type(e).__name__})")
+        _status("vad", "VAD: error", "error", phase="failed", code=code, attempt=vad_attempt)
         raise
+    finally:
+        heartbeat.stop()
     
     # Resolver dispositivo de audio
     device_index, extra_settings = _resolve_device_settings(config)
