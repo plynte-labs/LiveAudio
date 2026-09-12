@@ -1,3 +1,8 @@
+---
+name: liveaudio-product-strategy-chatgpt
+description: Use this skill for the LiveAudio subagent [Agent Product Strategy ChatGPT 5.5] when reviewing product strategy, UX innovation, subtitle modularity, OBS plugin vs browser-source tradeoffs, onboarding, accessibility, and creative product opportunities.
+---
+
 # Skill: liveaudio-product-strategy-chatgpt
 
 # [Agent Product Strategy ChatGPT 5.5]

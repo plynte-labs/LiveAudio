@@ -79,31 +79,31 @@ This file tracks major LiveAudio tracks. Each track should have its own detailed
 
 ---
 
-- [~] **Track: Automatic WebSocket Port Fallback & Overlay Endpoint Identification**
+- [x] **Track: Automatic WebSocket Port Fallback & Overlay Endpoint Identification**
   *Link: N/A - no Conductor track folder created; tracked via PR #12.*
   *Status: open PR #12 (`feat/ws-port-fallback` → `master`), commit `7d82cc5`. Server-side bind fallback walks `base..base+9` on `EADDRINUSE`/WinSock `10048` and announces the effective port to the GUI; the OBS overlay now identifies its server via a `hello` handshake before rendering anything, closing the "wrong socket" gap behind issue #9's incident. Closes issue #11. Manually validated end-to-end against real OBS.*
-  *Pending: review and merge.*
+  *Landed: via 4c34766/c2aae32 (CLOSED on GitHub, ancestor of master verified 2026-09-06).*
 
 ---
 
-- [~] **Track: Independent Output Sink Toggles & UI WebSocket Port**
+- [x] **Track: Independent Output Sink Toggles & UI WebSocket Port**
   *Link: N/A - no Conductor track folder created; tracked via PR #13.*
   *Status: open PR #13 (`feat/output-sink-toggles`), stacked on #12. Commit `491eb52`. Adds independent `save_transcript_enabled` / `save_vtt_enabled` disk toggles (transcript persistence was previously unconditional) and a `ws_port` field in the UI, warning when the base port changes since a pinned overlay only scans `base..base+9`.*
-  *Pending: merge of #12, then review and merge.*
+  *Landed: via 4c34766/c2aae32 (CLOSED on GitHub, ancestor of master verified 2026-09-06).*
 
 ---
 
-- [~] **Track: OBS Overlay Visibility Fix (Hidden-Scene Reveal)**
+- [x] **Track: OBS Overlay Visibility Fix (Hidden-Scene Reveal)**
   *Link: N/A - no Conductor track folder created; tracked via PR #14.*
   *Status: open PR #14 (`fix/overlay-visibility`), stacked on #12. Commit `4d6bac4`. Subtitles never revealed while the OBS scene was hidden because the reveal was gated behind `requestAnimationFrame`, which browsers suspend when the document is hidden, while the expiry `setTimeout`s kept firing. Replaced with a synchronous reflow force; added a `visibilitychange` hard reset so a resumed overlay never replays what was missed.*
-  *Pending: merge of #12, then review and merge.*
+  *Landed: via 4c34766/c2aae32 (CLOSED on GitHub, ancestor of master verified 2026-09-06).*
 
 ---
 
-- [~] **Track: Defer Manager Startup for Faster Launch**
+- [x] **Track: Defer Manager Startup for Faster Launch**
   *Link: N/A - no Conductor track folder created; tracked via PR #15.*
   *Status: open PR #15 (`perf/defer-manager-startup`), stacked on #13 (itself stacked on #12). Commit `315eeed`. Moved `mp.Manager()` out of `LiveASRApp.__init__` into a lazy accessor, removing a measured 455-478ms from every launch that was previously paid even when the user never pressed Start.*
-  *Pending: merge of #12 and #13, then review and merge.*
+  *Landed: via 4c34766/c2aae32 (CLOSED on GitHub, ancestor of master verified 2026-09-06).*
 
 ---
 
@@ -146,3 +146,10 @@ This file tracks major LiveAudio tracks. Each track should have its own detailed
 - [~] **Track: Unified first-run launcher and app experience**
   *Link: [./tracks/unified-first-run_20260905/](./tracks/unified-first-run_20260905/)*
   *Status: partial checkpoint reviewed (Sol/Luna/Luna/Terra); implementation, supported-runtime proof, VM v2, and manual E2E-1–E2E-10 remain unfinished. Native review exception authorized by PO (Engram #6471), not a native PASS. Depends on firstuse-startup-progress_20260905, whose M1–M8 remain pending.*
+
+---
+
+- [ ] **Track: WebSocket IPC Auth Token (Anti-Eavesdropping & Anti-Impersonation)**
+  *Link: [./tracks/ws-ipc-auth-token_20260911/](./tracks/ws-ipc-auth-token_20260911/)*
+  *Status: 🔲 proposed / spec drafted. Scope confirmed with PO (Option 1: mandatory in headless mode, optional toggle in desktop GUI). Scaffolding created in `conductor/tracks/ws-ipc-auth-token_20260911/` (`spec.md` + `plan.md`).*
+
