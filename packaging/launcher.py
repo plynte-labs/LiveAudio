@@ -185,7 +185,7 @@ def load_release_meta(src_dir=None):
 
 def _global_appdata_dir(platform, environ):
     if platform == "win32":
-        base = environ.get("APPDATA") or os.path.expanduser("~")
+        base = environ.get("APPDATA") or environ.get("LOCALAPPDATA") or os.path.expanduser("~")
         return os.path.join(base, "LiveAudio")
     else:
         base = environ.get("XDG_CONFIG_HOME") or os.path.expanduser(os.path.join("~", ".config"))
@@ -327,60 +327,194 @@ def _prompt_first_install(default_root, platform, environ):
 
 def _prompt_migration(old_root, platform, environ):
     import tkinter as tk
-    from tkinter import filedialog
+    from tkinter import filedialog, ttk
     import threading
+    import shutil
 
     result_path = [None]
-    
+
     def run_dialog():
         root = tk.Tk()
-        root.title("LiveAudio - Migración")
-        root.geometry("450x180")
-        root.eval('tk::PlaceWindow . center')
-        
+        root.title("LiveAudio - Migración de Instalación")
+        root.geometry("500x240")
+        root.configure(bg="#111b1e")
+        root.eval("tk::PlaceWindow . center")
+
         tk.Label(
-            root, text="Se ha detectado una instalación previa en tu disco C:.\nAhora puedes migrar LiveAudio a otra carpeta o disco.",
-            font=("Segoe UI", 10), justify="center"
-        ).pack(pady=20)
-        
-        btn_frame = tk.Frame(root)
-        btn_frame.pack(pady=10)
-        
+            root,
+            text="Instalación previa detectada en C:",
+            font=("Segoe UI", 12, "bold"),
+            bg="#111b1e",
+            fg="#e8f0ee",
+        ).pack(pady=(15, 5))
+
+        desc_label = tk.Label(
+            root,
+            text="Puedes migrar tus datos y modelos a otra carpeta o disco\n(ej. D:\\ o E:\\) para liberar espacio en el disco del sistema.",
+            font=("Segoe UI", 9),
+            bg="#111b1e",
+            fg="#a0b0b8",
+            justify="center",
+        )
+        desc_label.pack(pady=(0, 10))
+
+        status_label = tk.Label(
+            root,
+            text="",
+            font=("Segoe UI", 9),
+            bg="#111b1e",
+            fg="#3c9e66",
+            wraplength=460,
+            justify="center",
+        )
+        status_label.pack(pady=(0, 5))
+
+        progress_bar = ttk.Progressbar(
+            root,
+            orient="horizontal",
+            length=440,
+            mode="determinate",
+            maximum=100,
+        )
+
+        btn_frame = tk.Frame(root, bg="#111b1e")
+        btn_frame.pack(pady=(10, 15))
+
         def keep_c():
             result_path[0] = old_root
             write_install_location(old_root, os.path.join(old_root, "hf-cache"), platform, environ)
             root.destroy()
-            
+
+        def update_progress_ui(pct, msg):
+            progress_bar["value"] = pct
+            status_label.config(text=msg)
+
+        def on_migration_complete(new_root):
+            status_label.config(text="¡Migración completada con éxito!")
+            root.after(600, root.destroy)
+
+        def on_migration_error(err_msg):
+            import tkinter.messagebox as mb
+            mb.showerror("Error de migración", f"No se pudo completar la migración:\n{err_msg}", parent=root)
+            result_path[0] = old_root
+            root.destroy()
+
+        def start_background_migration(new_dir):
+            new_root = os.path.join(new_dir, "LiveAudio")
+            if os.path.abspath(new_root) == os.path.abspath(old_root):
+                keep_c()
+                return
+
+            keep_btn.config(state="disabled")
+            migrate_btn.config(state="disabled")
+            root.protocol("WM_DELETE_WINDOW", lambda: None)
+            progress_bar.pack(pady=(0, 10))
+
+            def worker():
+                try:
+                    os.makedirs(new_root, exist_ok=True)
+                    items_to_migrate = []
+                    for item in ("data", "hf-cache"):
+                        src = os.path.join(old_root, item)
+                        if os.path.exists(src):
+                            items_to_migrate.append(item)
+
+                    file_list = []
+                    total_bytes = 0
+                    for item in items_to_migrate:
+                        src_base = os.path.join(old_root, item)
+                        if os.path.isdir(src_base):
+                            for root_dir, _, files in os.walk(src_base):
+                                for f in files:
+                                    fp = os.path.join(root_dir, f)
+                                    try:
+                                        sz = os.path.getsize(fp)
+                                        rel = os.path.relpath(fp, old_root)
+                                        file_list.append((fp, os.path.join(new_root, rel), sz))
+                                        total_bytes += sz
+                                    except OSError:
+                                        pass
+                        elif os.path.isfile(src_base):
+                            try:
+                                sz = os.path.getsize(src_base)
+                                file_list.append((src_base, os.path.join(new_root, item), sz))
+                                total_bytes += sz
+                            except OSError:
+                                pass
+
+                    total_mb = total_bytes / (1024 * 1024) if total_bytes > 0 else 0
+                    copied_bytes = 0
+
+                    if not file_list:
+                        root.after(0, update_progress_ui, 100, "Configurando nueva ubicación...")
+                    else:
+                        for src_file, dst_file, sz in file_list:
+                            os.makedirs(os.path.dirname(dst_file), exist_ok=True)
+                            shutil.copy2(src_file, dst_file)
+                            copied_bytes += sz
+                            pct = int((copied_bytes / total_bytes) * 100) if total_bytes > 0 else 100
+                            copied_mb = copied_bytes / (1024 * 1024)
+                            msg = f"Migrando: {os.path.basename(src_file)} ({copied_mb:.1f} MB / {total_mb:.1f} MB)"
+                            root.after(0, update_progress_ui, pct, msg)
+
+                    write_install_location(new_root, os.path.join(new_root, "hf-cache"), platform, environ)
+
+                    for item in items_to_migrate:
+                        src = os.path.join(old_root, item)
+                        if os.path.isdir(src):
+                            shutil.rmtree(src, ignore_errors=True)
+                        elif os.path.isfile(src):
+                            try:
+                                os.unlink(src)
+                            except OSError:
+                                pass
+
+                    shutil.rmtree(old_root, ignore_errors=True)
+
+                    result_path[0] = new_root
+                    root.after(0, on_migration_complete, new_root)
+                except Exception as e:
+                    root.after(0, on_migration_error, str(e))
+
+            t = threading.Thread(target=worker, daemon=True)
+            t.start()
+
         def migrate():
             new_dir = filedialog.askdirectory(title="Selecciona la nueva carpeta para LiveAudio", parent=root)
             if new_dir:
-                new_root = os.path.join(new_dir, "LiveAudio")
-                try:
-                    import shutil
-                    try:
-                        if os.path.exists(new_root):
-                            shutil.copytree(old_root, new_root, dirs_exist_ok=True)
-                        else:
-                            shutil.copytree(old_root, new_root)
-                    except Exception:
-                        shutil.rmtree(new_root, ignore_errors=True)
-                        raise
-                    write_install_location(new_root, os.path.join(new_root, "hf-cache"), platform, environ)
-                    shutil.rmtree(old_root, ignore_errors=True)
-                    result_path[0] = new_root
-                except Exception as e:
-                    import tkinter.messagebox as mb
-                    mb.showerror("Error", f"Fallo al migrar: {e}", parent=root)
-                    result_path[0] = old_root
-                root.destroy()
+                start_background_migration(new_dir)
 
-        tk.Button(btn_frame, text="Mantener en C:", command=keep_c, width=15).pack(side="left", padx=10)
-        tk.Button(btn_frame, text="Migrar a nueva ruta", command=migrate, width=20, bg="#3c9e66", fg="white").pack(side="left", padx=10)
-        
+        keep_btn = tk.Button(
+            btn_frame,
+            text="Mantener en C:",
+            command=keep_c,
+            bg="#16242a",
+            fg="#e8f0ee",
+            font=("Segoe UI", 9),
+            padx=10,
+            pady=4,
+        )
+        keep_btn.pack(side="left", padx=10)
+
+        migrate_btn = tk.Button(
+            btn_frame,
+            text="Migrar a nueva ruta",
+            command=migrate,
+            bg="#3c9e66",
+            fg="white",
+            font=("Segoe UI", 9, "bold"),
+            padx=15,
+            pady=4,
+        )
+        migrate_btn.pack(side="left", padx=10)
+
         root.protocol("WM_DELETE_WINDOW", keep_c)
         root.mainloop()
 
-    run_dialog()
+    try:
+        run_dialog()
+    except Exception:
+        pass
     return result_path[0]
 
 
@@ -828,8 +962,22 @@ def copy_src_tree(src_dir, target_dir):
 # uv sync
 # ---------------------------------------------------------------------------
 
+def _is_valid_venv(project_dir):
+    """Check if project_dir/.venv has a valid python executable."""
+    venv_dir = os.path.join(project_dir, ".venv")
+    if not os.path.isdir(venv_dir):
+        return True
+    script_dir = "Scripts" if sys.platform == "win32" else "bin"
+    py_exe = "python.exe" if sys.platform == "win32" else "python"
+    return os.path.isfile(os.path.join(venv_dir, script_dir, py_exe))
+
+
 def run_uv_sync(uv_path, project_dir, extra, install_root, reporter, cancel=None):
     """Run `uv sync --locked --no-dev --extra <extra> --python 3.11` streaming output."""
+    venv_dir = os.path.join(project_dir, ".venv")
+    if not _is_valid_venv(project_dir):
+        LOG.warning("Detected corrupted or invalid .venv in %s; purging before sync", project_dir)
+        shutil.rmtree(venv_dir, ignore_errors=True)
     command = [
         uv_path,
         "sync",
