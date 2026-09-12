@@ -727,6 +727,19 @@ class TestUvSyncCommand(unittest.TestCase):
         self.assertIn("--locked", command)
         self.assertEqual(command[command.index("--extra") + 1], "cpu")
 
+    def test_broken_venv_purged_before_sync(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            venv_dir = os.path.join(tmp, ".venv")
+            os.makedirs(venv_dir)
+            proc = MagicMock()
+            proc.stdout = []
+            proc.returncode = 0
+            with patch.object(launcher.subprocess, "Popen", return_value=proc):
+                launcher.run_uv_sync(
+                    "uv", tmp, "cpu", tmp, reporter=MagicMock()
+                )
+            self.assertFalse(os.path.exists(venv_dir))
+
 
 class TestDesktopEntry(unittest.TestCase):
     """Rendering of the .desktop template."""
