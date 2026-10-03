@@ -600,6 +600,8 @@ class TestReadUIConfigASRLanguage(unittest.TestCase):
         mock.slider_catchup_interval.get.return_value = 1.5
         mock.var_session = MagicMock()
         mock.var_session.get.return_value = True
+        mock.var_prewarm = MagicMock()
+        mock.var_prewarm.get.return_value = True
         mock.text_blacklist = MagicMock()
         mock.text_blacklist.get.return_value = "amara.org"
         mock.var_style = MagicMock()
@@ -723,6 +725,21 @@ class TestReadUIConfigASRLanguage(unittest.TestCase):
         self.assertIsInstance(result["vad_speech_pad_ms"], int)
         self.assertEqual(result["vad_threshold"], 0.67)
 
+    def test_read_ui_config_preserves_prewarm_enabled_value(self):
+        """_read_ui_config must carry the selected prewarm value into the draft."""
+        from liveaudio.app import LiveASRApp
+
+        for prewarm_enabled in (True, False):
+            with self.subTest(prewarm=prewarm_enabled):
+                mock = self._make_mock_app_for_read(
+                    {"asr_language": "es"}, {"asr_language": "es"}
+                )
+                mock.var_prewarm.get.return_value = prewarm_enabled
+
+                result = LiveASRApp._read_ui_config(mock)
+
+                self.assertIs(result["prewarm"], prewarm_enabled)
+
 
 class TestLoadUIFromConfigASRLanguage(unittest.TestCase):
     """Tests for _load_ui_from_config handling of ASR language — runtime verification."""
@@ -746,6 +763,7 @@ class TestLoadUIFromConfigASRLanguage(unittest.TestCase):
         mock.slider_max_live_delay = MagicMock()
         mock.slider_catchup_interval = MagicMock()
         mock.var_session = MagicMock()
+        mock.var_prewarm = MagicMock()
         mock.var_style = MagicMock()
         mock.var_backlog_policy = MagicMock()
         mock.text_blacklist = MagicMock()
@@ -781,6 +799,20 @@ class TestLoadUIFromConfigASRLanguage(unittest.TestCase):
             "whisper_context_prompt_es": "ES prompt",
             "whisper_context_prompt_en": "EN prompt",
         }
+
+    def test_load_ui_from_config_applies_prewarm_enabled_value(self):
+        """_load_ui_from_config must apply either persisted prewarm value."""
+        from liveaudio.app import LiveASRApp
+
+        for prewarm_enabled in (True, False):
+            with self.subTest(prewarm=prewarm_enabled):
+                mock = self._make_mock_app_for_load()
+                config = self._make_full_config()
+                config["prewarm"] = prewarm_enabled
+
+                LiveASRApp._load_ui_from_config(mock, config)
+
+                mock.var_prewarm.set.assert_called_once_with(prewarm_enabled)
 
     def test_load_ui_sets_asr_lang_var_to_english(self):
         """_load_ui_from_config should set var_asr_lang to 'English' when asr_language='en'."""
