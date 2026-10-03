@@ -21,7 +21,7 @@ from liveaudio.core.diagnostics import create_store_from_config
 
 VALID_SUBTITLE_STYLES = {"default", "karaoke", "neon", "minimal", "bold", "rgb", "typewriter"}
 VALID_BACKLOG_POLICIES = {"auto", "live_only", "send_all"}
-MAX_TRANSCRIPT_CHARS = 600
+MAX_SUBTITLE_CHARS = 600
 LIVE_QUEUE_TIMEOUT_SEC = 0.5
 ASR_TRANSCRIBE_TIMEOUT_SEC = 15.0
 
@@ -160,15 +160,20 @@ def _format_vtt_time(seconds: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{secs:06.3f}"
 
 
-def _sanitize_text(text: str, max_chars: int = MAX_TRANSCRIPT_CHARS) -> str:
-    """Keep subtitles single-line and bounded before logging, saving or broadcasting."""
+def _sanitize_text(text: str) -> str:
+    """Normalize transcript text and remove unsafe characters without truncation."""
     clean = " ".join(str(text).split())
     # Strip dangerous Unicode: bidi overrides, control chars, null bytes
     dangerous = ('\u202E', '\u202D', '\u200E', '\u200F', '\u0000', '\u001b')
     clean = "".join(ch for ch in clean if ch.isprintable() and ch not in dangerous)
-    if len(clean) > max_chars:
-        clean = clean[:max_chars].rstrip() + "..."
     return clean
+
+
+def _presentation_text(text: str) -> str:
+    """Keep the existing bounded text projection for subtitle outputs."""
+    if len(text) > MAX_SUBTITLE_CHARS:
+        return text[:MAX_SUBTITLE_CHARS].rstrip() + "..."
+    return text
 
 
 def _emit_status(log_queue, key, text, state="idle", **extras):
@@ -676,6 +681,7 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
             total_delay = max(0.0, time.time() - created_at)
 
             if texto_final:
+                texto_presentacion = _presentation_text(texto_final)
                 transcript_record = {
                     "id": utterance_id,
                     "sequence": sequence,
@@ -695,7 +701,7 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
                 vtt_end = _format_vtt_time(queue_delay + latency)
 
                 session_writer.write_record(
-                    transcript_record, vtt_start, vtt_end, texto_final, cue_counter,
+                    transcript_record, vtt_start, vtt_end, texto_presentacion, cue_counter,
                     write_transcript=save_transcript, write_vtt=save_vtt,
                 )
 
@@ -714,7 +720,7 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
                     _emit_log(log_queue, "[IA] OBS disabled, subtitle saved only")
                     _emit_transcript(log_queue, {
                         "type": "transcript",
-                        "text": texto_final,
+                        "text": texto_presentacion,
                         "latency": latency,
                         "queue_delay": queue_delay,
                         "total_delay": total_delay,
@@ -733,7 +739,7 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
                 should_emit, is_replay, catchup_interval = _obs_emit_decision(shared_config, total_delay)
                 payload = {
                     "id": utterance_id,
-                    "text": texto_final,
+                    "text": texto_presentacion,
                     "style": style,
                     "created_at": created_at,
                     "processed_at": transcript_record["processed_at"],
@@ -758,7 +764,7 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
                         )
                         _emit_transcript(log_queue, {
                             "type": "transcript",
-                            "text": texto_final,
+                            "text": texto_presentacion,
                             "latency": latency,
                             "queue_delay": queue_delay,
                             "total_delay": total_delay,
@@ -780,7 +786,7 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
                         _emit_status(log_queue, "ws", "WS: salida saturada", "warn")
                         _emit_transcript(log_queue, {
                             "type": "transcript",
-                            "text": texto_final,
+                            "text": texto_presentacion,
                             "latency": latency,
                             "queue_delay": queue_delay,
                             "total_delay": total_delay,
@@ -801,7 +807,7 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
                     )
                     _emit_transcript(log_queue, {
                         "type": "transcript",
-                        "text": texto_final,
+                        "text": texto_presentacion,
                         "latency": latency,
                         "queue_delay": queue_delay,
                         "total_delay": total_delay,

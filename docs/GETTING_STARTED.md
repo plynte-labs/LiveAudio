@@ -225,6 +225,8 @@ sessions/
     └── session.json       # Metadatos de la sesión
 ```
 
+`transcript.jsonl` conserva completo el texto transcrito después de la sanitización. La presentación de subtítulos en OBS/WebSocket y el archivo VTT mantienen el límite actual de 600 caracteres; los controles de guardado de JSONL y VTT siguen siendo independientes.
+
 ---
 
 ## 8. Solución de problemas comunes

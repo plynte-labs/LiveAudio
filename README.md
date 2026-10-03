@@ -19,7 +19,7 @@ LiveAudio is a real-time automatic speech recognition (ASR) engine designed for 
 - **Integrated WebSocket** to send subtitles to OBS or any HTML client.
 - **OBS backlog control:** prevents bursts of old subtitles after freezes, without losing the saved transcript.
 - **Hallucination filtering** via a customizable blacklist.
-- **Session management:** saves transcriptions as `.jsonl` and subtitles as `.vtt`.
+- **Session management:** saves complete sanitized transcripts as `.jsonl` and subtitles as `.vtt`; OBS/WebSocket subtitle presentation keeps its existing 600-character cap.
 - **Intelligent hot-swap:** change device or model without restarting the program.
 - **Robust architecture:** isolated processes (multiprocessing), audio ring buffer, and automatic reconnection on hardware disconnects.
 

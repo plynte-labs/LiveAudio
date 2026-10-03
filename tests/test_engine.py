@@ -5,6 +5,9 @@ import unittest
 import os
 import tempfile
 import json
+import queue
+import time
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from liveaudio.core.engine import (
@@ -12,7 +15,7 @@ from liveaudio.core.engine import (
     _obs_emit_decision,
     _config_float,
     VALID_BACKLOG_POLICIES,
-    MAX_TRANSCRIPT_CHARS,
+    MAX_SUBTITLE_CHARS,
 )
 
 
@@ -30,12 +33,14 @@ class TestSanitizeText(unittest.TestCase):
         self.assertNotIn("\x00", result)
         self.assertNotIn("\x01", result)
 
-    def test_truncates_long_text(self):
-        """Text exceeding max_chars should be truncated with ellipsis."""
-        long_text = "a" * 1000
-        result = _sanitize_text(long_text, max_chars=100)
-        self.assertLessEqual(len(result), 103)  # 100 + "..."
-        self.assertTrue(result.endswith("..."))
+    def test_canonical_sanitizer_preserves_long_text_and_removes_unsafe_chars(self):
+        """Canonical text stays complete after safety sanitization."""
+        long_text = "a" * 1000 + "\u202e" + "b"
+
+        result = _sanitize_text(long_text)
+
+        self.assertEqual(result, "a" * 1000 + "b")
+        self.assertNotIn("\u202e", result)
 
     def test_handles_empty_string(self):
         """Empty string should return empty string."""
@@ -213,6 +218,91 @@ class TestObsEnabledGate(unittest.TestCase):
         # The code uses shared_config.get("obs_enabled", True) pattern
         result = shared.get("obs_enabled", True)
         self.assertTrue(result)
+
+
+class TestAsrConsumerCanonicalTranscript(unittest.TestCase):
+    def test_long_canonical_text_is_preserved_in_jsonl_and_ws_projection_stays_capped(self):
+        """Session JSONL stays complete while outgoing WS retains its legacy cap."""
+        from liveaudio.core.engine import asr_consumer
+
+        long_text = "a" * 1000 + "\u202e" + "b"
+
+        class FakeModel:
+            def transcribe(self, audio, **kwargs):
+                segment = SimpleNamespace(text=long_text, no_speech_prob=0.0)
+                return iter([segment]), SimpleNamespace()
+
+        with tempfile.TemporaryDirectory() as session_dir:
+            audio_queue = queue.Queue()
+            text_queue = queue.Queue()
+            log_queue = queue.Queue()
+            audio_queue.put({"audio": [], "created_at": time.time(), "sequence": 1})
+            audio_queue.put(None)
+            shared = {
+                "model_size": "tiny",
+                "device": "cpu",
+                "cpu_threads": 1,
+                "blacklist": "",
+                "subtitle_style": "default",
+                "subtitle_backlog_policy": "send_all",
+                "save_transcript_enabled": True,
+                "save_vtt_enabled": False,
+                "obs_enabled": True,
+            }
+
+            with patch("liveaudio.core.engine.WhisperModel", return_value=FakeModel()):
+                asr_consumer(audio_queue, text_queue, log_queue, shared, session_dir)
+
+            transcript_path = os.path.join(session_dir, "transcript.jsonl")
+            with open(transcript_path, "r", encoding="utf-8") as handle:
+                transcript = json.loads(handle.readline())
+            payload = text_queue.get_nowait()
+
+        self.assertEqual(transcript["text"], "a" * 1000 + "b")
+        self.assertEqual(payload["text"], "a" * MAX_SUBTITLE_CHARS + "...")
+
+
+    def test_ws_queue_full_error_event_uses_capped_presentation_text(self):
+        """Queue-full diagnostics retain the legacy subtitle projection."""
+        from liveaudio.core.engine import asr_consumer
+
+        long_text = "a" * 1000
+
+        class FakeModel:
+            def transcribe(self, audio, **kwargs):
+                segment = SimpleNamespace(text=long_text, no_speech_prob=0.0)
+                return iter([segment]), SimpleNamespace()
+
+        class FullTextQueue:
+            def put(self, payload, timeout=None):
+                raise queue.Full
+
+        with tempfile.TemporaryDirectory() as session_dir:
+            audio_queue = queue.Queue()
+            log_queue = queue.Queue()
+            audio_queue.put({"audio": [], "created_at": time.time(), "sequence": 1})
+            audio_queue.put(None)
+            shared = {
+                "model_size": "tiny",
+                "device": "cpu",
+                "cpu_threads": 1,
+                "blacklist": "",
+                "subtitle_style": "default",
+                "subtitle_backlog_policy": "send_all",
+                "save_transcript_enabled": True,
+                "save_vtt_enabled": False,
+                "obs_enabled": True,
+            }
+
+            with patch("liveaudio.core.engine.WhisperModel", return_value=FakeModel()):
+                asr_consumer(audio_queue, FullTextQueue(), log_queue, shared, session_dir)
+
+            events = []
+            while not log_queue.empty():
+                events.append(log_queue.get_nowait())
+
+        failed_event = next(event for event in events if event.get("reason") == "ws_queue_full")
+        self.assertEqual(failed_event["text"], "a" * MAX_SUBTITLE_CHARS + "...")
 
 
 class TestConfigFloat(unittest.TestCase):

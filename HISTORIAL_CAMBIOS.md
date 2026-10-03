@@ -2,6 +2,11 @@
 
 Este documento detalla todas las modificaciones realizadas durante la auditoría técnica y de seguridad del proyecto LiveAudio, así como la justificación técnica de cada decisión.
 
+## 2026-10-03. Transcripciones JSONL completas
+
+* **Cambio:** El archivo JSONL de sesión conserva el texto completo después de la sanitización. La presentación de subtítulos en OBS/WebSocket y el VTT mantiene el límite actual de 600 caracteres.
+    * **Por qué:** Evitar que la persistencia pierda el final de transcripciones largas sin cambiar el contrato de presentación ni la independencia entre los controles de guardado.
+
 ## 1. Reestructuración del Proyecto
 
 Se reorganizaron los archivos para que coincidieran con lo descrito en la documentación de `arquitectura.md`.
