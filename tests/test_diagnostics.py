@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 """Tests for local diagnostics helpers."""
 
+import json
 import unittest
 
 from liveaudio.core.diagnostics import (
@@ -64,6 +65,22 @@ class TestDiagnosticsSchema(unittest.TestCase):
         self.assertIn("durations", snapshot)
         self.assertIn("states", snapshot)
         self.assertEqual(snapshot["counters"]["queue.depth"], 2)
+
+    def test_runtime_snapshot_retains_latest_256_duration_samples(self):
+        store = DiagnosticsStore(level="minimal")
+        for sample in range(300):
+            store.record_duration("engine.asr", sample)
+            store.record_counter("engine.asr.completed")
+
+        snapshot = store.snapshot_runtime_health()
+
+        self.assertEqual(snapshot["schema_version"], 1)
+        self.assertEqual(snapshot["kind"], "runtime")
+        self.assertEqual(snapshot["counters"]["engine.asr.completed"], 300)
+        self.assertIsInstance(snapshot["durations"]["engine.asr"], list)
+        self.assertEqual(snapshot["durations"]["engine.asr"], [float(sample) for sample in range(44, 300)])
+        self.assertNotIn("transcript", json.dumps(snapshot).lower())
+        self.assertNotIn("audio", json.dumps(snapshot).lower())
 
     def test_off_mode_drops_runtime_collection(self):
         store = DiagnosticsStore(level="off")
