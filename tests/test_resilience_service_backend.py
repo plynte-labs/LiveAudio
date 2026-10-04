@@ -459,6 +459,146 @@ class TestEffectivePortRange(unittest.TestCase):
                 sup.shutdown()
 
 
+class TestChildFatalPropagation(unittest.TestCase):
+    def test_shutdown_records_queued_audio_discard_count(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            supervisor = make_supervisor(tmp, prewarm=False)
+            supervisor.audio_queue = queue.Queue()
+            supervisor.text_queue = queue.Queue()
+            supervisor.log_queue = queue.Queue()
+            supervisor.audio_queue.put_nowait({"audio": [1], "sequence": 1})
+            supervisor.audio_queue.put_nowait(None)
+            supervisor.text_queue.put_nowait({"text": "private"})
+            supervisor._drain_queues()
+
+        self.assertEqual(supervisor.loss_counters["audio.shutdown_discarded"], 1)
+        self.assertEqual(supervisor.loss_counters["asr.text_shutdown_discarded"], 1)
+        self.assertEqual(supervisor.loss_counters["runtime.log_shutdown_discarded"], 0)
+        warnings = [fields for kind, fields in supervisor._captured_events if kind == "warning"]
+        self.assertTrue(any(item["code"] == "shutdown-data-discarded" for item in warnings))
+        self.assertNotIn("private", json.dumps(warnings))
+
+    def test_full_queue_stop_sentinel_is_counted_and_emits_safe_warning(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            supervisor = make_supervisor(tmp, prewarm=False)
+            supervisor.audio_queue = queue.Queue(maxsize=1)
+            supervisor.text_queue = queue.Queue(maxsize=1)
+            supervisor.audio_queue.put_nowait({"audio": [1]})
+            supervisor.text_queue.put_nowait({"text": "private"})
+            supervisor._stop_children()
+
+        warnings = [fields for kind, fields in supervisor._captured_events if kind == "warning"]
+        self.assertEqual(supervisor.loss_counters["audio.stop_control_rejected"], 1)
+        self.assertEqual(supervisor.loss_counters["asr.text_stop_control_rejected"], 1)
+        self.assertTrue(warnings)
+        self.assertNotIn("private", json.dumps(warnings))
+
+    def test_writer_fatal_stops_service_instead_of_scheduling_restart(self):
+        import tempfile
+        supervisor = None
+
+        with tempfile.TemporaryDirectory() as tmp:
+            supervisor = make_supervisor(tmp, prewarm=False)
+            original_poll_once = supervisor.poll_once
+
+            def poll_once_then_stop_if_unhandled():
+                supervisor.log_queue.put_nowait({"type": "fatal", "code": "writer_storage_error"})
+                original_poll_once()
+                raise ServiceError("test-stop")
+
+            supervisor.poll_once = poll_once_then_stop_if_unhandled
+            result = supervisor.run()
+
+        fatal = [event for event in supervisor._captured_events if event[0] == "fatal"]
+        self.assertEqual(result, 1)
+        self.assertEqual([event[1]["code"] for event in fatal], ["writer_storage_error"])
+        self.assertEqual(supervisor.state, "stopped")
+        self.assertIsNone(supervisor._pending_restart_at)
+        self.assertTrue(all(proc is None or not proc.is_alive() for proc in supervisor.procs.values()))
+
+    def test_asr_storage_failure_with_full_log_queue_stops_service_run(self):
+        import builtins
+        import tempfile
+        import time
+        from liveaudio.core.engine import asr_consumer
+        from tests.helpers import make_shared_config
+
+        with tempfile.TemporaryDirectory() as tmp:
+            supervisor = make_supervisor(tmp, prewarm=False)
+
+            def start_and_run_asr_failure():
+                supervisor.shared = make_shared_config({
+                    "output_dir": tmp, "blacklist": "",
+                    "save_transcript_enabled": True, "save_vtt_enabled": False,
+                    "obs_enabled": False, "diagnostics_enabled": False,
+                    "writer_failure_code": None,
+                })
+                supervisor.audio_queue = queue.Queue()
+                supervisor.text_queue = queue.Queue()
+                supervisor.log_queue = queue.Queue(maxsize=1)
+                supervisor.log_queue.put_nowait({"type": "log", "message": "occupied"})
+                supervisor.session_dir = tmp
+                supervisor.state = "running"
+                supervisor.audio_queue.put({"audio": [], "created_at": time.time(), "sequence": 1})
+                supervisor.audio_queue.put(None)
+
+                class FakeModel:
+                    def transcribe(self, audio, **kwargs):
+                        from types import SimpleNamespace
+                        return iter([SimpleNamespace(text="safe text", no_speech_prob=0.0)]), SimpleNamespace()
+
+                jsonl_path = os.path.join(tmp, "transcript.jsonl")
+                real_open = builtins.open
+
+                def fail_jsonl(path, *args, **kwargs):
+                    if path == jsonl_path:
+                        raise OSError("private path and error detail")
+                    return real_open(path, *args, **kwargs)
+
+                with patch("builtins.open", side_effect=fail_jsonl):
+                    with patch("liveaudio.core.engine.WhisperModel", return_value=FakeModel()):
+                        asr_consumer(
+                            supervisor.audio_queue, supervisor.text_queue,
+                            supervisor.log_queue, supervisor.shared, tmp,
+                        )
+                self.assertEqual(supervisor.log_queue.qsize(), 1)
+
+            supervisor.start = start_and_run_asr_failure
+            original_poll_once = supervisor.poll_once
+
+            def stop_if_failure_not_observed():
+                original_poll_once()
+                raise ServiceError("test-stop")
+
+            supervisor.poll_once = stop_if_failure_not_observed
+            result = supervisor.run()
+
+        fatal = [event for event in supervisor._captured_events if event[0] == "fatal"]
+        self.assertEqual(result, 1)
+        self.assertEqual(supervisor.shared.get("writer_failure_code"), "writer_storage_error")
+        self.assertEqual([event[1]["code"] for event in fatal], ["writer_storage_error"])
+        self.assertEqual(supervisor.state, "stopped")
+        self.assertIsNone(supervisor._pending_restart_at)
+        self.assertTrue(all(proc is None or not proc.is_alive() for proc in supervisor.procs.values()))
+
+
+class TestWriterFailureSessionReset(unittest.TestCase):
+    def test_new_service_session_clears_sticky_writer_failure(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            supervisor = make_supervisor(tmp, prewarm=False)
+            supervisor.config["writer_failure_code"] = "writer_storage_error"
+            start_supervisor(supervisor)
+            try:
+                self.assertIsNone(supervisor.shared.get("writer_failure_code"))
+            finally:
+                supervisor.shutdown()
+
+
 class TestChildFailureCeiling(unittest.TestCase):
     def test_three_failures_in_window_raise_fatal(self):
         import tempfile

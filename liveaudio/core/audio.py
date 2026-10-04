@@ -109,6 +109,28 @@ def _record_audio_runtime_health(
         diagnostics_store.record_counter("audio.queue_full_drops", int(dropped_phrases))
 
 
+def _append_capture_chunk(ring_buffer, audio_chunk, captured_monotonic, sequence, diagnostics_store=None):
+    if len(ring_buffer) == ring_buffer.maxlen and diagnostics_store is not None:
+        diagnostics_store.record_counter("audio.ring_overwrites")
+    ring_buffer.append((audio_chunk, float(captured_monotonic), int(sequence)))
+
+
+def _record_vad_shutdown_outcomes(diagnostics_store, partial_speech_chunks, ring_chunks):
+    if diagnostics_store is None:
+        return
+    if partial_speech_chunks:
+        diagnostics_store.record_counter("audio.vad_partial_discard_chunks", int(partial_speech_chunks))
+    if ring_chunks:
+        diagnostics_store.record_counter("audio.ring_shutdown_discard_chunks", int(ring_chunks))
+
+
+def _capture_attempt(config, vad_attempt):
+    try:
+        return int(config.get("asr_attempt", vad_attempt))
+    except (TypeError, ValueError):
+        return int(vad_attempt)
+
+
 def _resolve_device_settings(config):
     """
     Resuelve el dispositivo de audio y sus extra_settings a partir de la config.
@@ -189,6 +211,7 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
         vad_attempt = int(config.get("vad_attempt", 1))
     except (TypeError, ValueError):
         vad_attempt = 1
+    capture_attempt = _capture_attempt(config, vad_attempt)
     _status("vad", "VAD: preparing", "active", phase="provisioning", attempt=vad_attempt)
     _log("[Productor] Cargando modelo Silero VAD en CPU...")
     # El VAD es extremadamente ligero, lo corremos en CPU para reservar la VRAM de la GPU
@@ -239,6 +262,7 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
     # automáticamente en lugar de consumir RAM infinita.
     ring_buffer = collections.deque(maxlen=RING_BUFFER_MAX_CHUNKS)
     ring_event = threading.Event()  # Señal para despertar al worker cuando hay datos
+    capture_sequence = 0
     
     # Control de vida del worker
     worker_running = threading.Event()
@@ -258,7 +282,7 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
         SOLO copia el audio al ring buffer. Nada de IA aquí.
         Tiempo de ejecución: ~0.01ms (copia de memoria).
         """
-        nonlocal last_callback_time
+        nonlocal last_callback_time, capture_sequence
         
         with callback_time_lock:
             last_callback_time = time.time()
@@ -268,9 +292,11 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
 
         # Extraer el canal mono y copiar (el buffer de C se reutiliza)
         audio_chunk = indata[:, 0].copy()
+        capture_sequence += 1
+        captured_monotonic = time.monotonic()
         
         # Meter al ring buffer (thread-safe en CPython por el GIL)
-        ring_buffer.append(audio_chunk)
+        _append_capture_chunk(ring_buffer, audio_chunk, captured_monotonic, capture_sequence, diagnostics_store)
         
         # Despertar al worker
         ring_event.set()
@@ -292,7 +318,7 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
         # default de 200ms son 7 chunks (~224ms de audio recuperado).
         pre_buffer = collections.deque(maxlen=PRE_BUFFER_CHUNKS)
 
-        def enqueue_phrase(full_audio):
+        def enqueue_phrase(full_audio, first_capture, last_capture):
             nonlocal utterance_sequence
             utterance_sequence += 1
             try:
@@ -300,6 +326,9 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
                     "audio": full_audio,
                     "created_at": time.time(),
                     "sequence": utterance_sequence,
+                    "attempt": capture_attempt,
+                    "capture_started_monotonic": first_capture,
+                    "capture_completed_monotonic": last_capture,
                 })
             except queue.Full:
                 # Queue is full — drop oldest phrase from speech_buffer to prevent blocking
@@ -322,7 +351,7 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
             # Procesar todos los chunks disponibles en el buffer
             while ring_buffer and worker_running.is_set():
                 try:
-                    audio_chunk = ring_buffer.popleft()
+                    audio_chunk, captured_monotonic, capture_chunk_sequence = ring_buffer.popleft()
                 except IndexError:
                     break  # Otro hilo consumió el chunk (no debería pasar, pero defensa)
                 
@@ -349,12 +378,12 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
                         _status("vad", "VAD: voz detectada", "active")
                         last_reported_state = "speech"
                     silence_counter = 0
-                    speech_buffer.append(audio_chunk)
+                    speech_buffer.append((audio_chunk, captured_monotonic, capture_chunk_sequence))
 
                     # Guillotina: cortar si superamos el máximo
                     if len(speech_buffer) >= MAX_CHUNKS_LIMIT:
-                        full_audio = np.concatenate(speech_buffer)
-                        enqueue_phrase(full_audio)
+                        full_audio = np.concatenate([chunk for chunk, _, _ in speech_buffer])
+                        enqueue_phrase(full_audio, speech_buffer[0][1], speech_buffer[-1][1])
                         speech_buffer = []
                         is_speaking = False
                         silence_counter = 0
@@ -364,14 +393,14 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
                 elif is_speaking:
                     # No hay voz, pero estábamos grabando una frase
                     silence_counter += 1
-                    speech_buffer.append(audio_chunk)
+                    speech_buffer.append((audio_chunk, captured_monotonic, capture_chunk_sequence))
 
                     # Si acumulamos suficiente silencio, cortamos y enviamos
                     if silence_counter > SILENCE_CHUNKS_TO_END:
-                        full_audio = np.concatenate(speech_buffer)
+                        full_audio = np.concatenate([chunk for chunk, _, _ in speech_buffer])
                         
                         # Empaquetamos y enviamos a través de IPC
-                        enqueue_phrase(full_audio)
+                        enqueue_phrase(full_audio, speech_buffer[0][1], speech_buffer[-1][1])
                         
                         # Reiniciamos el estado para la siguiente frase
                         speech_buffer = []
@@ -382,7 +411,15 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
                 else:
                     # Silencio continuo — guardar chunk en pre-buffer
                     # para recuperar los primeros ms cuando se detecte voz
-                    pre_buffer.append(audio_chunk)
+                    pre_buffer.append((audio_chunk, captured_monotonic, capture_chunk_sequence))
+
+        _record_vad_shutdown_outcomes(
+            diagnostics_store,
+            partial_speech_chunks=len(speech_buffer) if is_speaking else 0,
+            ring_chunks=len(ring_buffer),
+        )
+        speech_buffer.clear()
+        ring_buffer.clear()
 
     # Construir kwargs para InputStream
     stream_kwargs = {

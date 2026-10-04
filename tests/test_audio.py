@@ -39,6 +39,39 @@ class TestAudioPipelineMocks(unittest.TestCase):
         self.assertGreater(CHUNK_SIZE, 0)
         self.assertLess(CHUNK_SIZE, 10000)
 
+    def test_capture_ring_overwrite_is_counted_and_keeps_monotonic_chunk_metadata(self):
+        from collections import deque
+        from liveaudio.core.audio import _append_capture_chunk
+        from liveaudio.core.diagnostics import DiagnosticsStore
+
+        diagnostics = DiagnosticsStore(level="deep")
+        ring = deque(maxlen=1)
+        _append_capture_chunk(ring, b"first", 10.0, 1, diagnostics)
+        _append_capture_chunk(ring, b"second", 10.25, 2, diagnostics)
+
+        self.assertEqual(ring[0], (b"second", 10.25, 2))
+        self.assertEqual(
+            diagnostics.snapshot_runtime_health()["counters"]["audio.ring_overwrites"], 1,
+        )
+
+    def test_vad_stop_counts_unflushed_partial_and_ring_chunks(self):
+        from liveaudio.core.audio import _record_vad_shutdown_outcomes
+        from liveaudio.core.diagnostics import DiagnosticsStore
+
+        diagnostics = DiagnosticsStore(level="deep")
+        _record_vad_shutdown_outcomes(diagnostics, partial_speech_chunks=4, ring_chunks=3)
+
+        counters = diagnostics.snapshot_runtime_health()["counters"]
+        self.assertEqual(counters["audio.vad_partial_discard_chunks"], 4)
+        self.assertEqual(counters["audio.ring_shutdown_discard_chunks"], 3)
+
+    def test_capture_utterance_identity_uses_asr_attempt_not_vad_retry(self):
+        from liveaudio.core.audio import _capture_attempt
+
+        self.assertEqual(_capture_attempt({"asr_attempt": 9}, vad_attempt=2), 9)
+        self.assertEqual(_capture_attempt({}, vad_attempt=2), 2)
+
+
 
 class TestAudioQueueBackpressure(unittest.TestCase):
     """Tests for audio queue backpressure behavior."""

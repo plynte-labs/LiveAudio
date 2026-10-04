@@ -12,6 +12,7 @@ recreated on every respawn.
 """
 
 import multiprocessing as mp
+import math
 import os
 import threading
 import time
@@ -38,6 +39,9 @@ WATCHDOG_POLL_SEC = 1.0
 QUEUE_MAXSIZE = 100
 JOIN_TIMEOUT_SEC = 3.0
 LOG_PUMP_MAX_PER_TICK = 100
+WRITER_FATAL_CODES = frozenset({
+    "writer_queue_full", "writer_storage_error", "writer_drain_timeout",
+})
 
 
 def candidate_ports(base, fallback_range=None):
@@ -135,6 +139,14 @@ class ProcessSupervisor:
         self.first_client_event = None
         self.first_client_gate = FirstClientGate()
         self._shutdown_done = False
+        self.loss_counters = {
+            "audio.shutdown_discarded": 0,
+            "asr.text_shutdown_discarded": 0,
+            "runtime.log_shutdown_discarded": 0,
+            "audio.stop_control_rejected": 0,
+            "asr.text_stop_control_rejected": 0,
+            "asr.decode_interrupted": 0,
+        }
 
     # -- construction ----------------------------------------------------
     def _make_queues(self):
@@ -169,6 +181,10 @@ class ProcessSupervisor:
             # Snapshot semantics: children read this frozen copy; CTK changes need
             # a service restart (documented, no hot reload in this track).
             self.shared = self.manager.dict(dict(self.config))
+            self.shared["writer_failure_code"] = None
+            self.shared["writer_failure_attempt"] = None
+            self.shared["asr_attempt"] = self.asr_attempt
+            self.shared["asr_decode"] = None
             self._make_queues()
             self.session_dir = self._build_session_dir()
             self.first_client_event = mp.Event()
@@ -201,6 +217,9 @@ class ProcessSupervisor:
 
     def _start_audio_asr(self):
         from liveaudio.core.workers import run_asr, run_audio
+        if self.shared is not None:
+            self.shared["asr_attempt"] = self.asr_attempt
+            self.shared["asr_decode"] = None
         p_audio = self._make_process(
             run_audio, args=(self.audio_queue, self.shared, self.log_queue),
             name="liveaudio-audio")
@@ -352,7 +371,7 @@ class ProcessSupervisor:
         self._write_health()
 
     def _pump_log_queue(self):
-        """Drain structured child signals (bounded). Never raises, never logs text.
+        """Drain structured child signals (bounded) without logging transcript text.
 
         Status events are prioritized over log noise: the tick drains up to
         LOG_PUMP_MAX_PER_TICK messages via get_nowait (never blocks ASR) and
@@ -360,6 +379,7 @@ class ProcessSupervisor:
         behind a burst of log lines.
         """
         pending_status = None
+        writer_fatal_code = None
         for _ in range(LOG_PUMP_MAX_PER_TICK):
             try:
                 msg = self.log_queue.get_nowait()
@@ -378,6 +398,9 @@ class ProcessSupervisor:
                         "effective_port": self.effective_port,
                     })
                     self._write_health()
+                elif (msg.get("type") == "fatal"
+                      and msg.get("code") in WRITER_FATAL_CODES):
+                    writer_fatal_code = msg["code"]
                 elif msg.get("type") == "status" and msg.get("key") == "asr":
                     pending_status = msg  # status wins over interleaved logs
             except Exception:
@@ -387,6 +410,8 @@ class ProcessSupervisor:
                 self._ingest_asr_status(pending_status)
             except Exception:
                 pass
+        if writer_fatal_code is not None:
+            raise ServiceError(writer_fatal_code)
 
     def _check_provisioning_watchdog(self):
         """Conservative startup/stall watchdog (T2/D3).
@@ -459,7 +484,40 @@ class ProcessSupervisor:
         self.first_client_event = mp.Event()
         self._start_ws()
         if self.audio_started:
+            self.asr_attempt = int(self.asr_attempt or 0) + 1
             self._start_audio_asr()
+
+    def _check_asr_decode_deadline(self):
+        try:
+            marker = self.shared.get("asr_decode") if self.shared is not None else None
+        except Exception:
+            return
+        if not isinstance(marker, dict) or marker.get("status") != "decoding":
+            return
+        attempt = marker.get("attempt")
+        deadline = marker.get("deadline_monotonic")
+        if (type(attempt) is not int or attempt != self.asr_attempt
+                or type(deadline) not in (int, float) or not math.isfinite(deadline)
+                or time.monotonic() < deadline):
+            return
+        self.loss_counters["asr.decode_interrupted"] += 1
+        started = marker.get("started_monotonic")
+        elapsed = None
+        if type(started) in (int, float) and math.isfinite(started):
+            elapsed = max(0.0, time.monotonic() - started)
+        utterance_id = marker.get("utterance_id")
+        warning = {
+            "code": "asr-decode-timeout",
+            "elapsed_sec": elapsed,
+            "message": (
+                "ASR decode exceeded its deadline. Capture stopped; pending audio or transcript data "
+                "may be lost and will not be retried automatically."
+            ),
+        }
+        if isinstance(utterance_id, str) and len(utterance_id) <= 128:
+            warning["utterance_id"] = utterance_id
+        self.emitter.emit("warning", warning)
+        raise ServiceError("asr-decode-timeout")
 
     def poll_once(self):
         """One supervision tick. Raises ServiceError on fatal conditions."""
@@ -467,6 +525,15 @@ class ProcessSupervisor:
             return
         if not is_parent_alive(self.parent_pid, checker=self._checker):
             raise ServiceError("parent-dead")
+        try:
+            writer_failure_code = (
+                self.shared.get("writer_failure_code") if self.shared is not None else None
+            )
+        except Exception:
+            writer_failure_code = None
+        if writer_failure_code in WRITER_FATAL_CODES:
+            raise ServiceError(writer_failure_code)
+        self._check_asr_decode_deadline()
         self._pump_log_queue()
         self._maybe_start_lazy()
         # REQ-6 (decided: option a, PO 2026-09-05): the ASR child emits a
@@ -518,6 +585,7 @@ class ProcessSupervisor:
             "asr_code": self.asr_code,
             "children": {name: self._is_alive(proc) for name, proc in self.procs.items()},
             "error_code": self.error_code,
+            "loss_counters": dict(self.loss_counters),
         }
 
     def snapshot(self):
@@ -569,28 +637,43 @@ class ProcessSupervisor:
             pass
 
     def _stop_children(self):
-        for q in (self.audio_queue, self.text_queue):
+        for q, domain, metric in (
+            (self.audio_queue, "audio", "audio.stop_control_rejected"),
+            (self.text_queue, "text", "asr.text_stop_control_rejected"),
+        ):
             if q is not None:
                 try:
                     q.put_nowait(None)  # sentinel de apagado limpio
                 except Exception:
-                    pass
+                    self.loss_counters[metric] += 1
+                    self.emitter.emit("warning", {"code": "shutdown-control-rejected", "queue": domain})
         for proc in self.procs.values():
             self._stop_process(proc)
         self.procs = {"ws": None, "audio": None, "asr": None}
 
     @staticmethod
     def _drain_queue(q):
+        discarded = 0
         try:
             while True:
-                q.get_nowait()
+                if q.get_nowait() is not None:
+                    discarded += 1
         except Exception:
-            pass
+            return discarded
 
     def _drain_queues(self):
-        for q in (self.audio_queue, self.text_queue, self.log_queue):
+        discarded_total = 0
+        for q, metric in (
+            (self.audio_queue, "audio.shutdown_discarded"),
+            (self.text_queue, "asr.text_shutdown_discarded"),
+            (self.log_queue, "runtime.log_shutdown_discarded"),
+        ):
             if q is not None:
-                self._drain_queue(q)
+                discarded = self._drain_queue(q)
+                self.loss_counters[metric] += discarded
+                discarded_total += discarded
+        if discarded_total:
+            self.emitter.emit("warning", {"code": "shutdown-data-discarded"})
 
     @staticmethod
     def _close_queue(q):

@@ -126,6 +126,11 @@ def _record_network_runtime_health(
     queue_drained_count=None,
     rejected_client=None,
     replay_dropped=None,
+    retry_dropped=None,
+    replay_shutdown_dropped=0,
+    retry_shutdown_dropped=0,
+    queue_wait_sec=None,
+    broadcast_call_sec=None,
 ):
     if diagnostics_store is None:
         return
@@ -133,8 +138,18 @@ def _record_network_runtime_health(
         diagnostics_store.record_counter("ws.rejected_clients")
     if replay_dropped:
         diagnostics_store.record_counter("ws.replay_drops", int(replay_dropped))
+    if retry_dropped:
+        diagnostics_store.record_counter("ws.retry_buffer_drops", int(retry_dropped))
+    if replay_shutdown_dropped:
+        diagnostics_store.record_counter("ws.replay_shutdown_drops", int(replay_shutdown_dropped))
+    if retry_shutdown_dropped:
+        diagnostics_store.record_counter("ws.retry_shutdown_drops", int(retry_shutdown_dropped))
     if queue_drained_count is not None:
         diagnostics_store.record_counter("ws.queue_drained_messages", int(queue_drained_count))
+    if queue_wait_sec is not None:
+        diagnostics_store.record_duration("ws.queue_wait_sec", float(queue_wait_sec))
+    if broadcast_call_sec is not None:
+        diagnostics_store.record_duration("ws.broadcast_call_sec", float(broadcast_call_sec))
     if backpressure:
         diagnostics_store.record_counter("ws.backpressure_events")
     payload = {}
@@ -268,11 +283,25 @@ async def _poll_queue(text_queue, server, log_queue, diagnostics_store=None):
         return True
 
     def _broadcast_msg(msg):
-        payload = json.dumps(msg)
+        telemetry = msg.get("_telemetry") if isinstance(msg, dict) else None
+        if diagnostics_store is not None and isinstance(telemetry, dict):
+            queued_at = telemetry.get("queue_enqueued_monotonic")
+            if isinstance(queued_at, (int, float)):
+                _record_network_runtime_health(
+                    diagnostics_store,
+                    queue_wait_sec=max(0.0, asyncio.get_running_loop().time() - queued_at),
+                )
+        wire_msg = {key: value for key, value in msg.items() if key != "_telemetry"} if isinstance(msg, dict) else msg
+        payload = json.dumps(wire_msg)
         # broadcast() de websockets 16 — envía a TODOS los clientes
         # conectados al servidor sin backpressure, de forma óptima.
         # server.connections devuelve el set de conexiones activas.
+        started = asyncio.get_running_loop().time()
         broadcast(server.connections, payload)
+        _record_network_runtime_health(
+            diagnostics_store,
+            broadcast_call_sec=max(0.0, asyncio.get_running_loop().time() - started),
+        )
 
     def _flush_retry_buffer():
         """Try to send all buffered messages. Returns True if all sent."""
@@ -315,6 +344,8 @@ async def _poll_queue(text_queue, server, log_queue, diagnostics_store=None):
                 if msg is None:  # Señal de apagado
                     _record_network_runtime_health(
                         diagnostics_store,
+                        replay_shutdown_dropped=len(replay_buffer),
+                        retry_shutdown_dropped=len(retry_buffer),
                         client_count=len(server.connections),
                         replay_buffer_size=len(replay_buffer),
                         retry_buffer_size=len(retry_buffer),
@@ -341,6 +372,7 @@ async def _poll_queue(text_queue, server, log_queue, diagnostics_store=None):
                         if len(retry_buffer) >= MAX_RETRY_BUFFER:
                             dropped = retry_buffer.pop(0)  # Drop oldest
                             _emit_log(log_queue, "[WebSocket] Buffer de retry lleno — descartando mensaje viejo")
+                            _record_network_runtime_health(diagnostics_store, retry_dropped=1)
                         retry_buffer.append(msg)
                         if not backpressure_start:
                             backpressure_start = asyncio.get_running_loop().time()

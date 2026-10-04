@@ -160,6 +160,7 @@ En un equipo limpio, el pill ASR muestra el estado real de la descarga de Whispe
 | `ASR: descargando N%` | Descarga con progreso real (0–100, monotónico por intento) | Esperar; el % nunca retrocede salvo al Reintentar |
 | `ASR: descargando…` | Descargando pero sin % parseable (indeterminado) | Esperar; nunca es un 0% congelado |
 | `ASR: cargando` / `ASR: transcribiendo` | Cargando el modelo / calentando | Esperar |
+| `ASR: tiempo de decodificación excedido` | El decodificador superó 15 s durante una frase | La captura se detiene; el audio/transcriptos pendientes pueden perderse y no se reprocesan automáticamente |
 | `ASR: detenido. Pulsa Reintentar.` | 120–180 s sin ningún evento/progreso (stalled) | Pulsar **Reintentar** (intento nuevo, % a 0 una vez, luego monotónico) |
 | `ASR: listo` | Modelo cargado | Stremear |
 | Error + código | Fallo de aprovisionamiento (ver tabla) | Seguir el hint de una línea y Reintentar |
@@ -226,6 +227,8 @@ sessions/
 ```
 
 `transcript.jsonl` conserva completo el texto transcrito después de la sanitización. La presentación de subtítulos en OBS/WebSocket y el archivo VTT mantienen el límite actual de 600 caracteres; los controles de guardado de JSONL y VTT siguen siendo independientes.
+
+Si la cola o el almacenamiento de una salida de sesión falla, LiveAudio detiene la captura y muestra una alerta; el contenido pendiente puede no haberse guardado.
 
 ---
 

@@ -5,6 +5,7 @@ import json
 import datetime
 import copy
 import multiprocessing as mp
+import time
 from importlib import resources
 
 import customtkinter as ctk
@@ -174,6 +175,12 @@ def build_app_runtime_summary(app_state: dict) -> dict:
             for name, proc in processes.items()
         },
         "queues": {name: value for name, value in queues.items()},
+        "loss_counters": {
+            name: int(value) for name, value in app_state.get("loss_counters", {}).items()
+            if name in {"audio.shutdown_discarded", "asr.text_shutdown_discarded",
+                        "runtime.log_shutdown_discarded", "audio.stop_control_rejected",
+                        "asr.text_stop_control_rejected", "asr.decode_interrupted"}
+        },
     }
 
 
@@ -336,6 +343,9 @@ class LiveASRApp(ctk.CTk):
         # real (ver la property shared_config), no en cada arranque.
         self._manager = None
         self._shared_config = None
+        self._writer_failure_handled_code = None
+        self._decode_timeout_handled_attempt = None
+        self._shutdown_loss_counters = {}
 
         # Colas IPC con límite de tamaño para prevenir OOM
         self.audio_queue = mp.Queue(maxsize=QUEUE_MAXSIZE)
@@ -1788,6 +1798,37 @@ class LiveASRApp(ctk.CTk):
 
     def handle_event(self, event):
         event_type = event.get("type")
+        if event_type == "fatal" and event.get("code") == "asr-decode-timeout":
+            try:
+                attempt = event.get("attempt")
+                if (type(attempt) is not int or type(self._asr_attempt) is not int
+                        or attempt != self._asr_attempt):
+                    return
+            except AttributeError:
+                return
+            if getattr(self, "is_running", False):
+                self.toggle_system()
+            self.set_status("asr", t("status_asr_decode_timeout"), "error")
+            messagebox.showwarning(t("decode_timeout_title"), t("decode_timeout_msg"))
+            return
+
+        if event_type == "fatal" and event.get("code") in {
+            "writer_queue_full", "writer_storage_error", "writer_drain_timeout",
+        }:
+            try:
+                attempt = event.get("attempt")
+                if (type(attempt) is not int or type(self._asr_attempt) is not int
+                        or attempt != self._asr_attempt):
+                    return
+            except AttributeError:
+                return
+            self._writer_failure_handled_code = event["code"]
+            if getattr(self, "is_running", False):
+                self.toggle_system()
+            self.set_status("asr", t("status_asr_storage_failed"), "error")
+            messagebox.showerror(t("storage_failure_title"), t("storage_failure_msg"))
+            return
+
         if event_type == "status":
             raw_text = event.get("text", "")
             status_key = event.get("key")
@@ -1964,9 +2005,9 @@ class LiveASRApp(ctk.CTk):
             else:
                 reason = event.get("reason", "policy")
                 if total_delay is not None:
-                    self.print_log(f"[IA] Transcripcion guardada, no enviada a OBS ({reason}, {total_delay:.1f}s total).")
+                    self.print_log(f"[IA] Transcripcion procesada, no enviada a OBS ({reason}, {total_delay:.1f}s total).")
                 else:
-                    self.print_log(f"[IA] Transcripcion guardada, no enviada a OBS ({reason}).")
+                    self.print_log(f"[IA] Transcripcion procesada, no enviada a OBS ({reason}).")
         elif event_type == "log":
             self.print_log(event.get("message", ""))
 
@@ -1987,8 +2028,45 @@ class LiveASRApp(ctk.CTk):
                 except (ValueError, OSError) as e:
                     self.print_log(f"[App Error] Queue error: {e}")
                     break
+            shared = getattr(self, "_shared_config", None)
+            try:
+                code = shared.get("writer_failure_code") if shared is not None else None
+                attempt = shared.get("writer_failure_attempt") if shared is not None else None
+            except Exception:
+                code = None
+                attempt = None
+            current_attempt = getattr(self, "_asr_attempt", None)
+            if (code in {"writer_queue_full", "writer_storage_error", "writer_drain_timeout"}
+                    and code != getattr(self, "_writer_failure_handled_code", None)
+                    and type(attempt) is int and type(current_attempt) is int
+                    and attempt == current_attempt):
+                self._writer_failure_handled_code = code
+                self.handle_event({"type": "fatal", "code": code, "attempt": attempt})
+            LiveASRApp._check_asr_decode_deadline(self)
         finally:
             self.after(100, self.process_logs)
+
+    def _check_asr_decode_deadline(self):
+        if not getattr(self, "is_running", False):
+            return
+        shared = getattr(self, "_shared_config", None)
+        try:
+            marker = shared.get("asr_decode") if shared is not None else None
+        except Exception:
+            return
+        if not isinstance(marker, dict) or marker.get("status") != "decoding":
+            return
+        attempt = marker.get("attempt")
+        deadline = marker.get("deadline_monotonic")
+        if (type(attempt) is not int or type(self._asr_attempt) is not int
+                or attempt != self._asr_attempt
+                or type(deadline) not in (int, float)
+                or time.monotonic() < deadline
+                or getattr(self, "_decode_timeout_handled_attempt", None) == attempt):
+            return
+        self._decode_timeout_handled_attempt = attempt
+        self._record_shutdown_loss("asr.decode_interrupted")
+        self.handle_event({"type": "fatal", "code": "asr-decode-timeout", "attempt": attempt})
 
     def _collect_runtime_diagnostics(self):
         statuses = {key: label.cget("text") for key, label in self.status_labels.items()}
@@ -2008,6 +2086,7 @@ class LiveASRApp(ctk.CTk):
                     "ws": self.p_ws,
                 },
                 "queues": queue_sizes,
+                "loss_counters": self._shutdown_loss_counters,
             }
         )
 
@@ -2027,13 +2106,35 @@ class LiveASRApp(ctk.CTk):
             proc.terminate()
             proc.join(timeout=2)
 
-    def _drain_queue(self, q):
+    def _record_shutdown_loss(self, name, count=1):
+        self._shutdown_loss_counters[name] = self._shutdown_loss_counters.get(name, 0) + int(count)
+
+    def _drain_queue(self, q, queue_name="audio"):
         """Vacía una cola para evitar que bloquee procesos al cerrarse."""
+        discarded = 0
         try:
-            while not q.empty():
-                q.get_nowait()
+            while True:
+                if q.get_nowait() is not None:
+                    discarded += 1
+        except queue.Empty:
+            pass
         except Exception:
             pass
+        metric = {"audio": "audio.shutdown_discarded", "text": "asr.text_shutdown_discarded",
+                  "log": "runtime.log_shutdown_discarded"}.get(queue_name)
+        if metric and discarded:
+            self._record_shutdown_loss(metric, discarded)
+            self.print_log(f"[Shutdown] {queue_name} queue discarded {discarded} pending item(s); their outcome is unknown.")
+        return discarded
+
+    def _signal_stop(self, q, queue_name):
+        try:
+            q.put_nowait(None)
+        except Exception:
+            metric = {"audio": "audio.stop_control_rejected", "text": "asr.text_stop_control_rejected"}.get(queue_name)
+            if metric:
+                self._record_shutdown_loss(metric)
+            self.print_log(f"[Shutdown] Could not enqueue {queue_name} stop control; pending items may be discarded.")
 
     def hot_swap_engine(self):
         # Guard de seguridad para prevenir spawn no deseado de procesos en segundo plano
@@ -2048,15 +2149,17 @@ class LiveASRApp(ctk.CTk):
         if self.p_audio and self.p_audio.is_alive():
             self.p_audio.terminate()
         if self.p_ia and self.p_ia.is_alive():
-            try:
-                self.audio_queue.put_nowait(None)  # Señal de fin
-            except Exception:
-                pass
+            self._signal_stop(self.audio_queue, "audio")
             self._stop_process(self.p_ia, "IA")
+
+        try:
+            self.shared_config["asr_decode"] = None
+        except Exception:
+            pass
         
         # Esperar y limpiar
         self._stop_process(self.p_audio, "Productor")
-        self._drain_queue(self.audio_queue)
+        self._drain_queue(self.audio_queue, "audio")
         
         self.audio_queue = mp.Queue(maxsize=QUEUE_MAXSIZE)  # Tubería 100% nueva y limpia
 
@@ -2160,6 +2263,17 @@ class LiveASRApp(ctk.CTk):
                 self.print_log(t("log_ws_port_busy").format(port=ws_port, end_port=end_port))
                 self.set_status("ws", t("status_ws_port_busy"), "error")
                 return
+            self.shared_config["writer_failure_code"] = None
+            self.shared_config["writer_failure_attempt"] = None
+            self.shared_config["asr_decode"] = None
+            self._writer_failure_handled_code = None
+            self._decode_timeout_handled_attempt = None
+            try:
+                current_attempt = int(self.shared_config.get("asr_attempt", self._asr_attempt or 1))
+            except (TypeError, ValueError):
+                current_attempt = int(self._asr_attempt or 1)
+            self._asr_attempt = current_attempt + 1
+            self.shared_config["asr_attempt"] = self._asr_attempt
             self.is_running = True
             self.btn_power.configure(text=t("stop_system"), fg_color="darkred", hover_color="red")
             
@@ -2205,7 +2319,7 @@ class LiveASRApp(ctk.CTk):
             # Apagado limpio con señal → join → terminate
             if self.p_ia and self.p_ia.is_alive():
                 try:
-                    self.audio_queue.put_nowait(None)
+                    self._signal_stop(self.audio_queue, "audio")
                 except Exception:
                     pass
             
@@ -2214,14 +2328,14 @@ class LiveASRApp(ctk.CTk):
             
             # Señal de apagado limpio al servidor WebSocket antes de matar el proceso
             try:
-                self.text_queue.put_nowait(None)
+                self._signal_stop(self.text_queue, "text")
             except Exception:
                 pass
             
             self._stop_process(self.p_ws, "WebSocket")
             
-            self._drain_queue(self.audio_queue)
-            self._drain_queue(self.text_queue)
+            self._drain_queue(self.audio_queue, "audio")
+            self._drain_queue(self.text_queue, "text")
             self.current_session_dir = None
             self.update_session_label()
 
@@ -2272,7 +2386,7 @@ class LiveASRApp(ctk.CTk):
         
         # Señal de apagado limpio al servidor WebSocket
         try:
-            self.text_queue.put_nowait(None)
+            self._signal_stop(self.text_queue, "text")
         except Exception:
             pass
         
@@ -2281,8 +2395,8 @@ class LiveASRApp(ctk.CTk):
             self._stop_process(proc, timeout=2)
         
         # Drenar colas para desbloquear cualquier proceso
-        for q in [self.audio_queue, self.text_queue, self.log_queue]:
-            self._drain_queue(q)
+        for q, name in [(self.audio_queue, "audio"), (self.text_queue, "text"), (self.log_queue, "log")]:
+            self._drain_queue(q, name)
 
         # Cerrar el proceso del Manager (host del dict de config compartido).
         # Sin esto queda colgado tras un kill duro; el shutdown normal lo reclama

@@ -6,7 +6,6 @@ import multiprocessing as mp
 import queue
 import traceback
 import threading
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from liveaudio.utils.dllpath import ensure_torch_dlls
 from liveaudio.utils.streams import make_streams_encoding_safe
 
@@ -24,6 +23,10 @@ VALID_BACKLOG_POLICIES = {"auto", "live_only", "send_all"}
 MAX_SUBTITLE_CHARS = 600
 LIVE_QUEUE_TIMEOUT_SEC = 0.5
 ASR_TRANSCRIBE_TIMEOUT_SEC = 15.0
+SESSION_WRITER_QUEUE_CAPACITY = 32
+WRITER_FAILURE_CODES = frozenset({
+    "writer_queue_full", "writer_storage_error", "writer_drain_timeout",
+})
 
 
 def _record_asr_runtime_health(
@@ -110,46 +113,166 @@ def validate_theme_tokens(tokens: dict) -> dict:
 
 class SessionWriter:
     """Handles asynchronous disk I/O for saving session transcripts and subtitles."""
-    def __init__(self, jsonl_path, vtt_path):
+    def __init__(self, jsonl_path, vtt_path, queue_capacity=SESSION_WRITER_QUEUE_CAPACITY,
+                 failure_callback=None, diagnostics_store=None):
         self.jsonl_path = jsonl_path
         self.vtt_path = vtt_path
-        self.queue = queue.Queue()
+        self.queue = queue.Queue(maxsize=max(1, int(queue_capacity)))
+        self.failure_callback = failure_callback
+        self.diagnostics_store = diagnostics_store
+        self._condition = threading.Condition()
+        self._stopping = threading.Event()
+        self._error_code = None
+        self._failure_notified = False
+        self._outcomes = {
+            sink: {"pending": 0, "saved": 0, "rejected": 0, "failed": 0}
+            for sink in ("jsonl", "vtt")
+        }
         self.thread = threading.Thread(target=self._worker, daemon=True)
         self.thread.start()
 
-    def _worker(self):
-        while True:
-            item = self.queue.get()
-            if item is None:
-                self.queue.task_done()
-                break
-            
+    def _signal_failure(self, code):
+        callback = None
+        with self._condition:
+            if self._error_code is None:
+                self._error_code = code
+            if not self._failure_notified:
+                self._failure_notified = True
+                callback = self.failure_callback
+        if callback is not None:
             try:
-                record, vtt_start, vtt_end, texto_final, cue_counter, write_transcript, write_vtt = item
-                if write_transcript:
-                    with open(self.jsonl_path, "a", encoding="utf-8") as f:
-                        f.write(json.dumps(record, ensure_ascii=False) + "\n")
-
-                if write_vtt:
-                    with open(self.vtt_path, "a", encoding="utf-8") as f:
-                        f.write(f"{cue_counter}\n{vtt_start} --> {vtt_end}\n{texto_final}\n\n#cue:{cue_counter}\n")
+                callback(self._error_code)
             except Exception:
                 pass
+
+    def _complete_sink(self, sink, saved):
+        with self._condition:
+            outcome = self._outcomes[sink]
+            outcome["pending"] -= 1
+            outcome["saved" if saved else "failed"] += 1
+            self._condition.notify_all()
+
+    def _worker(self):
+        while True:
+            if self._stopping.is_set() and self.queue.empty():
+                break
+            try:
+                item = self.queue.get(timeout=0.05)
+            except queue.Empty:
+                continue
+
+            try:
+                record, vtt_start, vtt_end, texto_final, cue_counter, write_transcript, write_vtt, telemetry = item
+                if write_transcript:
+                    started = time.monotonic()
+                    try:
+                        with open(self.jsonl_path, "a", encoding="utf-8") as f:
+                            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+                    except Exception:
+                        self._complete_sink("jsonl", False)
+                        self._signal_failure("writer_storage_error")
+                        self._record_sink_result("jsonl", False, time.monotonic() - started, telemetry)
+                    else:
+                        self._complete_sink("jsonl", True)
+                        self._record_sink_result("jsonl", True, time.monotonic() - started, telemetry)
+
+                if write_vtt:
+                    started = time.monotonic()
+                    try:
+                        with open(self.vtt_path, "a", encoding="utf-8") as f:
+                            f.write(f"{cue_counter}\n{vtt_start} --> {vtt_end}\n{texto_final}\n\n#cue:{cue_counter}\n")
+                    except Exception:
+                        self._complete_sink("vtt", False)
+                        self._signal_failure("writer_storage_error")
+                        self._record_sink_result("vtt", False, time.monotonic() - started, telemetry)
+                    else:
+                        self._complete_sink("vtt", True)
+                        self._record_sink_result("vtt", True, time.monotonic() - started, telemetry)
             finally:
                 self.queue.task_done()
 
-    def write_record(self, record, vtt_start, vtt_end, texto_final, cue_counter, write_transcript=True, write_vtt=True):
-        """Queue one record. Each artifact is gated independently by its own flag."""
-        if not (write_transcript or write_vtt):
+    def _record_sink_result(self, sink, saved, elapsed, telemetry=None):
+        if self.diagnostics_store is None:
             return
-        self.queue.put((record, vtt_start, vtt_end, texto_final, cue_counter, write_transcript, write_vtt))
+        try:
+            self.diagnostics_store.record_duration(f"asr.{sink}_write_sec", elapsed)
+            capture_started = telemetry.get("capture_started_monotonic") if isinstance(telemetry, dict) else None
+            if isinstance(capture_started, (int, float)):
+                self.diagnostics_store.record_duration(
+                    f"asr.{sink}_capture_to_write_sec", max(0.0, time.monotonic() - capture_started),
+                )
+            self.diagnostics_store.record_counter(f"asr.{sink}_{'saved' if saved else 'failed'}")
+        except Exception:
+            pass
 
-    def stop(self):
-        self.queue.put(None)
-        self.thread.join(timeout=2.0)
+    def write_record(self, record, vtt_start, vtt_end, texto_final, cue_counter, write_transcript=True, write_vtt=True, telemetry=None):
+        """Admit one record without blocking; enabled sinks are accounted separately."""
+        if not (write_transcript or write_vtt):
+            return True
+        writer_telemetry = {}
+        if isinstance(telemetry, dict):
+            for key in ("capture_started_monotonic", "capture_completed_monotonic"):
+                value = telemetry.get(key)
+                if isinstance(value, (int, float)):
+                    writer_telemetry[key] = float(value)
+        item = (record, vtt_start, vtt_end, texto_final, cue_counter, write_transcript, write_vtt, writer_telemetry)
+        with self._condition:
+            if self._stopping.is_set() or self._error_code is not None:
+                for sink, enabled in (("jsonl", write_transcript), ("vtt", write_vtt)):
+                    if enabled:
+                        self._outcomes[sink]["rejected"] += 1
+                rejected = True
+            else:
+                try:
+                    self.queue.put_nowait(item)
+                except queue.Full:
+                    for sink, enabled in (("jsonl", write_transcript), ("vtt", write_vtt)):
+                        if enabled:
+                            self._outcomes[sink]["rejected"] += 1
+                    rejected = True
+                else:
+                    for sink, enabled in (("jsonl", write_transcript), ("vtt", write_vtt)):
+                        if enabled:
+                            self._outcomes[sink]["pending"] += 1
+                    rejected = False
+        if rejected:
+            self._signal_failure("writer_queue_full")
+            return False
+        return True
 
-    def flush(self):
-        self.queue.join()
+    def outcomes(self):
+        with self._condition:
+            return {sink: values.copy() for sink, values in self._outcomes.items()}
+
+    def flush(self, timeout_sec=5.0):
+        deadline = time.monotonic() + max(0.0, float(timeout_sec))
+        with self._condition:
+            while any(values["pending"] for values in self._outcomes.values()):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    timed_out = True
+                    break
+                self._condition.wait(remaining)
+            else:
+                return self._error_code is None
+        if timed_out:
+            self._signal_failure("writer_drain_timeout")
+        return False
+
+    def stop(self, timeout_sec=2.0):
+        deadline = time.monotonic() + max(0.0, float(timeout_sec))
+        self._stopping.set()
+        self.thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        if self.thread.is_alive():
+            self._signal_failure("writer_drain_timeout")
+            return False
+        with self._condition:
+            pending = any(values["pending"] for values in self._outcomes.values())
+            error_code = self._error_code
+        if pending:
+            self._signal_failure("writer_drain_timeout")
+            return False
+        return error_code is None
 
 
 def _format_vtt_time(seconds: float) -> str:
@@ -242,24 +365,11 @@ def _obs_emit_decision(shared_config, queue_delay):
 
 
 def _transcribe_with_timeout(model, audio_chunk, timeout_sec=ASR_TRANSCRIBE_TIMEOUT_SEC, log_queue=None, device="cpu", initial_prompt=None, language="es"):
-    """Wrap model.transcribe() with a timeout to prevent permanent ASR freezes.
-    
-    Returns (segments, info) on success, or (None, None) on timeout/failure.
-    
-    Note: The model's device is fixed at construction time. When VRAM is low on CUDA,
-    we attempt to free cache before transcribing. If OOM occurs, the exception handler
-    catches it and continues to the next chunk.
+    """Fully materialize lazy decode results inside the supervised ASR child.
+
+    ``timeout_sec`` remains for internal caller compatibility. Only the parent
+    process watchdog can enforce the hard deadline by terminating this child.
     """
-    def _do_transcribe():
-        kwargs = {
-            "language": language,
-            "beam_size": 5,
-            "vad_filter": False,
-            "condition_on_previous_text": False,
-        }
-        if initial_prompt:
-            kwargs["initial_prompt"] = initial_prompt
-        return model.transcribe(audio_chunk, **kwargs)
 
     # Check VRAM before transcribing on CUDA — free cache if low
     if device == "cuda":
@@ -274,13 +384,16 @@ def _transcribe_with_timeout(model, audio_chunk, timeout_sec=ASR_TRANSCRIBE_TIME
             pass
 
     try:
-        executor = ThreadPoolExecutor(max_workers=1)
-        try:
-            future = executor.submit(_do_transcribe)
-            segments, info = future.result(timeout=timeout_sec)
-        finally:
-            executor.shutdown(wait=False, cancel_futures=True)
-
+        kwargs = {
+            "language": language,
+            "beam_size": 5,
+            "vad_filter": False,
+            "condition_on_previous_text": False,
+        }
+        if initial_prompt:
+            kwargs["initial_prompt"] = initial_prompt
+        segments, info = model.transcribe(audio_chunk, **kwargs)
+        segments = list(segments)
         # Clear CUDA cache periodically to prevent VRAM growth
         if device == "cuda":
             try:
@@ -289,18 +402,6 @@ def _transcribe_with_timeout(model, audio_chunk, timeout_sec=ASR_TRANSCRIBE_TIME
                 pass
 
         return segments, info
-
-    except FuturesTimeout:
-        _emit_status(log_queue, "asr", "ASR: timeout", "warn")
-        _emit_log(log_queue, f"[IA] Transcripcion excedio {timeout_sec}s. Continuando al siguiente chunk.")
-        _emit_transcript(log_queue, {
-            "type": "error",
-            "key": "asr_timeout",
-            "message": f"ASR transcribe timeout after {timeout_sec}s",
-            "recovered": True,
-        })
-        return None, None
-
     except Exception as e:
         _emit_status(log_queue, "asr", "ASR: error", "error")
         tb_summary = traceback.format_exc().split("\n")[-3]
@@ -615,7 +716,23 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
                     elif stripped.isdigit():
                         cue_counter = max(cue_counter, int(stripped))
 
-        session_writer = SessionWriter(jsonl_path, vtt_path)
+        def report_writer_failure(code):
+            if code not in WRITER_FAILURE_CODES:
+                return
+            try:
+                shared_config["writer_failure_code"] = code
+                shared_config["writer_failure_attempt"] = _attempt
+            except Exception:
+                pass
+            try:
+                log_queue.put_nowait({"type": "fatal", "code": code, "attempt": _attempt})
+            except Exception:
+                pass
+
+        session_writer = SessionWriter(
+            jsonl_path, vtt_path, failure_callback=report_writer_failure,
+            diagnostics_store=diagnostics_store,
+        )
 
         while True:
             if has_queued_audio_item:
@@ -630,10 +747,19 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
                 audio_chunk = audio_item.get("audio")
                 created_at = float(audio_item.get("created_at") or time.time())
                 sequence = int(audio_item.get("sequence") or 0)
+                capture_started = audio_item.get("capture_started_monotonic")
+                capture_completed = audio_item.get("capture_completed_monotonic")
+                try:
+                    item_attempt = int(audio_item.get("attempt", _attempt))
+                except (TypeError, ValueError):
+                    item_attempt = _attempt
             else:
                 audio_chunk = audio_item
                 created_at = time.time()
                 sequence = 0
+                capture_started = None
+                capture_completed = None
+                item_attempt = _attempt
 
             queue_delay = max(0.0, time.time() - created_at)
             utterance_id = f"{int(created_at * 1000)}-{sequence}"
@@ -648,11 +774,48 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
             prompt_key = f"whisper_context_prompt_{asr_lang}"
             context_prompt = shared_config.get(prompt_key) or None
 
-            segments, info = _transcribe_with_timeout(
-                model, audio_chunk, timeout_sec=ASR_TRANSCRIBE_TIMEOUT_SEC,
-                log_queue=log_queue, device=shared_config["device"],
-                initial_prompt=context_prompt, language=asr_lang,
-            )
+            decode_started_monotonic = time.monotonic()
+            if isinstance(capture_started, (int, float)) and isinstance(capture_completed, (int, float)):
+                diagnostics_store.record_duration(
+                    "asr.utterance_formation_sec", max(0.0, capture_completed - capture_started),
+                )
+                diagnostics_store.record_duration(
+                    "asr.queue_wait_sec", max(0.0, decode_started_monotonic - capture_completed),
+                )
+            decode_marker = {
+                "status": "decoding",
+                "attempt": _attempt,
+                "utterance_id": utterance_id,
+                "started_monotonic": decode_started_monotonic,
+                "deadline_monotonic": decode_started_monotonic + ASR_TRANSCRIBE_TIMEOUT_SEC,
+            }
+            try:
+                shared_config["asr_decode"] = decode_marker
+            except Exception:
+                pass
+            try:
+                segments, info = _transcribe_with_timeout(
+                    model, audio_chunk, timeout_sec=ASR_TRANSCRIBE_TIMEOUT_SEC,
+                    log_queue=log_queue, device=shared_config["device"],
+                    initial_prompt=context_prompt, language=asr_lang,
+                )
+            finally:
+                decode_completed_monotonic = time.monotonic()
+                diagnostics_store.record_duration(
+                    "asr.decode_sec", max(0.0, decode_completed_monotonic - decode_started_monotonic),
+                )
+                if isinstance(capture_started, (int, float)):
+                    diagnostics_store.record_duration(
+                        "asr.capture_to_final_sec", max(0.0, decode_completed_monotonic - capture_started),
+                    )
+                try:
+                    current_marker = shared_config.get("asr_decode")
+                    if (isinstance(current_marker, dict)
+                            and current_marker.get("attempt") == _attempt
+                            and current_marker.get("utterance_id") == utterance_id):
+                        shared_config["asr_decode"] = None
+                except Exception:
+                    pass
             if segments is None:
                 # Timeout or error — skip to next item
                 _record_asr_runtime_health(
@@ -700,10 +863,16 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
                 vtt_start = _format_vtt_time(queue_delay)
                 vtt_end = _format_vtt_time(queue_delay + latency)
 
-                session_writer.write_record(
+                admitted = session_writer.write_record(
                     transcript_record, vtt_start, vtt_end, texto_presentacion, cue_counter,
                     write_transcript=save_transcript, write_vtt=save_vtt,
+                    telemetry={
+                        "capture_started_monotonic": capture_started,
+                        "capture_completed_monotonic": capture_completed,
+                    },
                 )
+                if not admitted:
+                    break
 
                 # OBS enabled gate: skip WebSocket emission when disabled
                 obs_enabled = shared_config.get("obs_enabled", True)
@@ -717,7 +886,7 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
                         obs_emitted=False,
                         reason="obs_disabled",
                     )
-                    _emit_log(log_queue, "[IA] OBS disabled, subtitle saved only")
+                    _emit_log(log_queue, "[IA] OBS desactivado; transcripcion procesada, no enviada a OBS.")
                     _emit_transcript(log_queue, {
                         "type": "transcript",
                         "text": texto_presentacion,
@@ -748,6 +917,14 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
                     "latency": latency,
                     "is_replay": is_replay,
                     "catchup_interval_sec": catchup_interval,
+                    "_telemetry": {
+                        "sequence": sequence,
+                        "attempt": item_attempt,
+                        "capture_started_monotonic": capture_started,
+                        "capture_completed_monotonic": capture_completed,
+                        "decode_completed_monotonic": decode_completed_monotonic,
+                        "queue_enqueued_monotonic": time.monotonic(),
+                    },
                 }
                 if should_emit:
                     try:
@@ -772,6 +949,7 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
                             "is_replay": is_replay,
                         })
                     except queue.Full:
+                        diagnostics_store.record_counter("asr.text_queue_drops")
                         _record_asr_runtime_health(
                             diagnostics_store,
                             model_name=clean_model_name,
@@ -793,7 +971,7 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
                             "obs_emitted": False,
                             "reason": "ws_queue_full",
                         })
-                        _emit_log(log_queue, "[IA] Subtitulo guardado, pero no enviado a OBS porque la cola live esta saturada.")
+                        _emit_log(log_queue, "[IA] Subtitulo procesado, pero no enviado a OBS porque la cola live esta saturada.")
                 else:
                     _record_asr_runtime_health(
                         diagnostics_store,
@@ -814,7 +992,7 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
                         "obs_emitted": False,
                         "reason": "backlog_policy",
                     })
-                    _emit_log(log_queue, f"[IA] Subtitulo atrasado {total_delay:.1f}s guardado; omitido en OBS por politica live.")
+                    _emit_log(log_queue, f"[IA] Subtitulo atrasado {total_delay:.1f}s procesado; omitido en OBS por politica live.")
             _emit_status(log_queue, "asr", "ASR: listo", "ready",
                          phase="ready", is_download=False,
                          asr_state_legacy=asr_state_legacy("ready"))
@@ -828,7 +1006,12 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
     finally:
         shutdown_started_at = time.time()
         if session_writer is not None:
-            session_writer.stop()
+            session_writer.stop(timeout_sec=2.0)
+            outcomes = session_writer.outcomes()
+            for sink in ("jsonl", "vtt"):
+                pending = outcomes[sink]["pending"]
+                if pending:
+                    diagnostics_store.record_counter(f"asr.{sink}_pending_on_shutdown", pending)
         _record_asr_runtime_health(
             diagnostics_store,
             shutdown_sec=(time.time() - shutdown_started_at) if shutdown_started_at is not None else None,
