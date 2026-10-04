@@ -18,6 +18,7 @@ LiveAudio is a real-time automatic speech recognition (ASR) engine designed for 
 - **Flexible capture:** physical microphone or system audio (WASAPI Loopback on Windows).
 - **Integrated WebSocket** to send subtitles to OBS or any HTML client.
 - **OBS backlog control:** prevents bursts of old subtitles after freezes, without losing the saved transcript.
+- **Output-purpose windows:** choose fast subtitles (5-second default, adjustable 1–15s), transcript continuity (30-second default, adjustable 1–60s), or combined mode. Combined mode can delay final subtitles by tens of seconds during continuous speech.
 - **Hallucination filtering** via a customizable blacklist.
 - **Session management:** saves complete sanitized transcripts as `.jsonl` and subtitles as `.vtt`; OBS/WebSocket subtitle presentation keeps its existing 600-character cap.
 - **Intelligent hot-swap:** change device or model without restarting the program.
@@ -165,6 +166,7 @@ On first run, a `config.json` file is created automatically with default values 
     "subtitle_catchup_interval_sec": 1.5,
     "silence_timeout": 0.8,
     "max_chunk_duration": 5.0,
+    "asr_decode_timeout_sec": 15,
     "audio_device": null,
     "selected_profile_id": "balanced",
     "ws_port": 8765,
@@ -192,6 +194,8 @@ On first run, a `config.json` file is created automatically with default values 
 ---
 
 ## Configuration Profiles
+
+Choose the output purpose separately from the hardware profile. Hardware presets do not change the selected purpose or phrase window. Longer transcript windows improve phrase continuity but delay final subtitle output; the combined option prioritizes the transcript rather than promising low-latency subtitles.
 
 Profiles are built-in presets to avoid manually tuning every sensitive control.
 

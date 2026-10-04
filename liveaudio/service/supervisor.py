@@ -29,6 +29,7 @@ from liveaudio.core.provisioning import (
 )
 from liveaudio.service.errors import ServiceError
 from liveaudio.service.watchdog import is_parent_alive
+from liveaudio.utils.config import audio_queue_capacity
 
 MAX_CHILD_FAILURES = 3
 CHILD_FAILURE_WINDOW_SEC = 300.0
@@ -99,7 +100,7 @@ class ProcessSupervisor:
         self._watchdog_interval = watchdog_interval
         if not self._watchdog_interval or self._watchdog_interval <= 0:
             self._watchdog_interval = WATCHDOG_POLL_SEC
-        self._queue_factory = queue_factory or (lambda: mp.Queue(maxsize=QUEUE_MAXSIZE))
+        self._queue_factory = queue_factory
         self._manager_factory = manager_factory or mp.Manager
         self._process_factory = process_factory or mp.Process
         self.base_port = int(self.config.get("ws_port", 8765))
@@ -150,9 +151,14 @@ class ProcessSupervisor:
 
     # -- construction ----------------------------------------------------
     def _make_queues(self):
-        self.audio_queue = self._queue_factory()
-        self.text_queue = self._queue_factory()
-        self.log_queue = self._queue_factory()
+        if self._queue_factory is not None:
+            self.audio_queue = self._queue_factory()
+            self.text_queue = self._queue_factory()
+            self.log_queue = self._queue_factory()
+        else:
+            self.audio_queue = mp.Queue(maxsize=audio_queue_capacity(self.config))
+            self.text_queue = mp.Queue(maxsize=QUEUE_MAXSIZE)
+            self.log_queue = mp.Queue(maxsize=QUEUE_MAXSIZE)
 
     def _make_process(self, target, args=(), kwargs=None, name=""):
         return self._process_factory(target=target, args=tuple(args),
@@ -505,10 +511,14 @@ class ProcessSupervisor:
         elapsed = None
         if type(started) in (int, float) and math.isfinite(started):
             elapsed = max(0.0, time.monotonic() - started)
+        timeout_sec = marker.get("timeout_sec", 15)
+        if type(timeout_sec) is not int or not 5 <= timeout_sec <= 120:
+            timeout_sec = 15
         utterance_id = marker.get("utterance_id")
         warning = {
             "code": "asr-decode-timeout",
             "elapsed_sec": elapsed,
+            "timeout_sec": timeout_sec,
             "message": (
                 "ASR decode exceeded its deadline. Capture stopped; pending audio or transcript data "
                 "may be lost and will not be retried automatically."

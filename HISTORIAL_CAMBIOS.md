@@ -7,6 +7,12 @@ Este documento detalla todas las modificaciones realizadas durante la auditoría
 * **Cambio:** El archivo JSONL de sesión conserva el texto completo después de la sanitización. La presentación de subtítulos en OBS/WebSocket y el VTT mantiene el límite actual de 600 caracteres.
     * **Por qué:** Evitar que la persistencia pierda el final de transcripciones largas sin cambiar el contrato de presentación ni la independencia entre los controles de guardado.
 
+## 2026-10-04. Límite de decodificación ASR configurable
+
+* **Cambio:** Se agregó un límite de decodificación ASR independiente de la ventana máxima de frase, con valor predeterminado de 15 segundos y rango de 5 a 120 segundos.
+    * **Por qué:** Permitir que la supervisión termine una decodificación completa que exceda el presupuesto elegido sin confundir espera de audio, carga del modelo y procesamiento de la frase.
+* **Comportamiento:** Al superar el límite se detiene la captura, se informa la posible pérdida de datos pendientes y la frase no se reprocesa automáticamente.
+
 ## 1. Reestructuración del Proyecto
 
 Se reorganizaron los archivos para que coincidieran con lo descrito en la documentación de `arquitectura.md`.

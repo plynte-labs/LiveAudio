@@ -39,6 +39,23 @@ class TestAudioPipelineMocks(unittest.TestCase):
         self.assertGreater(CHUNK_SIZE, 0)
         self.assertLess(CHUNK_SIZE, 10000)
 
+    def test_phrase_duration_limit_rounds_up_one_frame(self):
+        from liveaudio.core import audio as audio_module
+        phrase_duration_limit_chunks = getattr(audio_module, "phrase_duration_limit_chunks", None)
+        self.assertTrue(callable(phrase_duration_limit_chunks), "phrase limit helper is missing")
+
+        self.assertEqual(phrase_duration_limit_chunks(1.0), 32)
+        self.assertEqual(phrase_duration_limit_chunks(60.0), 1875)
+
+    def test_phrase_closes_on_duration_even_before_silence_threshold(self):
+        from liveaudio.core import audio as audio_module
+        phrase_end_reason = getattr(audio_module, "phrase_end_reason", None)
+        self.assertTrue(callable(phrase_end_reason), "phrase close helper is missing")
+
+        self.assertEqual(phrase_end_reason(32, 0, 32, 25), "duration")
+        self.assertEqual(phrase_end_reason(20, 26, 32, 25), "silence")
+        self.assertIsNone(phrase_end_reason(20, 25, 32, 25))
+
     def test_capture_ring_overwrite_is_counted_and_keeps_monotonic_chunk_metadata(self):
         from collections import deque
         from liveaudio.core.audio import _append_capture_chunk

@@ -4,6 +4,7 @@ import os
 import json
 import multiprocessing as mp
 import queue
+import math
 import traceback
 import threading
 from liveaudio.utils.dllpath import ensure_torch_dlls
@@ -17,6 +18,11 @@ ensure_torch_dlls()
 from faster_whisper import WhisperModel
 import torch
 from liveaudio.core.diagnostics import create_store_from_config
+from liveaudio.utils.config import (
+    ASR_DECODE_TIMEOUT_DEFAULT_SEC,
+    ASR_DECODE_TIMEOUT_MAX_SEC,
+    ASR_DECODE_TIMEOUT_MIN_SEC,
+)
 
 VALID_SUBTITLE_STYLES = {"default", "karaoke", "neon", "minimal", "bold", "rgb", "typewriter"}
 VALID_BACKLOG_POLICIES = {"auto", "live_only", "send_all"}
@@ -774,6 +780,23 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
             prompt_key = f"whisper_context_prompt_{asr_lang}"
             context_prompt = shared_config.get(prompt_key) or None
 
+            raw_decode_timeout = shared_config.get(
+                "asr_decode_timeout_sec", ASR_DECODE_TIMEOUT_DEFAULT_SEC,
+            )
+            try:
+                numeric_decode_timeout = float(raw_decode_timeout)
+            except (TypeError, ValueError, OverflowError):
+                numeric_decode_timeout = float("nan")
+            if (isinstance(raw_decode_timeout, bool)
+                    or not isinstance(raw_decode_timeout, (int, float))
+                    or not math.isfinite(numeric_decode_timeout)):
+                timeout_sec = ASR_DECODE_TIMEOUT_DEFAULT_SEC
+            else:
+                timeout_sec = int(round(min(
+                    ASR_DECODE_TIMEOUT_MAX_SEC,
+                    max(ASR_DECODE_TIMEOUT_MIN_SEC, numeric_decode_timeout),
+                )))
+
             decode_started_monotonic = time.monotonic()
             if isinstance(capture_started, (int, float)) and isinstance(capture_completed, (int, float)):
                 diagnostics_store.record_duration(
@@ -787,7 +810,8 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
                 "attempt": _attempt,
                 "utterance_id": utterance_id,
                 "started_monotonic": decode_started_monotonic,
-                "deadline_monotonic": decode_started_monotonic + ASR_TRANSCRIBE_TIMEOUT_SEC,
+                "timeout_sec": timeout_sec,
+                "deadline_monotonic": decode_started_monotonic + timeout_sec,
             }
             try:
                 shared_config["asr_decode"] = decode_marker
@@ -795,7 +819,7 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
                 pass
             try:
                 segments, info = _transcribe_with_timeout(
-                    model, audio_chunk, timeout_sec=ASR_TRANSCRIBE_TIMEOUT_SEC,
+                    model, audio_chunk, timeout_sec=timeout_sec,
                     log_queue=log_queue, device=shared_config["device"],
                     initial_prompt=context_prompt, language=asr_lang,
                 )

@@ -51,6 +51,30 @@ class FakeManager:
         self.shutdown_calls += 1
 
 
+class TestServiceAudioQueueSizing(unittest.TestCase):
+    def test_default_audio_queue_uses_configured_phrase_window_budget(self):
+        from liveaudio.service import supervisor as supervisor_module
+
+        sizes = []
+
+        def queue_factory(maxsize):
+            sizes.append(maxsize)
+            return object()
+
+        config = {
+            "output_dir": "",
+            "ws_port": 8765,
+            "max_chunk_duration": 60.0,
+            "silence_timeout": 2.0,
+            "vad_speech_pad_ms": 500,
+        }
+        service = ProcessSupervisor(config, parent_pid=1, emitter=MagicMock())
+        with patch.object(supervisor_module.mp, "Queue", side_effect=queue_factory):
+            service._make_queues()
+
+        self.assertEqual(sizes, [1, 100, 100])
+
+
 class FakeProcess:
     def __init__(self, target=None, args=(), kwargs=None, name="", daemon=True, alive=True):
         self.target = target

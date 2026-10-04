@@ -54,7 +54,7 @@ class TestApplyPendingSettingsSaveFailure(unittest.TestCase):
     def setUp(self):
         self.test_dir = tempfile.mkdtemp()
         self.config = dict(DEFAULT_CONFIG, output_dir=self.test_dir)
-        self.draft = dict(self.config, silence_timeout=1.5)
+        self.draft = dict(self.config, silence_timeout=1.5, asr_decode_timeout_sec=60)
 
     def tearDown(self):
         shutil.rmtree(self.test_dir, ignore_errors=True)
@@ -73,6 +73,7 @@ class TestApplyPendingSettingsSaveFailure(unittest.TestCase):
         self.assertIn(t("log_config_applied"), app.logs)
         self.assertFalse(messagebox.showerror.called)
         self.assertEqual(app.config_data["silence_timeout"], 1.5)
+        self.assertEqual(app.config_data["asr_decode_timeout_sec"], 60)
 
     def test_failed_save_does_not_report_applied(self):
         """A failed save must never log 'configuration applied and saved'."""
@@ -90,6 +91,8 @@ class TestApplyPendingSettingsSaveFailure(unittest.TestCase):
         app, _save, _messagebox = self._apply(False)
         self.assertEqual(app.config_data["silence_timeout"], self.config["silence_timeout"])
         self.assertEqual(app.shared_config["silence_timeout"], self.config["silence_timeout"])
+        self.assertEqual(app.config_data["asr_decode_timeout_sec"], self.config["asr_decode_timeout_sec"])
+        self.assertEqual(app.shared_config["asr_decode_timeout_sec"], self.config["asr_decode_timeout_sec"])
 
     def test_failed_save_clears_applying_flag(self):
         """The apply guard must be released even on failure."""

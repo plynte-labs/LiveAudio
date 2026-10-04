@@ -17,7 +17,14 @@ from liveaudio.utils.dllpath import ensure_torch_dlls
 
 ensure_torch_dlls()
 
-from liveaudio.utils.config import load_config, save_config, _normalize_config, read_install_location, valid_language
+from liveaudio.utils.config import (
+    audio_queue_capacity,
+    load_config,
+    save_config,
+    _normalize_config,
+    read_install_location,
+    valid_language,
+)
 from liveaudio.utils.i18n import t, set_language, autodetect_language, get_language
 from liveaudio.utils.crash_handler import install_crash_handler
 from liveaudio.utils.updater import check_for_updates_async, start_update, APP_VERSION
@@ -233,7 +240,6 @@ PROFILE_PRESETS = {
             "device": "cpu",
             "model_size": "base (Rápido)",
             "silence_timeout": 0.4,
-            "max_chunk_duration": 3.0,
             "subtitle_backlog_policy": "live_only",
             "subtitle_max_live_delay_sec": 5.0,
             "subtitle_catchup_interval_sec": 0.8,
@@ -246,7 +252,6 @@ PROFILE_PRESETS = {
             "device": "cuda",
             "model_size": "small (Balance CPU)",
             "silence_timeout": 0.8,
-            "max_chunk_duration": 5.0,
             "subtitle_backlog_policy": "auto",
             "subtitle_max_live_delay_sec": 10.0,
             "subtitle_catchup_interval_sec": 1.5,
@@ -259,7 +264,6 @@ PROFILE_PRESETS = {
             "device": "cuda",
             "model_size": "turbo (Máxima precisión GPU)",
             "silence_timeout": 1.0,
-            "max_chunk_duration": 8.0,
             "subtitle_backlog_policy": "auto",
             "subtitle_max_live_delay_sec": 15.0,
             "subtitle_catchup_interval_sec": 2.0,
@@ -272,7 +276,6 @@ PROFILE_PRESETS = {
             "device": "cpu",
             "model_size": "small (Balance CPU)",
             "silence_timeout": 0.6,
-            "max_chunk_duration": 4.0,
             "subtitle_backlog_policy": "live_only",
             "subtitle_max_live_delay_sec": 6.0,
             "subtitle_catchup_interval_sec": 1.0,
@@ -283,6 +286,10 @@ PROFILE_LABEL_TO_ID = {profile["label"]: profile_id for profile_id, profile in P
 
 
 class LiveASRApp(ctk.CTk):
+    @staticmethod
+    def _new_audio_queue(config):
+        return mp.Queue(maxsize=audio_queue_capacity(config))
+
     def __init__(self):
         super().__init__()
         self.title("Plynte LiveAudio")
@@ -348,7 +355,7 @@ class LiveASRApp(ctk.CTk):
         self._shutdown_loss_counters = {}
 
         # Colas IPC con límite de tamaño para prevenir OOM
-        self.audio_queue = mp.Queue(maxsize=QUEUE_MAXSIZE)
+        self.audio_queue = self._new_audio_queue(self.config_data)
         self.text_queue = mp.Queue(maxsize=QUEUE_MAXSIZE)
         self.log_queue = mp.Queue(maxsize=QUEUE_MAXSIZE)
         self.p_audio = self.p_ia = self.p_ws = None
@@ -968,12 +975,50 @@ class LiveASRApp(ctk.CTk):
         self.slider_silence.set(self.config_data["silence_timeout"])
         self.slider_silence.pack(fill="x", padx=10, pady=(0, 10))
 
+        # Capture purpose controls the phrase window, independently of hardware presets.
+        purpose_keys = {
+            "subtitles": "transcription_purpose_subtitles",
+            "transcription": "transcription_purpose_transcription",
+            "combined": "transcription_purpose_combined",
+        }
+        current_purpose = self.config_data.get("transcription_purpose", "subtitles")
+        self.var_transcription_purpose = ctk.StringVar(value=t(purpose_keys[current_purpose]))
+        ctk.CTkLabel(tab_audio, text=t("transcription_purpose_label")).pack(
+            anchor="w", padx=10,
+        )
+        self.opt_transcription_purpose = self._create_premium_option_menu(
+            tab_audio,
+            values=[t(key) for key in purpose_keys.values()],
+            variable=self.var_transcription_purpose,
+            command=self._on_transcription_purpose_select,
+        )
+        self.opt_transcription_purpose.pack(fill="x", padx=10, pady=(0, 6))
+        self.lbl_transcription_purpose_help = ctk.CTkLabel(
+            tab_audio,
+            text=t(f"transcription_purpose_{current_purpose}_help"),
+            justify="left",
+            wraplength=260,
+            text_color="#AEB8BC",
+        )
+        self.lbl_transcription_purpose_help.pack(anchor="w", padx=10, pady=(0, 10))
+
         # Slider Guillotina
         self.lbl_max_dur = ctk.CTkLabel(tab_audio, text=t("max_phrase_duration", self.config_data['max_chunk_duration']))
         self.lbl_max_dur.pack(anchor="w", padx=10)
-        self.slider_max_dur = ctk.CTkSlider(tab_audio, from_=2.0, to=15.0, command=self.on_setting_change)
+        purpose_max = 60.0 if current_purpose in {"transcription", "combined"} else 15.0
+        self.slider_max_dur = ctk.CTkSlider(tab_audio, from_=1.0, to=purpose_max, command=self.on_setting_change)
         self.slider_max_dur.set(self.config_data["max_chunk_duration"])
         self.slider_max_dur.pack(fill="x", padx=10, pady=(0, 15))
+
+        self.lbl_asr_decode_timeout = ctk.CTkLabel(
+            tab_audio, text=t("asr_decode_timeout", self.config_data["asr_decode_timeout_sec"]),
+        )
+        self.lbl_asr_decode_timeout.pack(anchor="w", padx=10)
+        self.slider_asr_decode_timeout = ctk.CTkSlider(
+            tab_audio, from_=5, to=120, number_of_steps=115, command=self.on_setting_change,
+        )
+        self.slider_asr_decode_timeout.set(self.config_data["asr_decode_timeout_sec"])
+        self.slider_asr_decode_timeout.pack(fill="x", padx=10, pady=(0, 15))
 
         # Slider Pre-roll de onset (vad_speech_pad_ms)
         self.lbl_vad_pad = ctk.CTkLabel(tab_audio, text=t("vad_speech_pad", self.config_data['vad_speech_pad_ms']))
@@ -1311,6 +1356,8 @@ class LiveASRApp(ctk.CTk):
         draft["audio_device"] = copy.deepcopy(self.draft_config.get("audio_device", self.config_data.get("audio_device")))
         draft["silence_timeout"] = round(self.slider_silence.get(), 1)
         draft["max_chunk_duration"] = round(self.slider_max_dur.get(), 1)
+        draft["transcription_purpose"] = self._transcription_purpose_id()
+        draft["asr_decode_timeout_sec"] = int(round(self.slider_asr_decode_timeout.get()))
         draft["vad_speech_pad_ms"] = int(round(self.slider_vad_pad.get()))
         draft["vad_threshold"] = round(self.slider_vad_threshold.get(), 2)
         draft["subtitle_max_live_delay_sec"] = round(self.slider_max_live_delay.get(), 1)
@@ -1367,7 +1414,20 @@ class LiveASRApp(ctk.CTk):
         self.slider_threads.set(config["cpu_threads"])
         self.var_model.set(next((m for m in self.opt_model.cget("values") if m.startswith(config["model_size"].split()[0])), "small (Balance CPU)"))
         self.slider_silence.set(config["silence_timeout"])
+        purpose = config.get("transcription_purpose", "subtitles")
+        purpose_keys = {
+            "subtitles": "transcription_purpose_subtitles",
+            "transcription": "transcription_purpose_transcription",
+            "combined": "transcription_purpose_combined",
+        }
+        self.var_transcription_purpose.set(t(purpose_keys[purpose]))
+        purpose_max = 60.0 if purpose in {"transcription", "combined"} else 15.0
+        self.slider_max_dur.configure(from_=1.0, to=purpose_max)
         self.slider_max_dur.set(config["max_chunk_duration"])
+        self.slider_asr_decode_timeout.set(config.get("asr_decode_timeout_sec", 15))
+        self.lbl_transcription_purpose_help.configure(
+            text=t(f"transcription_purpose_{purpose}_help"),
+        )
         self.slider_vad_pad.set(config["vad_speech_pad_ms"])
         self.slider_vad_threshold.set(config["vad_threshold"])
         self.var_session.set(config["continuous_session"])
@@ -1400,6 +1460,33 @@ class LiveASRApp(ctk.CTk):
         help_key = f"whisper_context_help_{asr_lang}"
         self.lbl_whisper_context_help.configure(text=t(help_key))
         self._ui_ready = True
+        self.on_setting_change()
+
+    def _transcription_purpose_id(self):
+        for purpose in ("subtitles", "transcription", "combined"):
+            if self.var_transcription_purpose.get() == t(f"transcription_purpose_{purpose}"):
+                return purpose
+        return self.draft_config.get("transcription_purpose", "subtitles")
+
+    def _on_transcription_purpose_select(self, selected):
+        if not self._ui_ready:
+            return
+        purpose = next((
+            value for value in ("subtitles", "transcription", "combined")
+            if selected == t(f"transcription_purpose_{value}")
+        ), None)
+        if purpose is None:
+            return
+        is_long_window = purpose in {"transcription", "combined"}
+        duration = 30.0 if is_long_window else 5.0
+        self.draft_config["transcription_purpose"] = purpose
+        self.draft_config["max_chunk_duration"] = duration
+        self.var_transcription_purpose.set(t(f"transcription_purpose_{purpose}"))
+        self.slider_max_dur.configure(from_=1.0, to=60.0 if is_long_window else 15.0)
+        self.slider_max_dur.set(duration)
+        self.lbl_transcription_purpose_help.configure(
+            text=t(f"transcription_purpose_{purpose}_help"),
+        )
         self.on_setting_change()
 
     def _profile_id_for_current_values(self, config):
@@ -1519,6 +1606,9 @@ class LiveASRApp(ctk.CTk):
 
         self.lbl_silence.configure(text=t("silence_detection", self.slider_silence.get()))
         self.lbl_max_dur.configure(text=t("max_phrase_duration", self.slider_max_dur.get()))
+        self.lbl_asr_decode_timeout.configure(
+            text=t("asr_decode_timeout", int(round(self.slider_asr_decode_timeout.get()))),
+        )
         self.lbl_vad_pad.configure(text=t("vad_speech_pad", self.slider_vad_pad.get()))
         self.lbl_vad_threshold.configure(text=t("vad_threshold_label", self.slider_vad_threshold.get()))
         self.lbl_max_live_delay.configure(text=t("max_live_delay", self.slider_max_live_delay.get()))
@@ -1594,8 +1684,8 @@ class LiveASRApp(ctk.CTk):
         return url
 
     def _pending_restart_flags(self, draft):
-        needs_asr_restart = any(self.config_data.get(key) != draft.get(key) for key in ["device", "model_size", "cpu_threads"])
-        needs_audio_restart = any(self.config_data.get(key) != draft.get(key) for key in ["audio_device", "silence_timeout", "max_chunk_duration", "vad_speech_pad_ms", "vad_threshold"])
+        needs_asr_restart = any(self.config_data.get(key) != draft.get(key) for key in ["device", "model_size", "cpu_threads", "asr_decode_timeout_sec"])
+        needs_audio_restart = any(self.config_data.get(key) != draft.get(key) for key in ["audio_device", "silence_timeout", "max_chunk_duration", "transcription_purpose", "vad_speech_pad_ms", "vad_threshold"])
         return needs_asr_restart, needs_audio_restart
 
     def _validate_draft_config(self, draft):
@@ -1809,7 +1899,13 @@ class LiveASRApp(ctk.CTk):
             if getattr(self, "is_running", False):
                 self.toggle_system()
             self.set_status("asr", t("status_asr_decode_timeout"), "error")
-            messagebox.showwarning(t("decode_timeout_title"), t("decode_timeout_msg"))
+            timeout_sec = event.get("timeout_sec", 15)
+            if type(timeout_sec) is not int or not 5 <= timeout_sec <= 120:
+                timeout_sec = 15
+            messagebox.showwarning(
+                t("decode_timeout_title"),
+                t("decode_timeout_msg", seconds=timeout_sec),
+            )
             return
 
         if event_type == "fatal" and event.get("code") in {
@@ -2066,7 +2162,13 @@ class LiveASRApp(ctk.CTk):
             return
         self._decode_timeout_handled_attempt = attempt
         self._record_shutdown_loss("asr.decode_interrupted")
-        self.handle_event({"type": "fatal", "code": "asr-decode-timeout", "attempt": attempt})
+        timeout_sec = marker.get("timeout_sec", 15)
+        if type(timeout_sec) is not int or not 5 <= timeout_sec <= 120:
+            timeout_sec = 15
+        self.handle_event({
+            "type": "fatal", "code": "asr-decode-timeout",
+            "attempt": attempt, "timeout_sec": timeout_sec,
+        })
 
     def _collect_runtime_diagnostics(self):
         statuses = {key: label.cget("text") for key, label in self.status_labels.items()}
@@ -2161,7 +2263,7 @@ class LiveASRApp(ctk.CTk):
         self._stop_process(self.p_audio, "Productor")
         self._drain_queue(self.audio_queue, "audio")
         
-        self.audio_queue = mp.Queue(maxsize=QUEUE_MAXSIZE)  # Tubería 100% nueva y limpia
+        self.audio_queue = self._new_audio_queue(self.shared_config)
 
         # Targets libres de torch: workers.py no importa nada pesado, así que la
         # GUI puede referenciar los targets sin importar torch. En spawn el hijo

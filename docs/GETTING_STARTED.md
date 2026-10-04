@@ -150,6 +150,20 @@ Separa cada palabra o frase con comas. Puedes personalizarla a tu gusto.
 
 ---
 
+### Objetivo de salida y ventana de frase
+
+En **Audio/VAD**, selecciona el objetivo independientemente del perfil de hardware:
+
+- **Subtítulos:** ventana predeterminada de 5 segundos, ajustable de 1 a 15 segundos para obtener frases finales con mayor rapidez.
+- **Transcripción:** ventana predeterminada de 30 segundos, ajustable de 1 a 60 segundos para favorecer la continuidad de la transcripción.
+- **Combinado:** usa la ventana larga y prioriza la continuidad de la transcripción. Durante el habla continua, los subtítulos finales pueden retrasarse decenas de segundos.
+
+El silencio todavía puede cerrar una frase antes de alcanzar su límite. Cambiar un perfil de hardware no modifica el objetivo ni la ventana elegidos.
+
+El **límite de decodificación ASR** es independiente de la ventana de frase: inicia cuando Whisper empieza a decodificar una frase ya formada, no durante la captura, la espera en cola ni la carga o preparación del modelo. Su valor predeterminado es 15 segundos y puede ajustarse de 5 a 120 segundos. Si una decodificación supera ese límite, LiveAudio detiene la captura, avisa que el audio o las transcripciones pendientes pueden perderse y no vuelve a procesar automáticamente esa frase.
+
+---
+
 ## 5.5. Primera descarga del modelo: estados, códigos y tiempos
 
 En un equipo limpio, el pill ASR muestra el estado real de la descarga de Whisper

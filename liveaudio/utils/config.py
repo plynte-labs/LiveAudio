@@ -2,6 +2,7 @@
 import os
 import json
 import multiprocessing as mp
+import math
 import time
 
 
@@ -94,6 +95,13 @@ VALID_SUBTITLE_STYLES = {"default", "karaoke", "neon", "minimal", "bold", "rgb",
 VALID_SUBTITLE_DISPLAY_MODES = {"single", "ribbon", "adaptive"}
 VALID_BACKLOG_POLICIES = {"auto", "live_only", "send_all"}
 VALID_DIAGNOSTICS_LEVELS = {"off", "minimal", "deep"}
+VALID_TRANSCRIPTION_PURPOSES = {"subtitles", "transcription", "combined"}
+AUDIO_QUEUE_MAXSIZE = 100
+AUDIO_QUEUE_BUDGET_SEC = 60.0
+AUDIO_FRAME_DURATION_SEC = 512 / 16000
+ASR_DECODE_TIMEOUT_MIN_SEC = 5
+ASR_DECODE_TIMEOUT_MAX_SEC = 120
+ASR_DECODE_TIMEOUT_DEFAULT_SEC = 15
 
 DEFAULT_CONFIG = {
     "output_dir": os.path.join(get_data_home(), "sessions"),  # Default sessions dir under the data home
@@ -110,6 +118,8 @@ DEFAULT_CONFIG = {
     "subtitle_catchup_interval_sec": 1.5,
     "silence_timeout": 0.8,
     "max_chunk_duration": 5.0,
+    "transcription_purpose": "subtitles",
+    "asr_decode_timeout_sec": ASR_DECODE_TIMEOUT_DEFAULT_SEC,
     "audio_device": None,  # None = dispositivo por defecto del OS
     "selected_profile_id": "balanced",
     "profile_mode": "preset",
@@ -133,9 +143,13 @@ DEFAULT_CONFIG = {
 
 
 def _clamp_number(value, default, min_value, max_value, cast=float):
+    if isinstance(value, bool):
+        return default, True
     try:
         number = cast(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        return default, True
+    if isinstance(number, float) and not math.isfinite(number):
         return default, True
     if number < min_value:
         return min_value, True
@@ -144,11 +158,33 @@ def _clamp_number(value, default, min_value, max_value, cast=float):
     return number, False
 
 
+def audio_queue_capacity(config):
+    """Bound queued phrase duration while reserving space for phrase margins.
+
+    This is a nominal queued-audio budget, not a process RSS guarantee: IPC may
+    hold additional copies of an enqueued array.
+    """
+    def _finite_setting(key, default, minimum, maximum):
+        raw_value = config.get(key)
+        if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
+            return default
+        value, _changed = _clamp_number(raw_value, default, minimum, maximum, float)
+        return value
+
+    max_duration = _finite_setting("max_chunk_duration", 5.0, 1.0, 60.0)
+    silence_timeout = _finite_setting("silence_timeout", 0.8, 0.3, 2.0)
+    speech_pad_ms = _finite_setting("vad_speech_pad_ms", 200, 0.0, 500.0)
+    phrase_budget = max_duration + silence_timeout + speech_pad_ms / 1000 + AUDIO_FRAME_DURATION_SEC
+    return min(AUDIO_QUEUE_MAXSIZE, max(1, int(AUDIO_QUEUE_BUDGET_SEC // phrase_budget)))
+
+
 def _normalize_config(config):
     """Valida tipos/rangos sin eliminar configuracion del usuario."""
     updated = False
 
     for key, default_value in DEFAULT_CONFIG.items():
+        if key == "max_chunk_duration" and key not in config:
+            continue
         if key not in config:
             config[key] = default_value
             updated = True
@@ -185,8 +221,32 @@ def _normalize_config(config):
     config["silence_timeout"] = round(silence_timeout, 1)
     updated = updated or changed
 
-    max_chunk_duration, changed = _clamp_number(config.get("max_chunk_duration"), DEFAULT_CONFIG["max_chunk_duration"], 2.0, 15.0, float)
+    purpose = config.get("transcription_purpose")
+    if not isinstance(purpose, str) or purpose not in VALID_TRANSCRIPTION_PURPOSES:
+        purpose = DEFAULT_CONFIG["transcription_purpose"]
+        config["transcription_purpose"] = purpose
+        updated = True
+
+    max_duration = 60.0 if purpose in {"transcription", "combined"} else 15.0
+    default_duration = 30.0 if purpose in {"transcription", "combined"} else DEFAULT_CONFIG["max_chunk_duration"]
+    raw_max_chunk_duration = config.get("max_chunk_duration")
+    if isinstance(raw_max_chunk_duration, bool) or not isinstance(raw_max_chunk_duration, (int, float)):
+        max_chunk_duration, changed = default_duration, True
+    else:
+        max_chunk_duration, changed = _clamp_number(raw_max_chunk_duration, default_duration, 1.0, max_duration, float)
     config["max_chunk_duration"] = round(max_chunk_duration, 1)
+    updated = updated or changed
+
+    raw_decode_timeout = config.get("asr_decode_timeout_sec")
+    if isinstance(raw_decode_timeout, bool) or not isinstance(raw_decode_timeout, (int, float)):
+        decode_timeout, changed = ASR_DECODE_TIMEOUT_DEFAULT_SEC, True
+    else:
+        decode_timeout, changed = _clamp_number(
+            raw_decode_timeout, ASR_DECODE_TIMEOUT_DEFAULT_SEC,
+            ASR_DECODE_TIMEOUT_MIN_SEC, ASR_DECODE_TIMEOUT_MAX_SEC, float,
+        )
+        decode_timeout = int(round(decode_timeout))
+    config["asr_decode_timeout_sec"] = decode_timeout
     updated = updated or changed
 
     vad_speech_pad_ms, changed = _clamp_number(config.get("vad_speech_pad_ms"), DEFAULT_CONFIG["vad_speech_pad_ms"], 0, 500, int)

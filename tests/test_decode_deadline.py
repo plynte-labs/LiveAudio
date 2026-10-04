@@ -21,6 +21,7 @@ def _block_while_advancing_lazy_segments(shared, entered):
         "attempt": attempt,
         "utterance_id": "test-utterance-1",
         "started_monotonic": started,
+        "timeout_sec": 5,
         "deadline_monotonic": started + 0.05,
     }
     shared["asr_decode"] = marker
@@ -45,6 +46,63 @@ def _block_while_advancing_lazy_segments(shared, entered):
 
 
 class TestDecodeDeadline(unittest.TestCase):
+    def test_consumer_captures_configured_budget_for_each_decode(self):
+        import numpy as np
+        from tempfile import TemporaryDirectory
+        import liveaudio.core.engine as engine_module
+
+        captured_markers = []
+        captured_timeouts = []
+
+        class TrackingConfig(dict):
+            def __setitem__(self, key, value):
+                if key == "asr_decode" and isinstance(value, dict):
+                    captured_markers.append(dict(value))
+                super().__setitem__(key, value)
+
+        class FakeWhisper:
+            def transcribe(self, _audio, **_kwargs):
+                return iter([SimpleNamespace(text="test transcript", no_speech_prob=0.0)]), SimpleNamespace()
+
+        original_transcribe = engine_module._transcribe_with_timeout
+
+        def capture_timeout(*args, **kwargs):
+            captured_timeouts.append(kwargs["timeout_sec"])
+            return original_transcribe(*args, **kwargs)
+
+        from liveaudio.core.engine import asr_consumer
+
+        for budget in (5, 15, 60, 120):
+            with self.subTest(budget=budget), TemporaryDirectory() as session_dir:
+                captured_markers.clear()
+                captured_timeouts.clear()
+                shared = TrackingConfig({
+                    "asr_attempt": 31,
+                    "asr_decode_timeout_sec": budget,
+                    "model_size": "tiny",
+                    "device": "cpu",
+                    "cpu_threads": 1,
+                    "blacklist": "",
+                    "subtitle_backlog_policy": "send_all",
+                    "subtitle_style": "default",
+                    "save_transcript_enabled": False,
+                    "save_vtt_enabled": False,
+                    "obs_enabled": False,
+                    "diagnostics_enabled": False,
+                })
+                audio_queue = queue.Queue()
+                audio_queue.put({"audio": np.ones(8, dtype=np.float32), "sequence": 1, "attempt": 31})
+                audio_queue.put(None)
+                with patch.object(engine_module, "WhisperModel", return_value=FakeWhisper()), \
+                     patch.object(engine_module, "_transcribe_with_timeout", side_effect=capture_timeout):
+                    asr_consumer(audio_queue, queue.Queue(), queue.Queue(), shared, session_dir)
+
+                marker = captured_markers[0]
+                self.assertEqual(marker["timeout_sec"], budget)
+                self.assertAlmostEqual(marker["deadline_monotonic"] - marker["started_monotonic"], budget)
+                self.assertEqual(captured_timeouts, [budget])
+                self.assertIsNone(shared["asr_decode"])
+
     def _start_blocked_child(self, shared):
         entered = mp.Event()
         proc = mp.Process(target=_block_while_advancing_lazy_segments,
@@ -70,7 +128,6 @@ class TestDecodeDeadline(unittest.TestCase):
         app._writer_failure_handled_code = None
         app._decode_timeout_handled_attempt = None
         app._shutdown_loss_counters = {}
-        app._asr_decode_timeout_sec = 0.05
         app.log_queue = queue.Queue()
         app.audio_queue = queue.Queue()
         app.text_queue = queue.Queue()
@@ -100,7 +157,7 @@ class TestDecodeDeadline(unittest.TestCase):
             from liveaudio.app import LiveASRApp
 
             started = time.monotonic()
-            with patch("liveaudio.app.t", side_effect=lambda key, **kwargs: key), \
+            with patch("liveaudio.app.t", side_effect=lambda key, **kwargs: (key, kwargs.get("seconds"))) as translate, \
                  patch("liveaudio.app.messagebox.showwarning") as alert:
                 LiveASRApp.process_logs(app)
 
@@ -109,7 +166,8 @@ class TestDecodeDeadline(unittest.TestCase):
             self.assertLess(time.monotonic() - started, 6.0)
             self.assertFalse(app.is_running)
             self.assertEqual(app._shutdown_loss_counters["asr.decode_interrupted"], 1)
-            alert.assert_called_once_with("decode_timeout_title", "decode_timeout_msg")
+            alert.assert_called_once_with(("decode_timeout_title", None), ("decode_timeout_msg", 5))
+            self.assertTrue(any(call.args == ("decode_timeout_msg",) and call.kwargs == {"seconds": 5} for call in translate.call_args_list))
             self.assertFalse(shared.get("test_transcript_emitted", False))
             self.assertEqual(shared.get("asr_decode")["utterance_id"], "test-utterance-1")
         finally:
@@ -163,6 +221,7 @@ class TestDecodeDeadline(unittest.TestCase):
                 warning = [event for event in supervisor._captured_events if event[0] == "warning"]
                 self.assertEqual(warning[0][1]["code"], "asr-decode-timeout")
                 self.assertEqual(warning[0][1]["utterance_id"], "test-utterance-1")
+                self.assertEqual(warning[0][1]["timeout_sec"], 5)
                 self.assertFalse(proc.is_alive())
                 self.assertIsNotNone(proc.exitcode)
                 self.assertLess(time.monotonic() - started, 6.0)

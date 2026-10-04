@@ -27,6 +27,20 @@ SAMPLE_RATE = 16000  # Whisper y Silero requieren 16kHz
 CHUNK_SIZE = 512     # Tamaño de ventana para el VAD (32 milisegundos)
 VAD_THRESHOLD = 0.5  # Probabilidad mínima para considerar que hay voz (0.0 a 1.0)
 
+
+def phrase_duration_limit_chunks(max_duration_sec):
+    """Return the frame ceiling for a phrase duration, allowing one partial frame."""
+    return max(1, math.ceil(float(max_duration_sec) * SAMPLE_RATE / CHUNK_SIZE))
+
+
+def phrase_end_reason(chunk_count, silence_count, max_chunks, silence_limit):
+    """Choose a duration cap or the existing early-silence closure."""
+    if chunk_count >= max_chunks:
+        return "duration"
+    if silence_count > silence_limit:
+        return "silence"
+    return None
+
 # Ring Buffer: capacidad máxima en chunks antes de descartar los más viejos.
 # 500 chunks * 32ms = 16 segundos de buffer. Más que suficiente para absorber
 # cualquier pico de CPU sin perder audio.
@@ -204,7 +218,7 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
     diagnostics_store = diagnostics_store or create_store_from_config(config)
 
     SILENCE_CHUNKS_TO_END = int((SAMPLE_RATE / CHUNK_SIZE) * silence_sec)
-    MAX_CHUNKS_LIMIT = int((SAMPLE_RATE / CHUNK_SIZE) * max_sec)
+    MAX_CHUNKS_LIMIT = phrase_duration_limit_chunks(max_sec)
     PRE_BUFFER_CHUNKS = vad_pre_buffer_chunks(vad_speech_pad_ms)
 
     try:
@@ -381,7 +395,10 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
                     speech_buffer.append((audio_chunk, captured_monotonic, capture_chunk_sequence))
 
                     # Guillotina: cortar si superamos el máximo
-                    if len(speech_buffer) >= MAX_CHUNKS_LIMIT:
+                    if phrase_end_reason(
+                        len(speech_buffer), silence_counter, MAX_CHUNKS_LIMIT,
+                        SILENCE_CHUNKS_TO_END,
+                    ):
                         full_audio = np.concatenate([chunk for chunk, _, _ in speech_buffer])
                         enqueue_phrase(full_audio, speech_buffer[0][1], speech_buffer[-1][1])
                         speech_buffer = []
@@ -395,8 +412,11 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
                     silence_counter += 1
                     speech_buffer.append((audio_chunk, captured_monotonic, capture_chunk_sequence))
 
-                    # Si acumulamos suficiente silencio, cortamos y enviamos
-                    if silence_counter > SILENCE_CHUNKS_TO_END:
+                    # Preserve early silence closure and enforce the total phrase cap.
+                    if phrase_end_reason(
+                        len(speech_buffer), silence_counter, MAX_CHUNKS_LIMIT,
+                        SILENCE_CHUNKS_TO_END,
+                    ):
                         full_audio = np.concatenate([chunk for chunk, _, _ in speech_buffer])
                         
                         # Empaquetamos y enviamos a través de IPC
