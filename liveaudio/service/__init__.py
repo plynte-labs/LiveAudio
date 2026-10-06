@@ -82,9 +82,9 @@ def build_arg_parser():
                              "When absent, only stdout JSON lines are emitted.")
     parser.add_argument("--watchdog-interval", type=float, default=WATCHDOG_POLL_SEC,
                         help="Parent-liveness poll interval in seconds.")
-    parser.add_argument("--prewarm", dest="prewarm", action=argparse.BooleanOptionalAction, default=True,
+    parser.add_argument("--prewarm", dest="prewarm", action=argparse.BooleanOptionalAction, default=None,
                         help="Prewarm ASR model on service startup (default: true).")
-    parser.add_argument("--lazy", dest="prewarm", action="store_false",
+    parser.add_argument("--lazy", dest="prewarm", action="store_false", default=None,
                         help="Delay audio and ASR child process start until the first WS client connects.")
     return parser
 

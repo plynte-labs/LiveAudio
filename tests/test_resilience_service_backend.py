@@ -40,6 +40,27 @@ TEST_CONFIG = {
 }
 
 
+def _race_service_lock(home, barrier, release_event, results):
+    lock = InstanceLock(home=home)
+    barrier.wait(10)
+    try:
+        lock.acquire()
+    except ServiceError as exc:
+        results.put(("rejected", exc.code))
+        return
+    results.put(("acquired", os.getpid()))
+    release_event.wait(10)
+    lock.release()
+
+
+def _hold_service_lock_until_terminated(home, acquired_event):
+    lock = InstanceLock(home=home)
+    lock.acquire()
+    acquired_event.set()
+    import time
+    time.sleep(60)
+
+
 class FakeManager:
     def __init__(self):
         self.shutdown_calls = 0
@@ -355,10 +376,59 @@ class TestLazyFirstClient(unittest.TestCase):
                 sup.shutdown()
 
     def test_cli_prewarm_flags(self):
-        self.assertTrue(build_arg_parser().parse_args(["--parent-pid", "123"]).prewarm)
+        self.assertIsNone(build_arg_parser().parse_args(["--parent-pid", "123"]).prewarm)
         self.assertTrue(build_arg_parser().parse_args(["--parent-pid", "123", "--prewarm"]).prewarm)
         self.assertFalse(build_arg_parser().parse_args(["--parent-pid", "123", "--no-prewarm"]).prewarm)
         self.assertFalse(build_arg_parser().parse_args(["--parent-pid", "123", "--lazy"]).prewarm)
+
+    def test_explicit_cli_prewarm_flags_override_normalized_config(self):
+        from liveaudio import service
+        from liveaudio.utils import config as config_module
+        import tempfile
+
+        normalized_config = dict(config_module.DEFAULT_CONFIG, prewarm=False)
+        config_module._normalize_config(normalized_config)
+        calls = []
+
+        class FakeLock:
+            def acquire(self):
+                pass
+
+            def release(self):
+                pass
+
+        class TrackingSupervisor(ProcessSupervisor):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                calls.append(self.prewarm)
+
+            def run(self):
+                return 0
+
+        for flags in ([], ["--prewarm"], ["--lazy"], ["--no-prewarm"]):
+            with (
+                patch.object(service.mp, "freeze_support"),
+                patch("liveaudio.utils.config.load_config_readonly",
+                      return_value=(normalized_config, {})),
+                patch("liveaudio.utils.config.get_data_home", return_value=tempfile.gettempdir()),
+                patch.object(service, "InstanceLock", return_value=FakeLock()),
+                patch.object(service, "HealthEmitter", return_value=MagicMock()),
+                patch.object(service, "ProcessSupervisor", TrackingSupervisor),
+            ):
+                self.assertEqual(service.main(["--parent-pid", "123", *flags]), 0)
+
+        self.assertEqual(calls, [False, True, False, False])
+
+    def test_precedence_explicit_argument_then_config_then_true_default(self):
+        explicit_true = ProcessSupervisor({"prewarm": False}, 123, MagicMock(), prewarm=True)
+        explicit_false = ProcessSupervisor({"prewarm": True}, 123, MagicMock(), prewarm=False)
+        configured_false = ProcessSupervisor({"prewarm": False}, 123, MagicMock(), prewarm=None)
+        default_true = ProcessSupervisor({}, 123, MagicMock(), prewarm=None)
+
+        self.assertTrue(explicit_true.prewarm)
+        self.assertFalse(explicit_false.prewarm)
+        self.assertFalse(configured_false.prewarm)
+        self.assertTrue(default_true.prewarm)
 
     def test_network_hook_fires_on_connection(self):
         from liveaudio.core.network import _handle_client
@@ -807,8 +877,10 @@ class TestHealthAndLock(unittest.TestCase):
                 json.dump({"pid": 987654321}, f)
             lock = InstanceLock(home=tmp, checker=lambda pid: False)
             lock.acquire()  # stale holder -> reclaimed, no raise
+            lock._handle.seek(0)
+            self.assertEqual(json.loads(lock._handle.read().decode("utf-8"))["pid"], os.getpid())
             lock.release()
-            self.assertFalse(os.path.exists(os.path.join(tmp, "service.lock")))
+            self.assertTrue(os.path.exists(os.path.join(tmp, "service.lock")))
 
     def test_lock_release_is_idempotent(self):
         import tempfile
@@ -851,6 +923,160 @@ class TestHealthAndLock(unittest.TestCase):
                     lock.acquire()
             self.assertEqual(ctx.exception.code, "service-lock-unwritable")
             self.assertNotIn(tmp, str(ctx.exception))
+
+
+class TestNativeServiceLockSafety(unittest.TestCase):
+    def _race(self, home):
+        context = mp.get_context("spawn")
+        barrier = context.Barrier(2)
+        release_event = context.Event()
+        results = context.Queue()
+        processes = [context.Process(target=_race_service_lock,
+                                     args=(home, barrier, release_event, results))
+                     for _ in range(2)]
+        for process in processes:
+            process.start()
+        try:
+            outcomes = [results.get(timeout=15), results.get(timeout=15)]
+            self.assertCountEqual([outcome[0] for outcome in outcomes], ["acquired", "rejected"])
+            self.assertEqual(next(outcome[1] for outcome in outcomes if outcome[0] == "rejected"),
+                             "service-already-running")
+            release_event.set()
+            for process in processes:
+                process.join(timeout=10)
+                self.assertFalse(process.is_alive())
+                self.assertEqual(process.exitcode, 0)
+            return next(outcome[1] for outcome in outcomes if outcome[0] == "acquired")
+        finally:
+            release_event.set()
+            for process in processes:
+                if process.is_alive():
+                    process.terminate()
+                    process.join(timeout=5)
+            results.close()
+            results.join_thread()
+
+    def test_simultaneous_fresh_acquisitions_have_one_owner(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as home:
+            winner_pid = self._race(home)
+            with open(os.path.join(home, "service.lock"), encoding="utf-8") as handle:
+                self.assertEqual(json.load(handle)["pid"], winner_pid)
+
+    def test_simultaneous_stale_reclaims_have_one_owner(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as home:
+            with open(os.path.join(home, "service.lock"), "w", encoding="utf-8") as handle:
+                json.dump({"pid": 987654321}, handle)
+            winner_pid = self._race(home)
+            with open(os.path.join(home, "service.lock"), encoding="utf-8") as handle:
+                self.assertEqual(json.load(handle)["pid"], winner_pid)
+
+    def test_incomplete_pid_metadata_does_not_allow_reclaim_or_release_delete(self):
+        import tempfile
+        import threading
+
+        with tempfile.TemporaryDirectory() as home:
+            owner = InstanceLock(home=home)
+            contender = InstanceLock(home=home, checker=lambda _pid: False)
+            publish_started = threading.Event()
+            publish_continue = threading.Event()
+            from liveaudio.service.lock import _write_pid
+            real_write_pid = _write_pid
+            calls = 0
+            owner_errors = []
+
+            def pause_first_publication(handle, pid):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    publish_started.set()
+                    if not publish_continue.wait(timeout=5):
+                        raise TimeoutError("test did not release PID publication")
+                real_write_pid(handle, pid)
+
+            with patch("liveaudio.service.lock._write_pid", side_effect=pause_first_publication):
+                thread = threading.Thread(target=lambda: self._capture_error(owner.acquire, owner_errors))
+                thread.start()
+                try:
+                    self.assertTrue(publish_started.wait(timeout=5))
+                    with self.assertRaises(ServiceError) as ctx:
+                        contender.acquire()
+                    self.assertEqual(ctx.exception.code, "service-already-running")
+                finally:
+                    publish_continue.set()
+                    thread.join(timeout=5)
+                    if contender._owns:
+                        contender.release()
+                    if owner._owns:
+                        owner.release()
+                    self.assertFalse(thread.is_alive())
+
+            self.assertEqual(owner_errors, [])
+            self.assertTrue(os.path.exists(owner.path))
+
+            reclaimed = InstanceLock(home=home)
+            reclaimed.acquire()
+            try:
+                reclaimed._handle.seek(0)
+                self.assertEqual(json.loads(reclaimed._handle.read().decode("utf-8"))["pid"], os.getpid())
+            finally:
+                reclaimed.release()
+
+    def test_released_owner_cannot_delete_successor_lock(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as home:
+            previous = InstanceLock(home=home)
+            previous.acquire()
+            previous.release()
+
+            current = InstanceLock(home=home)
+            current.acquire()
+            try:
+                previous.release()
+                contender = InstanceLock(home=home)
+                with self.assertRaises(ServiceError) as ctx:
+                    contender.acquire()
+                self.assertEqual(ctx.exception.code, "service-already-running")
+            finally:
+                current.release()
+
+    @staticmethod
+    def _capture_error(operation, errors):
+        try:
+            operation()
+        except Exception as exc:
+            errors.append(exc)
+
+    def test_process_crash_releases_kernel_lock_for_stale_metadata(self):
+        import tempfile
+
+        context = mp.get_context("spawn")
+        with tempfile.TemporaryDirectory() as home:
+            acquired = context.Event()
+            process = context.Process(target=_hold_service_lock_until_terminated,
+                                      args=(home, acquired))
+            process.start()
+            try:
+                self.assertTrue(acquired.wait(timeout=15))
+                process.terminate()
+                process.join(timeout=10)
+                self.assertFalse(process.is_alive())
+
+                successor = InstanceLock(home=home)
+                successor.acquire()
+                try:
+                    successor._handle.seek(0)
+                    self.assertEqual(json.loads(successor._handle.read().decode("utf-8"))["pid"], os.getpid())
+                finally:
+                    successor.release()
+            finally:
+                if process.is_alive():
+                    process.terminate()
+                    process.join(timeout=5)
 
 
 class TestResourceHygiene(unittest.TestCase):

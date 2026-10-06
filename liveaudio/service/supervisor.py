@@ -105,7 +105,8 @@ class ProcessSupervisor:
         self._process_factory = process_factory or mp.Process
         self.base_port = int(self.config.get("ws_port", 8765))
         self.effective_port = None
-        self.prewarm = bool(config.get("prewarm", prewarm))
+        configured_prewarm = config.get("prewarm", True)
+        self.prewarm = bool(configured_prewarm if prewarm is None else prewarm)
         self.asr_state = "starting" if self.prewarm else "unavailable"  # pre-first-client ~= stt_unreachable
         # First-use startup progress (T1-T3): honest provisioning state.
         self.asr_phase = None
