@@ -240,7 +240,9 @@ sessions/
     └── session.json       # Metadatos de la sesión
 ```
 
-`transcript.jsonl` conserva completo el texto transcrito después de la sanitización. La presentación de subtítulos en OBS/WebSocket y el archivo VTT mantienen el límite actual de 600 caracteres; los controles de guardado de JSONL y VTT siguen siendo independientes.
+`transcript.jsonl` y `subtitles.vtt` conservan completo el texto transcrito después de la sanitización. Las marcas de tiempo VTT usan el momento de captura relativo al inicio de la sesión, por lo que reflejan también las pausas entre frases; las capturas históricas sin marcas de tiempo no reciben una hora inventada. La presentación de subtítulos en OBS/WebSocket mantiene el límite actual de 600 caracteres. Los controles de guardado de JSONL y VTT siguen siendo independientes.
+
+Cada entrada nueva de JSONL incluye la duración derivada del audio PCM y una instantánea limitada a ajustes de captura y tiempo máximo de decodificación; no incluye prompts ni identificadores de dispositivos.
 
 Si la cola o el almacenamiento de una salida de sesión falla, LiveAudio detiene la captura y muestra una alerta; el contenido pendiente puede no haberse guardado.
 

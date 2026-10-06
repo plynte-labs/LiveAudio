@@ -193,6 +193,7 @@ class ProcessSupervisor:
             self.shared["asr_decode"] = None
             self._make_queues()
             self.session_dir = self._build_session_dir()
+            self.shared["session_started_monotonic"] = time.monotonic()
             self.first_client_event = mp.Event()
             self._start_ws()
             if self.prewarm:

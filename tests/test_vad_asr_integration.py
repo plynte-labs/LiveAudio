@@ -112,9 +112,12 @@ def _produce_fake_capture(speech_frames, silence_frames=0):
         "asr_attempt": 17,
         "vad_attempt": 3,
         "max_chunk_duration": 60.0,
+        "transcription_purpose": "transcription",
         "silence_timeout": 0.3,
         "vad_speech_pad_ms": 200,
         "vad_threshold": 0.5,
+        "whisper_context_prompt_es": "must not be exported",
+        "audio_device": {"name": "private device name"},
         "diagnostics_enabled": False,
     }
 
@@ -147,6 +150,17 @@ class TestFakeVadToAsrIntegration(unittest.TestCase):
         self.assertEqual(audio_item["sequence"], 1)
         self.assertGreaterEqual(len(audio_item["audio"]), (phrase_frames - 1) * chunk_size)
         self.assertLessEqual(len(audio_item["audio"]), (phrase_frames + 1 + 7) * chunk_size)
+        self.assertAlmostEqual(audio_item["audio_duration_sec"], len(audio_item["audio"]) / 16000)
+        self.assertEqual(audio_item["capture_config"], {
+            "transcription_purpose": "transcription",
+            "max_chunk_duration": 60.0,
+            "silence_timeout": 0.3,
+            "vad_threshold": 0.5,
+            "vad_speech_pad_ms": 200,
+            "sample_rate": 16000,
+        })
+        self.assertNotIn("whisper_context_prompt_es", audio_item["capture_config"])
+        self.assertNotIn("audio_device", audio_item["capture_config"])
         self.assertTrue(any(event["text"] == "VAD: enviando frase" for event in statuses))
         self.assertFalse(any(event["text"] == "VAD: frase enviada" for event in statuses))
 
@@ -187,15 +201,18 @@ class TestFakeVadToAsrIntegration(unittest.TestCase):
                 "subtitle_backlog_policy": "send_all",
                 "subtitle_style": "default",
                 "save_transcript_enabled": True,
-                "save_vtt_enabled": False,
+                "save_vtt_enabled": True,
                 "obs_enabled": True,
                 "diagnostics_enabled": False,
+                "session_started_monotonic": audio_item["capture_started_monotonic"] - 5.0,
             }
             with patch.object(engine_module, "WhisperModel", return_value=fake_model):
                 asr_consumer(audio_queue, text_queue, log_queue, shared_config, session_dir)
 
             with open(os.path.join(session_dir, "transcript.jsonl"), encoding="utf-8") as handle:
                 records = [json.loads(line) for line in handle]
+            with open(os.path.join(session_dir, "subtitles.vtt"), encoding="utf-8") as handle:
+                vtt = handle.read()
             payloads = []
             while not text_queue.empty():
                 payloads.append(text_queue.get_nowait())
@@ -211,6 +228,13 @@ class TestFakeVadToAsrIntegration(unittest.TestCase):
         self.assertEqual(fake_model.audio_samples, len(audio_item["audio"]))
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0]["text"], expected_text)
+        from liveaudio.core.engine import _format_vtt_time
+        expected_timing = (
+            f"{_format_vtt_time(5.0)} --> "
+            f"{_format_vtt_time(5.0 + records[0]['audio_duration_sec'])}"
+        )
+        self.assertIn(expected_timing, vtt)
+        self.assertIn(expected_text, vtt)
         self.assertEqual(len(payloads), 1)
         self.assertEqual(payloads[0]["_telemetry"]["attempt"], 17)
         self.assertEqual(payloads[0]["text"], expected_text[:MAX_SUBTITLE_CHARS] + "...")

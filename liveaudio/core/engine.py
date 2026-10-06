@@ -27,6 +27,11 @@ from liveaudio.utils.config import (
 VALID_SUBTITLE_STYLES = {"default", "karaoke", "neon", "minimal", "bold", "rgb", "typewriter"}
 VALID_BACKLOG_POLICIES = {"auto", "live_only", "send_all"}
 MAX_SUBTITLE_CHARS = 600
+AUDIO_SAMPLE_RATE = 16000
+CAPTURE_CONFIG_KEYS = frozenset({
+    "sample_rate", "transcription_purpose", "max_chunk_duration",
+    "silence_timeout", "vad_threshold", "vad_speech_pad_ms",
+})
 LIVE_QUEUE_TIMEOUT_SEC = 0.5
 ASR_TRANSCRIBE_TIMEOUT_SEC = 15.0
 SESSION_WRITER_QUEUE_CAPACITY = 32
@@ -303,6 +308,28 @@ def _presentation_text(text: str) -> str:
     if len(text) > MAX_SUBTITLE_CHARS:
         return text[:MAX_SUBTITLE_CHARS].rstrip() + "..."
     return text
+
+
+def _safe_capture_config(value):
+    if not isinstance(value, dict):
+        return {}
+    snapshot = {}
+    if value.get("transcription_purpose") in {"subtitles", "transcription", "combined"}:
+        snapshot["transcription_purpose"] = value["transcription_purpose"]
+    for key in CAPTURE_CONFIG_KEYS - {"transcription_purpose"}:
+        setting = value.get(key)
+        if _finite_number(setting):
+            snapshot[key] = setting
+    return snapshot
+
+
+def _finite_number(value):
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(float(value))
+    except (OverflowError, ValueError):
+        return False
 
 
 def _emit_status(log_queue, key, text, state="idle", **extras):
@@ -755,6 +782,7 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
                 sequence = int(audio_item.get("sequence") or 0)
                 capture_started = audio_item.get("capture_started_monotonic")
                 capture_completed = audio_item.get("capture_completed_monotonic")
+                capture_config = _safe_capture_config(audio_item.get("capture_config"))
                 try:
                     item_attempt = int(audio_item.get("attempt", _attempt))
                 except (TypeError, ValueError):
@@ -765,6 +793,7 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
                 sequence = 0
                 capture_started = None
                 capture_completed = None
+                capture_config = {}
                 item_attempt = _attempt
 
             queue_delay = max(0.0, time.time() - created_at)
@@ -869,6 +898,25 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
 
             if texto_final:
                 texto_presentacion = _presentation_text(texto_final)
+                try:
+                    audio_duration_sec = len(audio_chunk) / AUDIO_SAMPLE_RATE
+                except (TypeError, ValueError):
+                    audio_duration_sec = None
+                if audio_duration_sec is not None and not math.isfinite(audio_duration_sec):
+                    audio_duration_sec = None
+                session_origin = shared_config.get("session_started_monotonic")
+                has_capture_timeline = (
+                    _finite_number(session_origin) and _finite_number(capture_started)
+                    and audio_duration_sec is not None and audio_duration_sec >= 0
+                    and capture_started >= session_origin
+                )
+                capture_offset_start = (
+                    round(capture_started - session_origin, 6) if has_capture_timeline else None
+                )
+                capture_offset_end = (
+                    round(capture_offset_start + audio_duration_sec, 6)
+                    if has_capture_timeline else None
+                )
                 transcript_record = {
                     "id": utterance_id,
                     "sequence": sequence,
@@ -880,15 +928,26 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
                     "total_delay": total_delay,
                     "model": clean_model_name,
                     "device": shared_config["device"],
+                    "audio_duration_sec": round(audio_duration_sec, 6) if audio_duration_sec is not None else None,
+                    "capture_offset_start_sec": capture_offset_start,
+                    "capture_offset_end_sec": capture_offset_end,
+                    "config_snapshot": {
+                        "capture": capture_config,
+                        "decode": {"asr_decode_timeout_sec": timeout_sec},
+                    },
                 }
                 
                 # Disk sink gates, read live per utterance like obs_enabled below.
-                save_transcript, save_vtt, cue_counter = _disk_sink_decision(shared_config, cue_counter)
-                vtt_start = _format_vtt_time(queue_delay)
-                vtt_end = _format_vtt_time(queue_delay + latency)
+                sink_config = shared_config
+                if not has_capture_timeline:
+                    sink_config = dict(shared_config)
+                    sink_config["save_vtt_enabled"] = False
+                save_transcript, save_vtt, cue_counter = _disk_sink_decision(sink_config, cue_counter)
+                vtt_start = _format_vtt_time(capture_offset_start or 0.0)
+                vtt_end = _format_vtt_time(capture_offset_end or 0.0)
 
                 admitted = session_writer.write_record(
-                    transcript_record, vtt_start, vtt_end, texto_presentacion, cue_counter,
+                    transcript_record, vtt_start, vtt_end, texto_final, cue_counter,
                     write_transcript=save_transcript, write_vtt=save_vtt,
                     telemetry={
                         "capture_started_monotonic": capture_started,

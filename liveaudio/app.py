@@ -1764,6 +1764,7 @@ class LiveASRApp(ctk.CTk):
                 if not self.shared_config["continuous_session"]:
                     timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
                     self.current_session_dir = os.path.join(self.shared_config["output_dir"], f"session_{timestamp}")
+                    self.shared_config["session_started_monotonic"] = time.monotonic()
                     self.update_session_label()
                 if not self.hot_swap_engine():
                     raise RuntimeError(t("log_hot_swap_failed"))
@@ -2395,6 +2396,7 @@ class LiveASRApp(ctk.CTk):
             # Generar carpeta principal de la sesión
             timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
             self.current_session_dir = os.path.join(self.shared_config["output_dir"], f"session_{timestamp}")
+            self.shared_config["session_started_monotonic"] = time.monotonic()
             self.update_session_label()
             
             # Recrear cola de texto para evitar pipes corruptos entre sesiones

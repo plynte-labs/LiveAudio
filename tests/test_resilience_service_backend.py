@@ -289,6 +289,20 @@ class TestConfigReadOnly(unittest.TestCase):
 
 
 class TestLazyFirstClient(unittest.TestCase):
+    def test_session_capture_origin_uses_monotonic_not_supervision_clock(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sup = make_supervisor(tmp)
+            with patch("liveaudio.core.network.port_range_available", return_value=True), \
+                 patch("liveaudio.service.supervisor.time.monotonic", return_value=400.0):
+                sup.start()
+            try:
+                self.assertEqual(sup.shared["session_started_monotonic"], 400.0)
+                self.assertEqual(sup._clock(), 1000.0)
+            finally:
+                sup.shutdown()
+
     def test_gate_fires_exactly_once(self):
         gate = FirstClientGate()
         self.assertTrue(gate.fire())
@@ -303,15 +317,19 @@ class TestLazyFirstClient(unittest.TestCase):
             start_supervisor(sup)
             try:
                 self.assertTrue(sup.procs["ws"].start_calls == 1)
+                session_origin = sup.shared["session_started_monotonic"]
+                self.assertNotEqual(session_origin, sup._clock())
                 self.assertIsNone(sup.procs["audio"])
                 self.assertIsNone(sup.procs["asr"])
                 self.assertEqual(sup.asr_state, "unavailable")
                 sup.poll_once()  # no client yet: still lazy
                 self.assertIsNone(sup.procs["audio"])
+                sup._clock_obj.advance(60.0)
                 sup.first_client_event.set()  # first client (probe counts too)
                 sup.poll_once()
                 self.assertIsNotNone(sup.procs["audio"])
                 self.assertIsNotNone(sup.procs["asr"])
+                self.assertEqual(sup.shared["session_started_monotonic"], session_origin)
                 first_audio, first_asr = sup.procs["audio"], sup.procs["asr"]
                 sup.poll_once()
                 sup.poll_once()

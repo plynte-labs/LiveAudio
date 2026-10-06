@@ -129,6 +129,27 @@ def _append_capture_chunk(ring_buffer, audio_chunk, captured_monotonic, sequence
     ring_buffer.append((audio_chunk, float(captured_monotonic), int(sequence)))
 
 
+def _capture_config_snapshot(config):
+    """Return only safe, scalar settings that shaped this captured phrase."""
+    snapshot = {"sample_rate": SAMPLE_RATE}
+    purpose = config.get("transcription_purpose", "subtitles")
+    if purpose in {"subtitles", "transcription", "combined"}:
+        snapshot["transcription_purpose"] = purpose
+    for key, default in (
+        ("max_chunk_duration", 5.0),
+        ("silence_timeout", 0.8),
+        ("vad_threshold", VAD_THRESHOLD),
+        ("vad_speech_pad_ms", 200),
+    ):
+        value = config.get(key, default)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            value = default
+        if not math.isfinite(float(value)):
+            value = default
+        snapshot[key] = value
+    return snapshot
+
+
 def _record_vad_shutdown_outcomes(diagnostics_store, partial_speech_chunks, ring_chunks):
     if diagnostics_store is None:
         return
@@ -215,6 +236,7 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
     max_sec = config.get("max_chunk_duration", 5.0)
     vad_threshold = config.get("vad_threshold", VAD_THRESHOLD)
     vad_speech_pad_ms = config.get("vad_speech_pad_ms", 200)
+    capture_config = _capture_config_snapshot(config)
     diagnostics_store = diagnostics_store or create_store_from_config(config)
 
     SILENCE_CHUNKS_TO_END = int((SAMPLE_RATE / CHUNK_SIZE) * silence_sec)
@@ -338,11 +360,13 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
             try:
                 audio_queue.put_nowait({
                     "audio": full_audio,
+                    "audio_duration_sec": len(full_audio) / SAMPLE_RATE,
                     "created_at": time.time(),
                     "sequence": utterance_sequence,
                     "attempt": capture_attempt,
                     "capture_started_monotonic": first_capture,
                     "capture_completed_monotonic": last_capture,
+                    "capture_config": capture_config.copy(),
                 })
             except queue.Full:
                 # Queue is full — drop oldest phrase from speech_buffer to prevent blocking
