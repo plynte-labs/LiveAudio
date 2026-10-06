@@ -53,6 +53,17 @@ def _race_service_lock(home, barrier, release_event, results):
     lock.release()
 
 
+def _try_service_lock_once(home, results):
+    lock = InstanceLock(home=home)
+    try:
+        lock.acquire()
+    except ServiceError as exc:
+        results.put(("rejected", exc.code))
+        return
+    results.put(("acquired", os.getpid()))
+    lock.release()
+
+
 def _hold_service_lock_until_terminated(home, acquired_event):
     lock = InstanceLock(home=home)
     lock.acquire()
@@ -1077,6 +1088,47 @@ class TestNativeServiceLockSafety(unittest.TestCase):
                 if process.is_alive():
                     process.terminate()
                     process.join(timeout=5)
+
+    def test_same_process_contender_does_not_open_fd_or_release_owner_lock(self):
+        import tempfile
+
+        context = mp.get_context("spawn")
+        with tempfile.TemporaryDirectory() as home:
+            owner = InstanceLock(home=home)
+            owner.acquire()
+            contender = InstanceLock(home=home)
+            from liveaudio.service import lock as lock_module
+            real_open = lock_module.os.open
+            opened = []
+
+            def track_open(*args, **kwargs):
+                opened.append(args[0])
+                return real_open(*args, **kwargs)
+
+            try:
+                with patch("liveaudio.service.lock.os.open", side_effect=track_open):
+                    with self.assertRaises(ServiceError) as ctx:
+                        contender.acquire()
+                self.assertEqual(ctx.exception.code, "service-already-running")
+                self.assertEqual(opened, [], "same-process rejection must precede os.open")
+
+                results = context.Queue()
+                process = context.Process(target=_try_service_lock_once, args=(home, results))
+                process.start()
+                try:
+                    self.assertEqual(results.get(timeout=15),
+                                     ("rejected", "service-already-running"))
+                    process.join(timeout=10)
+                    self.assertFalse(process.is_alive())
+                    self.assertEqual(process.exitcode, 0)
+                finally:
+                    if process.is_alive():
+                        process.terminate()
+                        process.join(timeout=5)
+                    results.close()
+                    results.join_thread()
+            finally:
+                owner.release()
 
 
 class TestResourceHygiene(unittest.TestCase):
