@@ -82,3 +82,23 @@ def list_audio_devices():
                 })
 
     return result
+
+
+def get_input_device_count() -> int:
+    """Retorna la cantidad de dispositivos de entrada (micrófonos) disponibles sin costo.
+
+    En Windows, utiliza waveInGetNumDevs() de la API WinMM mediante ctypes.
+    Esto toma microsegundos, no consume CPU y jamás bloquea ni reinicia el subsistema de audio.
+    En otras plataformas, consulta sounddevice de forma segura.
+    """
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            return int(ctypes.windll.winmm.waveInGetNumDevs())
+        except Exception:
+            pass
+    try:
+        devices = sd.query_devices()
+        return sum(1 for d in devices if isinstance(d, dict) and d.get("max_input_channels", 0) > 0)
+    except Exception:
+        return 0

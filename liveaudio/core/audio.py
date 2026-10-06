@@ -17,7 +17,7 @@ from liveaudio.utils.streams import make_streams_encoding_safe
 # La enumeración de dispositivos vive en un módulo libre de torch para que la
 # GUI pueda listarlos sin importar torch. Se reexporta aquí por compatibilidad
 # (p. ej. el bloque __main__ de pruebas).
-from liveaudio.core.devices import list_audio_devices, _normalize_device_name
+from liveaudio.core.devices import list_audio_devices, _normalize_device_name, get_input_device_count
 
 # Suprimir solo advertencias de PyTorch/UserWarning, no todas
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -169,7 +169,7 @@ def _resolve_device_settings(config):
         return None, None  # Fallback al default
 
 
-def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = None, diagnostics_store=None):
+def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = None, diagnostics_store=None, stop_event=None):
     import sys
     import io
     if sys.stdout is None:
@@ -283,7 +283,7 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
     worker_running.set()
     
     # Señal de shutdown graceful
-    shutdown_event = threading.Event()
+    shutdown_event = stop_event if stop_event is not None else threading.Event()
     
     # Timestamp del último callback (para el watchdog)
     last_callback_time = time.time()
@@ -477,11 +477,35 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
         stream_active=False,
     )
 
+    is_loopback = config.get("audio_device", {}).get("is_loopback", False) if isinstance(config.get("audio_device"), dict) else False
+
     while not shutdown_event.is_set():
+        # Centinela pasivo: si no es loopback y no hay hardware de captura, esperar en STANDBY
+        if not is_loopback and get_input_device_count() == 0:
+            _status("audio", "Audio: en espera de micrófono", "standby")
+            _log("[Productor] ⏳ No hay micrófonos disponibles. En espera de hardware (Standby)...")
+            _record_audio_runtime_health(
+                diagnostics_store,
+                ring_buffer_chunks=len(ring_buffer),
+                worker_alive=vad_thread.is_alive(),
+                stream_active=False,
+            )
+            while not shutdown_event.is_set() and get_input_device_count() == 0:
+                shutdown_event.wait(1.0)
+            if shutdown_event.is_set():
+                break
+            _log("[Productor] 🎤 Dispositivo de audio detectado. Inicializando flujo...")
+            try:
+                sd._terminate()
+                sd._initialize()
+            except Exception:
+                pass
+
         try:
             with callback_time_lock:
                 last_callback_time = time.time()
             
+            stream_start_time = time.time()
             with sd.InputStream(**stream_kwargs) as stream:
                 
                 _log("[Productor] 🎤 Audio conectado y escuchando.")
@@ -495,10 +519,12 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
                 
                 while not shutdown_event.is_set():
                     sd.sleep(500)
+                    now = time.time()
+                    stream_age = now - stream_start_time
                     
-                    # 1. Si pasaron más de 2 segundos sin que el callback se ejecute = Dispositivo desconectado
+                    # 1. Watchdog con ventana de gracia (3.0s) y umbral relajado a 5.0 segundos
                     with callback_time_lock:
-                        elapsed = time.time() - last_callback_time
+                        elapsed = now - last_callback_time
                     _record_audio_runtime_health(
                         diagnostics_store,
                         ring_buffer_chunks=len(ring_buffer),
@@ -506,8 +532,8 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
                         worker_alive=vad_thread.is_alive(),
                         stream_active=stream.active,
                     )
-                    if elapsed > 2.0:
-                        raise sd.PortAudioError("Silencio total detectado (Watchdog timeout).")
+                    if stream_age > 3.0 and elapsed > 5.0:
+                        raise sd.PortAudioError("Silencio total detectado (Watchdog timeout: > 5s sin audio de hardware).")
                     
                     # 2. Si el sistema reporta que el stream murió
                     if not stream.active:
@@ -517,9 +543,7 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
                 stream.close()
                 
         except sd.PortAudioError as e:
-            _log(f"\n[Productor] ⚠️ ALERTA: Hardware de audio perdido. Detalles: {e}")
-            _log("[Productor] 🔄 Buscando dispositivo... reintentando en 3 segundos.")
-            _status("audio", "Audio: reconectando", "warn")
+            _log(f"\n[Productor] ⚠️ ALERTA: Hardware de audio perdido o error en flujo. Detalles: {e}")
             _record_audio_runtime_health(
                 diagnostics_store,
                 ring_buffer_chunks=len(ring_buffer),
@@ -530,14 +554,23 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
             
             # Limpiar el ring buffer y el estado del worker al reconectar
             ring_buffer.clear()
-            
+
+            # Si el micrófono físico fue desconectado, entrar a Standby limpio sin martillar PortAudio
+            if not is_loopback and get_input_device_count() == 0:
+                _status("audio", "Audio: en espera de micrófono", "standby")
+                _log("[Productor] ⏳ Micrófono desconectado. Entrando en modo Standby...")
+                shutdown_event.wait(1.0)
+                continue
+
+            _log("[Productor] 🔄 Reconectando dispositivo... reintentando en 3 segundos.")
+            _status("audio", "Audio: reconectando", "warn")
             try:
                 sd._terminate()
                 sd._initialize()
             except Exception:
                 pass
             
-            time.sleep(3) 
+            shutdown_event.wait(3.0)
             
         except Exception as e:
             _log(f"\n[Productor] ❌ Error inesperado: {e}")
@@ -548,7 +581,7 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
                 worker_alive=vad_thread.is_alive(),
                 stream_active=False,
             )
-            time.sleep(3)
+            shutdown_event.wait(3.0)
     
     # Graceful shutdown — signal worker to stop and wait for it
     _log("[Productor] Apagando sistema de audio...")
