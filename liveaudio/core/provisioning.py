@@ -175,7 +175,7 @@ def build_progress_event(phase, percent, attempt, code, text):
 class PreparationProgress:
     """Bounded, path-free status callbacks; heartbeat is stopped before ready."""
 
-    def __init__(self, emit, attempt=1, interval=5.0):
+    def __init__(self, emit, attempt=1, interval=15.0):
         import threading
         self.emit = emit
         self.attempt = attempt
@@ -184,6 +184,7 @@ class PreparationProgress:
         self._lock = threading.Lock()
         self._event = None
         self._last_emit = 0.0
+        self._phase_started = 0.0
         self._thread = threading.Thread(target=self._heartbeat, daemon=True)
 
     def __enter__(self):
@@ -203,8 +204,10 @@ class PreparationProgress:
             if bytes_available is not None:
                 event['bytes_available'] = int(bytes_available)
             changed = self._event is None or self._event['text'] != text
-            self._event = event
             now = time.monotonic()
+            if self._event is None or self._event["phase"] != phase or (changed and bytes_available is None):
+                self._phase_started = now
+            self._event = event
             if force or (changed and bytes_available is None) or now - self._last_emit >= 0.5:
                 self.emit(event)
                 self._last_emit = now
@@ -213,7 +216,11 @@ class PreparationProgress:
         while not self._stop.wait(self.interval):
             with self._lock:
                 if self._event is not None:
-                    self.emit(dict(self._event))
+                    import time
+                    event = dict(self._event)
+                    elapsed = int(time.monotonic() - self._phase_started)
+                    event["text"] += " (espera: %d s)" % elapsed
+                    self.emit(event)
 
 
 def prepare_model(model_name, emit, attempt=1):
@@ -263,6 +270,15 @@ def prepare_model(model_name, emit, attempt=1):
         report('ASR: descarga en curso (sin contador disponible)', 'downloading')
         return download_model(model_name)
 
+    def byte_text(count):
+        if count < 1024:
+            size = '%d B' % count
+        elif count < 1048576:
+            size = '%.1f KiB' % (count / 1024)
+        else:
+            size = '%.1f MiB' % (count / 1048576)
+        return 'ASR: descargando (%s disponibles)' % size
+
     class ByteProgress(tqdm):
         def __init__(self, *args, **kwargs):
             import threading
@@ -278,7 +294,7 @@ def prepare_model(model_name, emit, attempt=1):
             with self._byte_lock:
                 if not self._closed and self._byte_bar and n and n > 0:
                     self._bytes += n
-                    report('ASR: descargando (%.1f MiB disponibles)' % (self._bytes / 1048576),
+                    report(byte_text(self._bytes),
                            'downloading', int(self._bytes))
 
         def close(self):
@@ -286,7 +302,7 @@ def prepare_model(model_name, emit, attempt=1):
                 if not self._closed:
                     self._closed = True
                     if self._byte_bar and self._bytes:
-                        report('ASR: descargando (%.1f MiB disponibles)' % (self._bytes / 1048576),
+                        report(byte_text(self._bytes),
                                'downloading', int(self._bytes), force=True)
             super().close()
 
