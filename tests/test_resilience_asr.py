@@ -72,7 +72,10 @@ class TestAsrTimeoutRecovery(unittest.TestCase):
         self.assertEqual(set(transcript), {
             "id", "sequence", "text", "created_at", "processed_at", "queue_delay",
             "latency", "total_delay", "model", "device",
+            "capture_offset_start_sec", "capture_offset_end_sec", "audio_duration_sec", "config_snapshot",
         })
+        for key in ("capture_offset_start_sec", "capture_offset_end_sec", "audio_duration_sec", "config_snapshot"):
+            self.assertNotIn(key, payload)
         self.assertEqual(payload["_telemetry"]["sequence"], 7)
         self.assertEqual(payload["_telemetry"]["attempt"], 4)
         self.assertEqual(payload["_telemetry"]["capture_started_monotonic"], 100.0)

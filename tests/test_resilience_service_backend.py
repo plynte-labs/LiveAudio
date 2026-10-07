@@ -64,6 +64,28 @@ def _try_service_lock_once(home, results):
     lock.release()
 
 
+def _hold_service_lock_during_metadata_write(home, truncated, resume):
+    import liveaudio.service.lock as lock_module
+
+    original_write = lock_module._write_pid
+
+    def paused_write(handle, pid):
+        handle.seek(0)
+        handle.truncate()
+        handle.flush()
+        truncated.set()
+        if not resume.wait(10):
+            raise RuntimeError("metadata write was not resumed")
+        original_write(handle, pid)
+
+    lock_module._write_pid = paused_write
+    lock = InstanceLock(home=home)
+    try:
+        lock.acquire()
+    finally:
+        lock.release()
+
+
 def _hold_service_lock_until_terminated(home, acquired_event):
     lock = InstanceLock(home=home)
     lock.acquire()
@@ -937,6 +959,39 @@ class TestHealthAndLock(unittest.TestCase):
 
 
 class TestNativeServiceLockSafety(unittest.TestCase):
+    def test_contender_does_not_write_during_owner_metadata_truncation(self):
+        import tempfile
+
+        context = mp.get_context("spawn")
+        with tempfile.TemporaryDirectory() as home:
+            truncated, resume = context.Event(), context.Event()
+            results = context.Queue()
+            owner = context.Process(target=_hold_service_lock_during_metadata_write,
+                                    args=(home, truncated, resume))
+            contender = context.Process(target=_try_service_lock_once, args=(home, results))
+            processes = [owner, contender]
+            owner.start()
+            try:
+                self.assertTrue(truncated.wait(10), "owner never reached metadata truncation")
+                contender.start()
+                self.assertEqual(results.get(timeout=10), ("rejected", "service-already-running"))
+                self.assertEqual(os.path.getsize(os.path.join(home, "service.lock")), 0)
+                resume.set()
+                for process in processes:
+                    process.join(5)
+                    self.assertFalse(process.is_alive())
+                    self.assertEqual(process.exitcode, 0)
+            finally:
+                resume.set()
+                for process in processes:
+                    if process.pid is not None:
+                        process.join(5)
+                        if process.is_alive():
+                            process.terminate()
+                            process.join(5)
+                results.close()
+                results.join_thread()
+
     def _race(self, home):
         context = mp.get_context("spawn")
         barrier = context.Barrier(2)

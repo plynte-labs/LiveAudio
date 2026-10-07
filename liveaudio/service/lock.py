@@ -81,9 +81,6 @@ class InstanceLock:
                 return False
             fd = os.open(self.path, os.O_CREAT | os.O_RDWR, 0o600)
             self._handle = os.fdopen(fd, "r+b")
-            if os.fstat(fd).st_size == 0:
-                self._handle.write(b"\0")
-                self._handle.flush()
             if not _try_lock(self._handle):
                 self._close_handle()
                 return False

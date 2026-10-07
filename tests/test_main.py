@@ -121,7 +121,7 @@ class TestWelcomeVersionLabel(unittest.TestCase):
 
         source = inspect.getsource(LiveASRApp.build_welcome_screen)
         self.assertIn("APP_VERSION", source)
-        self.assertRegex(APP_VERSION, r"^\d+\.\d+\.\d+$")
+        self.assertRegex(APP_VERSION, r"^\d+\.\d+\.\d+(?:(?:a|b|rc)\d+)?$")
 
 
 if __name__ == "__main__":

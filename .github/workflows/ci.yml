@@ -23,6 +23,7 @@ jobs:
       matrix:
         os: [windows-latest, ubuntu-22.04]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
 
@@ -45,7 +46,7 @@ jobs:
         run: uv run ruff check .
 
       - name: Tests
-        run: uv run pytest -q
+        run: uv run pytest -vv --tb=short -o faulthandler_timeout=60
 
       - name: Launcher self-test
         env:
