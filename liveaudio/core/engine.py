@@ -661,62 +661,52 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
         if has_queued_audio_item and queued_audio_item is None:
             return
 
-        clean_model_name = shared_config["model_size"].split()[0]
-        _emit_status(log_queue, "asr", "ASR: cargando", "loading",
-                     phase="loading", is_download=False,
-                     asr_state_legacy=asr_state_legacy("loading"))
-        _emit_log(log_queue, f"[IA] Cargando Whisper ({clean_model_name}) en {shared_config['device'].upper()}...")
+        configured_model = shared_config["model_size"]
+        clean_model_name = configured_model if os.path.isdir(configured_model) else configured_model.split()[0]
         diagnostics_store = diagnostics_store or create_store_from_config(dict(shared_config))
-        
-        model_kwargs = {
-            "model_size_or_path": clean_model_name,
-            "device": shared_config["device"],
-            "compute_type": "float16" if shared_config["device"] == "cuda" else "int8"
-        }
-        if shared_config["device"] == "cpu":
-            model_kwargs["cpu_threads"] = int(shared_config["cpu_threads"])
-
         model_load_started_at = time.time()
-        try:
-            # Intento 1: Carga instantánea desde caché local sin peticiones de red síncronas (0.6s)
-            model = _scoped_unverified_context_for_provisioning(
-                lambda: WhisperModel(**dict(model_kwargs, local_files_only=True)))
-        except Exception as cache_err:
-            # "Modelo no encontrado" is RESERVED for real absence (D7): a broad
-            # cache exception must map to the provision-* catalog instead.
-            code = classify_provisioning_error(cache_err)
-            if code == "model-not-found":
-                _emit_log(log_queue, f"[IA] Modelo no encontrado en caché local. Consultando Hugging Face...")
-            else:
-                _emit_log(log_queue, f"[IA ERROR] provisioning {code} ({type(cache_err).__name__})")
+        from liveaudio.core.provisioning import PreparationProgress, prepare_model
+
+        def emit_preparation(event):
             try:
-                model = _scoped_unverified_context_for_provisioning(
-                    lambda: WhisperModel(**model_kwargs))
-            except Exception as load_err:
-                code = classify_provisioning_error(load_err)
-                if shared_config["device"] == "cuda" and code != "provision-tls":
+                log_queue.put_nowait(event)
+            except Exception:
+                pass
+            _emit_log(log_queue, "[IA] " + event["text"])
+
+        _emit_log(log_queue, "[IA ADVERTENCIA] Mientras se prepara el modelo, el audio en cola puede descartarse.")
+        try:
+            with PreparationProgress(emit_preparation, attempt=_attempt) as progress:
+                def prepared_status(event):
+                    progress.report(event["phase"], event["text"], event.get("bytes_available"),
+                                    force=event.get("force", False))
+
+                model_path = prepare_model(clean_model_name, prepared_status, attempt=_attempt)
+                model_kwargs = {
+                    "model_size_or_path": model_path,
+                    "device": shared_config["device"],
+                    "compute_type": "float16" if shared_config["device"] == "cuda" else "int8",
+                    "local_files_only": True,
+                }
+                if shared_config["device"] == "cpu":
+                    model_kwargs["cpu_threads"] = int(shared_config["cpu_threads"])
+                progress.report("loading", "ASR: cargando modelo en " + shared_config["device"].upper())
+                try:
+                    model = WhisperModel(**model_kwargs)
+                except Exception as load_err:
+                    if shared_config["device"] != "cuda":
+                        raise
                     _emit_log(log_queue, f"[IA ADVERTENCIA] Falló la carga en CUDA ({type(load_err).__name__}). Reintentando en CPU...")
-                    cpu_kwargs = dict(model_kwargs, device="cpu", compute_type="int8", cpu_threads=int(shared_config.get("cpu_threads", 4)))
-                    try:
-                        model = _scoped_unverified_context_for_provisioning(
-                            lambda: WhisperModel(**dict(cpu_kwargs, local_files_only=True)))
-                    except Exception:
-                        try:
-                            model = _scoped_unverified_context_for_provisioning(
-                                lambda: WhisperModel(**cpu_kwargs))
-                        except Exception as cpu_err:
-                            code = classify_provisioning_error(cpu_err)
-                            _emit_status(log_queue, "asr", "ASR: error", "failed",
-                                         phase="failed", code=code, is_download=False,
-                                         asr_state_legacy=asr_state_legacy("failed"))
-                            _emit_log(log_queue, f"[IA ERROR] provisioning {code} ({type(cpu_err).__name__})")
-                            raise cpu_err
-                else:
-                    _emit_status(log_queue, "asr", "ASR: error", "failed",
-                                 phase="failed", code=code, is_download=False,
-                                 asr_state_legacy=asr_state_legacy("failed"))
-                    _emit_log(log_queue, f"[IA ERROR] provisioning {code} ({type(load_err).__name__})")
-                    raise load_err
+                    progress.report("loading", "ASR: cargando modelo en CPU")
+                    model = WhisperModel(**dict(model_kwargs, device="cpu", compute_type="int8",
+                                               cpu_threads=int(shared_config.get("cpu_threads", 4))))
+        except Exception as load_err:
+            code = classify_provisioning_error(load_err)
+            _emit_status(log_queue, "asr", "ASR: error", "failed",
+                         phase="failed", code=code, attempt=_attempt, is_download=False,
+                         asr_state_legacy=asr_state_legacy("failed"))
+            _emit_log(log_queue, f"[IA ERROR] provisioning {code} ({type(load_err).__name__})")
+            raise
 
         _record_asr_runtime_health(
             diagnostics_store,
@@ -724,7 +714,7 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
             model_load_sec=time.time() - model_load_started_at,
         )
         _emit_status(log_queue, "asr", "ASR: listo", "ready",
-                     phase="ready", is_download=False,
+                     phase="ready", attempt=_attempt, is_download=False,
                      asr_state_legacy=asr_state_legacy("ready"))
         _emit_log(log_queue, f"[IA] Modelo cargado y listo en {time.time() - model_load_started_at:.2f}s.")
 
@@ -801,7 +791,7 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
 
             start_time = time.time()
             _emit_status(log_queue, "asr", "ASR: transcribiendo", "transcribing",
-                         phase="transcribing", is_download=False,
+                         phase="transcribing", attempt=_attempt, is_download=False,
                          asr_state_legacy=asr_state_legacy("transcribing"))
 
             # Leer idioma de voz y prompt de contexto en caliente desde shared_config
@@ -878,7 +868,7 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
                     timed_out=True,
                 )
                 _emit_status(log_queue, "asr", "ASR: listo", "ready",
-                             phase="ready", is_download=False,
+                             phase="ready", attempt=_attempt, is_download=False,
                              asr_state_legacy=asr_state_legacy("ready"))
                 continue
 
@@ -980,7 +970,7 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
                         "reason": "obs_disabled",
                     })
                     _emit_status(log_queue, "asr", "ASR: listo", "ready",
-                                 phase="ready", is_download=False,
+                                 phase="ready", attempt=_attempt, is_download=False,
                                  asr_state_legacy=asr_state_legacy("ready"))
                     continue
 
@@ -1077,12 +1067,12 @@ def asr_consumer(audio_queue: mp.Queue, text_queue: mp.Queue, log_queue: mp.Queu
                     })
                     _emit_log(log_queue, f"[IA] Subtitulo atrasado {total_delay:.1f}s procesado; omitido en OBS por politica live.")
             _emit_status(log_queue, "asr", "ASR: listo", "ready",
-                         phase="ready", is_download=False,
+                         phase="ready", attempt=_attempt, is_download=False,
                          asr_state_legacy=asr_state_legacy("ready"))
 
     except Exception as e:
         _emit_status(log_queue, "asr", "ASR: error", "failed",
-                     phase="failed", code=classify_provisioning_error(e),
+                     phase="failed", code=classify_provisioning_error(e), attempt=_attempt,
                      is_download=False,
                      asr_state_legacy=asr_state_legacy("failed"))
         _emit_log(log_queue, f"[IA ERROR] {type(e).__name__}")

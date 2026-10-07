@@ -111,6 +111,7 @@ class ProcessSupervisor:
         # First-use startup progress (T1-T3): honest provisioning state.
         self.asr_phase = None
         self.asr_percent = None
+        self.asr_bytes_available = None
         self.asr_attempt = 1
         self.asr_code = None
         try:
@@ -324,8 +325,14 @@ class ProcessSupervisor:
             pass
         now = self._clock()
         self._last_asr_event_at = now
+        previous_progress = (self.asr_percent, self.asr_bytes_available)
+        raw_bytes = msg.get("bytes_available")
+        self.asr_bytes_available = (raw_bytes if honest == "downloading"
+                                    and isinstance(raw_bytes, int)
+                                    and not isinstance(raw_bytes, bool)
+                                    and raw_bytes >= 0 else None)
         raw_percent = msg.get("percent")
-        if raw_percent is not None:
+        if raw_percent is not None and honest == "downloading":
             try:
                 candidate = clamp_percent(float(raw_percent))
             except (TypeError, ValueError):
@@ -333,8 +340,8 @@ class ProcessSupervisor:
             if candidate is not None:
                 previous = self.asr_percent if self.asr_percent is not None else 0.0
                 self.asr_percent = monotonic_percent(previous, candidate)
-        elif honest == "downloading" and self.asr_percent is None:
-            self.asr_percent = None  # indeterminate fallback: no frozen 0%
+        else:
+            self.asr_percent = None  # No stale percentage outside a measured download.
         if msg.get("code") is not None:
             self.asr_code = msg.get("code")
         elif honest == "failed":
@@ -356,6 +363,8 @@ class ProcessSupervisor:
             self.asr_phase = honest
             self._last_emitted_percent = None
             self._emit_asr_state()
+        elif previous_progress != (self.asr_percent, self.asr_bytes_available):
+            self._emit_asr_state()
         elif raw_percent is not None:
             bucket = int(self.asr_percent) if self.asr_percent is not None else None
             if bucket != self._last_emitted_percent:
@@ -375,6 +384,8 @@ class ProcessSupervisor:
             fields["percent"] = float(self.asr_percent)
         if self.asr_state == "downloading":
             fields["is_download"] = True
+            if self.asr_bytes_available is not None:
+                fields["bytes_available"] = self.asr_bytes_available
         self.emitter.emit("asr_state", fields)
         self._write_health()
 
@@ -439,6 +450,8 @@ class ProcessSupervisor:
         if self.asr_state != "stalled" and (now - last) >= self.stall_sec:
             self.asr_state = "stalled"
             self.asr_phase = "stalled"
+            self.asr_percent = None
+            self.asr_bytes_available = None
             self.asr_code = "provision-timeout-stalled"
             self._stalled_emitted = True
             self._emit_asr_state()
@@ -455,6 +468,7 @@ class ProcessSupervisor:
         """Manual retry (D3): new attempt, % resets to 0 exactly once, then monotonic."""
         self.asr_attempt = int(self.asr_attempt or 0) + 1
         self.asr_percent = 0.0
+        self.asr_bytes_available = None
         self.asr_code = None
         self._stalled_emitted = False
         self._startup_advisory_emitted = False
