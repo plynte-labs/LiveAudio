@@ -10,9 +10,9 @@ LiveAudio..." splash stays open until the app window appears, because the
 app's module-level torch import can take 60+ seconds on a cold start with no
 feedback of its own.
 
-HARD CONSTRAINT: this module may only use the Python standard library plus
-tkinter. It must NEVER import torch or any third-party package — it runs
-before any of them are installed.
+The launcher uses the standard library and tkinter, plus a bundled truststore
+backend for Windows HTTPS. It must NEVER import application dependencies such
+as torch — it runs before they are installed.
 
 CLI surface:
     --device cpu|cuda        force the torch backend (overrides detection,
@@ -41,6 +41,7 @@ import platform as _platform_mod
 import queue
 import re
 import shutil
+import ssl
 import subprocess
 import sys
 import tarfile
@@ -871,6 +872,16 @@ def verify_sha256(path, expected):
 
 def _http_open(url, timeout=60):
     request = urllib.request.Request(url, headers={"User-Agent": "LiveAudio-Launcher"})
+    if sys.platform == "win32":
+        try:
+            import truststore
+        except ImportError as exc:
+            raise LauncherError(
+                "Windows native TLS backend is missing; reinstall the official launcher. "
+                "For a source checkout, sync the build or dev dependency group."
+            ) from exc
+        context = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        return urllib.request.urlopen(request, timeout=timeout, context=context)
     return urllib.request.urlopen(request, timeout=timeout)
 
 
