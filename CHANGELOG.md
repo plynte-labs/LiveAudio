@@ -4,6 +4,12 @@ Todos los cambios notables de LiveAudio se documentan aquí.
 
 ---
 
+## [1.2.7rc4] - 2026-10-07
+
+### Corregido
+
+- Instalador Windows: las solicitudes HTTPS del launcher usan validación nativa de certificados mediante un contexto TLS específico, sin desactivar la comprobación de certificados ni de hostname. El backend se incluye en el ejecutable; las políticas y conectividad del sistema siguen condicionando las actualizaciones de certificados. La validación en una VM Windows limpia queda pendiente.
+
 ## [1.2.7rc3] - 2026-10-07
 
 ### Mejorado

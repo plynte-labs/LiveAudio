@@ -5,13 +5,14 @@ Use native Windows certificate-chain validation for launcher-owned HTTPS. A Wind
 
 ## Authorized scope and constraints
 - Branch: `codex/launcher-native-tls`.
-- Launcher HTTPS only; no application SSL mutation, global injection, insecure fallback, installer publication, or remote operations.
+- Launcher HTTPS only; no application SSL mutation, global injection or insecure fallback. Owner subsequently authorized a GitHub-built v1.2.7rc4 prerelease through the configured gh session; Auditor owns all remote operations and publication.
 - Bundle the dependency before bootstrap; preserve non-Windows behavior and unrelated work.
 - TDD enabled by AGENTS.md strict-tdd-mode; runner: `uv run pytest`.
 - Delivery: `ask-on-risk`; forecast below 400 authored changed lines, excluding generated lock data.
-- Auditor approved the local source work-unit commit after four scoped reviews and independent focused verification. Remote operations and installer builds remain unauthorized.
+- Auditor approved the local source work-unit commit after four scoped reviews and independent focused verification. Owner now authorized installer build/publication; clean Windows VM runtime verification remains pending.
 
 ## Tasks
+- [ ] T2: Prepare 1.2.7rc4 version and release notes, then Auditor builds/publishes through GitHub. Route: delegated release writer for metadata/docs; source logic unchanged. Local preparation checks and commit recorded below; closure requires observed remote build and publication.
 - [ ] T1: Integrate Windows native TLS context, build/dev dependency, packaging inclusion, regression tests, and documentation.
   - Source implementation approved and automated verification complete; task closure awaits packaged runtime evidence.
   - Route: delegated; preparation and two or more non-trivial files.
@@ -40,4 +41,9 @@ Use native Windows certificate-chain validation for launcher-owned HTTPS. A Wind
 Revert only this task's launcher context, dependency/lock additions, packaging inclusion, tests, and associated documentation; preserve unrelated audio and release behavior.
 
 ## Next step
-Separately authorized frozen build/inclusion and clean VM runtime validation; T1 remains open until that evidence exists.
+Auditor executes the authorized GitHub build/publication for v1.2.7rc4, then owner validates bootstrap in a clean Windows 10 VM. T1 remains open until packaged runtime evidence exists.
+
+## T2 rc4 release preparation
+Owner explicitly authorized the v1.2.7rc4 GitHub prerelease using the configured gh session. This local work unit changes package version and adds an accurate Spanish release entry while retaining rc3 history. Strict version check observed RED: actual 1.2.7rc3 failed the 1.2.7rc4 assertion. Runtime logic is unchanged. No remote operations performed by the writer; Auditor owns exact-commit CI, tag/build/publication. Runtime harness here is offline launcher/version validation; frozen dependency and clean Windows 10 VM checks remain pending. Rollback boundary: only rc4 version/release-note preparation, preserving the native TLS feature and prior releases.
+
+Local GREEN: `uv run python -c "from liveaudio import __version__; assert __version__ == '1.2.7rc4', __version__"` passed. `uv run python -m pytest -q tests/test_launcher.py tests/test_unified_first_run.py`: 97 passed in 3.25 seconds. `uv lock --check`, `uv run ruff check .`, `git diff --check`, and launcher `--self-test --headless` passed. Lockfile requires no new bytes because the project version is dynamic and dependencies are unchanged. Full suite not repeated for version-only preparation; prior feature suite evidence remains above. No remote or frozen VM success claimed.
