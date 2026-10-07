@@ -250,7 +250,8 @@ class TestAsrConsumerCanonicalTranscript(unittest.TestCase):
                 "obs_enabled": True,
             }
 
-            with patch("liveaudio.core.engine.WhisperModel", return_value=FakeModel()):
+            with patch("liveaudio.core.provisioning.prepare_model", return_value="fake-model"), \
+                 patch("liveaudio.core.engine.WhisperModel", return_value=FakeModel()):
                 asr_consumer(audio_queue, text_queue, log_queue, shared, session_dir)
 
             transcript_path = os.path.join(session_dir, "transcript.jsonl")
@@ -308,7 +309,8 @@ class TestAsrConsumerCanonicalTranscript(unittest.TestCase):
                 "audio_device": {"name": "private device name"},
             }
 
-            with patch("liveaudio.core.engine.WhisperModel", return_value=FakeModel()):
+            with patch("liveaudio.core.provisioning.prepare_model", return_value="fake-model"), \
+                 patch("liveaudio.core.engine.WhisperModel", return_value=FakeModel()):
                 asr_consumer(audio_queue, text_queue, log_queue, shared, session_dir)
 
             with open(os.path.join(session_dir, "transcript.jsonl"), encoding="utf-8") as handle:
@@ -354,7 +356,8 @@ class TestAsrConsumerCanonicalTranscript(unittest.TestCase):
                 "session_started_monotonic": 100.0,
             }
 
-            with patch("liveaudio.core.engine.WhisperModel", return_value=FakeModel()):
+            with patch("liveaudio.core.provisioning.prepare_model", return_value="fake-model"), \
+                 patch("liveaudio.core.engine.WhisperModel", return_value=FakeModel()):
                 asr_consumer(audio_queue, text_queue, log_queue, shared, session_dir)
 
             with open(os.path.join(session_dir, "transcript.jsonl"), encoding="utf-8") as handle:
@@ -390,7 +393,8 @@ class TestAsrConsumerCanonicalTranscript(unittest.TestCase):
                 "session_started_monotonic": 100.0,
             }
             cues = []
-            with patch("liveaudio.core.engine.WhisperModel", side_effect=[
+            with patch("liveaudio.core.provisioning.prepare_model", return_value="fake-model"), \
+                 patch("liveaudio.core.engine.WhisperModel", side_effect=[
                 FakeModel(0.001), FakeModel(0.01),
             ]):
                 for sequence, capture_started in ((1, 105.0), (2, 150.0)):
@@ -445,7 +449,8 @@ class TestAsrConsumerCanonicalTranscript(unittest.TestCase):
                 "obs_enabled": True,
             }
 
-            with patch("liveaudio.core.engine.WhisperModel", return_value=FakeModel()):
+            with patch("liveaudio.core.provisioning.prepare_model", return_value="fake-model"), \
+                 patch("liveaudio.core.engine.WhisperModel", return_value=FakeModel()):
                 asr_consumer(audio_queue, FullTextQueue(), log_queue, shared, session_dir)
 
             events = []

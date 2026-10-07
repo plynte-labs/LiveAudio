@@ -93,7 +93,8 @@ class TestDecodeDeadline(unittest.TestCase):
                 audio_queue = queue.Queue()
                 audio_queue.put({"audio": np.ones(8, dtype=np.float32), "sequence": 1, "attempt": 31})
                 audio_queue.put(None)
-                with patch.object(engine_module, "WhisperModel", return_value=FakeWhisper()), \
+                with patch("liveaudio.core.provisioning.prepare_model", return_value="fake-model"), \
+                     patch.object(engine_module, "WhisperModel", return_value=FakeWhisper()), \
                      patch.object(engine_module, "_transcribe_with_timeout", side_effect=capture_timeout):
                     asr_consumer(audio_queue, queue.Queue(), queue.Queue(), shared, session_dir)
 

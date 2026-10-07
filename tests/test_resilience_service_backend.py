@@ -705,7 +705,8 @@ class TestChildFatalPropagation(unittest.TestCase):
                     return real_open(path, *args, **kwargs)
 
                 with patch("builtins.open", side_effect=fail_jsonl):
-                    with patch("liveaudio.core.engine.WhisperModel", return_value=FakeModel()):
+                    with patch("liveaudio.core.provisioning.prepare_model", return_value="fake-model"), \
+                         patch("liveaudio.core.engine.WhisperModel", return_value=FakeModel()):
                         asr_consumer(
                             supervisor.audio_queue, supervisor.text_queue,
                             supervisor.log_queue, supervisor.shared, tmp,

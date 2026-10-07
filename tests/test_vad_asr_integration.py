@@ -232,7 +232,8 @@ class TestFakeVadToAsrIntegration(unittest.TestCase):
                 "diagnostics_enabled": False,
                 "session_started_monotonic": audio_item["capture_started_monotonic"] - 5.0,
             }
-            with patch.object(engine_module, "WhisperModel", return_value=fake_model):
+            with patch("liveaudio.core.provisioning.prepare_model", return_value="fake-model"), \
+                 patch.object(engine_module, "WhisperModel", return_value=fake_model):
                 asr_consumer(audio_queue, text_queue, log_queue, shared_config, session_dir)
 
             with open(os.path.join(session_dir, "transcript.jsonl"), encoding="utf-8") as handle:

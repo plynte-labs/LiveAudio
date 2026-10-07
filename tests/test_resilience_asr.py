@@ -61,7 +61,8 @@ class TestAsrTimeoutRecovery(unittest.TestCase):
                 def transcribe(self, _audio, **_kwargs):
                     return iter([SimpleNamespace(text="safe text", no_speech_prob=0.0)]), SimpleNamespace()
 
-            with patch("liveaudio.core.engine.WhisperModel", return_value=FakeModel()):
+            with patch("liveaudio.core.provisioning.prepare_model", return_value="fake-model"), \
+                 patch("liveaudio.core.engine.WhisperModel", return_value=FakeModel()):
                 asr_consumer(audio_queue, text_queue, log_queue, shared, session_dir, diagnostics)
 
             payload = text_queue.get_nowait()
@@ -197,7 +198,8 @@ class TestWriterFailurePropagation(unittest.TestCase):
                 return real_open(path, *args, **kwargs)
 
             with patch("builtins.open", side_effect=fail_jsonl):
-                with patch("liveaudio.core.engine.WhisperModel", return_value=FakeModel()):
+                with patch("liveaudio.core.provisioning.prepare_model", return_value="fake-model"), \
+                     patch("liveaudio.core.engine.WhisperModel", return_value=FakeModel()):
                     asr_consumer(audio_queue, text_queue, log_queue, shared, session_dir)
 
             events = []
@@ -250,7 +252,8 @@ class TestWriterFailurePropagation(unittest.TestCase):
                 return real_open(path, *args, **kwargs)
 
             with patch("builtins.open", side_effect=fail_jsonl):
-                with patch("liveaudio.core.engine.WhisperModel", return_value=FakeModel()):
+                with patch("liveaudio.core.provisioning.prepare_model", return_value="fake-model"), \
+                     patch("liveaudio.core.engine.WhisperModel", return_value=FakeModel()):
                     asr_consumer(audio_queue, text_queue, log_queue, shared, session_dir)
 
             self.assertEqual(shared.get("writer_failure_code"), "writer_storage_error")
@@ -310,7 +313,8 @@ class TestWriterFailurePropagation(unittest.TestCase):
                 return real_open(path, *args, **kwargs)
 
             with patch("builtins.open", side_effect=fail_jsonl):
-                with patch("liveaudio.core.engine.WhisperModel", return_value=FakeModel()):
+                with patch("liveaudio.core.provisioning.prepare_model", return_value="fake-model"), \
+                     patch("liveaudio.core.engine.WhisperModel", return_value=FakeModel()):
                     asr_consumer(audio_queue, text_queue, log_queue, shared, session_dir)
 
             events = []
