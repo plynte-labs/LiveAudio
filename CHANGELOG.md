@@ -4,6 +4,22 @@ Todos los cambios notables de LiveAudio se documentan aquí.
 
 ---
 
+## [1.2.7] - 2026-10-07
+
+### Mejorado
+
+- Preparación ASR: estados de caché, descarga, carga y disponibilidad visibles; avisos de espera con tiempo de etapa y contadores de bytes legibles, sin porcentajes globales estimados.
+
+### Corregido
+
+- Instalador Windows: validación HTTPS nativa mediante un contexto TLS específico y backend incluido, manteniendo las comprobaciones de certificados y hostname. El propietario confirmó que rc4 funciona en su equipo Windows y en una VM; no se certifica una instantánea limpia sin certificados previamente descargados ni todas las políticas de red posibles.
+
+## [1.2.7rc4] - 2026-10-07
+
+### Corregido
+
+- Instalador Windows: las solicitudes HTTPS del launcher usan validación nativa de certificados mediante un contexto TLS específico, sin desactivar la comprobación de certificados ni de hostname. El backend se incluye en el ejecutable; las políticas y conectividad del sistema siguen condicionando las actualizaciones de certificados. La validación en una VM Windows limpia queda pendiente.
+
 ## [1.2.7rc3] - 2026-10-07
 
 ### Mejorado

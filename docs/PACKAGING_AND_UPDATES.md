@@ -9,9 +9,24 @@ installed and updated. User-facing instructions live in the
 ## 1. Architecture Overview
 
 LiveAudio is distributed as a **small bootstrapper launcher** (a frozen
-PyInstaller executable of `packaging/launcher.py`, stdlib + tkinter only)
+PyInstaller executable of `packaging/launcher.py`, stdlib + tkinter and a
+bundled Windows native TLS backend)
 rather than a multi-GB bundle. The launcher provisions everything else on
-first run:
+first run.
+
+On Windows, launcher-owned HTTPS downloads and release metadata requests use
+`truststore` with an explicit verified client context. Windows CryptoAPI can
+resolve certificate chains through native trust stores, including missing
+intermediates and managed root updates. The dependency is bundled before
+bootstrap, not downloaded into the application environment afterward. Missing
+backend files fail with a reinstall instruction; certificate and hostname
+checks are never disabled. Other platforms keep Python's default HTTPS
+validation. This does not alter the application's TLS configuration or `uv`'s
+own downloads, and cannot guarantee success when network policy blocks
+certificate updates. The build and Windows dev dependency groups include the
+backend for packaging and source-checkout launcher tests.
+
+Provisioning sequence:
 
 ```
 LiveAudio-Setup-X.Y.Z.exe / liveaudio-launcher
