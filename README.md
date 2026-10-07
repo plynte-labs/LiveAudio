@@ -21,6 +21,7 @@ LiveAudio is a real-time automatic speech recognition (ASR) engine designed for 
 - **Output-purpose windows:** choose fast subtitles (5-second default, adjustable 1–15s), transcript continuity (30-second default, adjustable 1–60s), or combined mode. Combined mode can delay final subtitles by tens of seconds during continuous speech.
 - **Hallucination filtering** via a customizable blacklist.
 - **Session management:** saves complete sanitized transcripts as `.jsonl` and subtitles as `.vtt`; OBS/WebSocket subtitle presentation keeps its existing 600-character cap.
+- **Visible model preparation:** cache checks, download byte availability when reported, and device loading are shown separately. No estimated overall percentage is shown; resumed cached bytes may be included. Audio queued during preparation may be discarded. Wait for ASR ready before speaking.
 - **Intelligent hot-swap:** change device or model without restarting the program.
 - **Robust architecture:** isolated processes (multiprocessing), audio ring buffer, and automatic reconnection on hardware disconnects.
 

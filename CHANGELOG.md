@@ -4,6 +4,12 @@ Todos los cambios notables de LiveAudio se documentan aquí.
 
 ---
 
+## [Unreleased]
+
+### Corregido
+
+- Preparación ASR visible: consulta de caché, descarga con bytes disponibles cuando se informan (incluye datos reanudados), carga GPU/CPU y listo; sin porcentajes globales estimados. Aviso de posible descarte de audio en cola y carga alternativa CPU sin volver a descargar.
+
 ## [1.2.6] — 2026-08-03
 
 ### Agregado

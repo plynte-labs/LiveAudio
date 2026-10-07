@@ -171,3 +171,127 @@ def build_progress_event(phase, percent, attempt, code, text):
         "text": text,
         "asr_state_legacy": asr_state_legacy(phase),
     }
+
+class PreparationProgress:
+    """Bounded, path-free status callbacks; heartbeat is stopped before ready."""
+
+    def __init__(self, emit, attempt=1, interval=5.0):
+        import threading
+        self.emit = emit
+        self.attempt = attempt
+        self.interval = interval
+        self._stop = threading.Event()
+        self._lock = threading.Lock()
+        self._event = None
+        self._last_emit = 0.0
+        self._thread = threading.Thread(target=self._heartbeat, daemon=True)
+
+    def __enter__(self):
+        self._thread.start()
+        return self
+
+    def __exit__(self, *args):
+        self._stop.set()
+        self._thread.join()
+
+    def report(self, phase, text, bytes_available=None, force=False):
+        import time
+        with self._lock:
+            if self._stop.is_set():
+                return
+            event = build_progress_event(phase, None, self.attempt, None, text)
+            if bytes_available is not None:
+                event['bytes_available'] = int(bytes_available)
+            changed = self._event is None or self._event['text'] != text
+            self._event = event
+            now = time.monotonic()
+            if force or (changed and bytes_available is None) or now - self._last_emit >= 0.5:
+                self.emit(event)
+                self._last_emit = now
+
+    def _heartbeat(self):
+        while not self._stop.wait(self.interval):
+            with self._lock:
+                if self._event is not None:
+                    self.emit(dict(self._event))
+
+
+def prepare_model(model_name, emit, attempt=1):
+    """Resolve the snapshot before loading a device, without assuming cache errors."""
+    import os
+    from faster_whisper.utils import available_models, download_model
+    from huggingface_hub import snapshot_download
+    from huggingface_hub.utils import LocalEntryNotFoundError
+    from tqdm.auto import tqdm
+
+    def report(text, phase='loading', bytes_available=None, force=False):
+        event = build_progress_event(phase, None, attempt, None, text)
+        if bytes_available is not None:
+            event['bytes_available'] = bytes_available
+        if force:
+            event['force'] = True
+        emit(event)
+
+    report('ASR: consultando caché local')
+    if os.path.isdir(model_name):
+        return model_name
+    try:
+        path = download_model(model_name, local_files_only=True)
+        # A snapshot directory alone can be an incomplete previous download.
+        if all(os.path.isfile(os.path.join(path, name)) for name in ('model.bin', 'config.json', 'tokenizer.json')):
+            return path
+    except LocalEntryNotFoundError:
+        pass
+
+    # Public available_models validates supported aliases. Unknown future aliases
+    # use faster-whisper's own resolver rather than guessing a repository.
+    repos = {
+        'large': 'Systran/faster-whisper-large-v3',
+        'turbo': 'mobiuslabsgmbh/faster-whisper-large-v3-turbo',
+        'large-v3-turbo': 'mobiuslabsgmbh/faster-whisper-large-v3-turbo',
+        'distil-large-v3.5': 'distil-whisper/distil-large-v3.5-ct2',
+    }
+    known = {'tiny', 'tiny.en', 'base', 'base.en', 'small', 'small.en',
+             'medium', 'medium.en', 'large-v1', 'large-v2', 'large-v3',
+             'distil-large-v2', 'distil-medium.en', 'distil-small.en', 'distil-large-v3'}
+    if model_name in known and model_name in available_models():
+        prefix = 'faster-' if model_name.startswith('distil-') else 'faster-whisper-'
+        repos[model_name] = 'Systran/' + prefix + model_name.replace('distil-', 'distil-whisper-', 1)
+    repo = model_name if '/' in model_name else repos.get(model_name)
+    report('ASR: consultando Hugging Face; preparando descarga')
+    if repo is None:
+        report('ASR: descarga en curso (sin contador disponible)', 'downloading')
+        return download_model(model_name)
+
+    class ByteProgress(tqdm):
+        def __init__(self, *args, **kwargs):
+            import threading
+            self._byte_lock = threading.Lock()
+            self._closed = False
+            self._bytes = 0
+            self._byte_bar = kwargs.get('unit') == 'B'
+            kwargs['disable'] = True
+            super().__init__(*args, **kwargs)
+
+        def update(self, n=1):
+            super().update(n)
+            with self._byte_lock:
+                if not self._closed and self._byte_bar and n and n > 0:
+                    self._bytes += n
+                    report('ASR: descargando (%.1f MiB disponibles)' % (self._bytes / 1048576),
+                           'downloading', int(self._bytes))
+
+        def close(self):
+            with self._byte_lock:
+                if not self._closed:
+                    self._closed = True
+                    if self._byte_bar and self._bytes:
+                        report('ASR: descargando (%.1f MiB disponibles)' % (self._bytes / 1048576),
+                               'downloading', int(self._bytes), force=True)
+            super().close()
+
+    report('ASR: descarga en curso (tamaño total pendiente)', 'downloading')
+    return snapshot_download(repo, allow_patterns=[
+        'config.json', 'preprocessor_config.json', 'model.bin',
+        'tokenizer.json', 'vocabulary.*',
+    ], tqdm_class=ByteProgress)

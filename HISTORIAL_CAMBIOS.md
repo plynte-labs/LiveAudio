@@ -2,6 +2,12 @@
 
 Este documento detalla todas las modificaciones realizadas durante la auditoría técnica y de seguridad del proyecto LiveAudio, así como la justificación técnica de cada decisión.
 
+## 2026-10-07. Preparación ASR visible y sin porcentajes estimados
+
+* **Cambio:** Se separó la resolución de caché/descarga de la construcción del modelo en GPU o CPU. El registro muestra estados y bytes disponibles cuando la biblioteca los informa; el total puede crecer y los bytes pueden incluir una descarga reanudada.
+* **Por qué:** faster-whisper suprime sus barras de descarga; interceptar la terminal no permitía observarlas. No se presenta un porcentaje global inventado.
+* **Resiliencia:** Aviso de posible descarte del audio en cola, mensajes periódicos acotados y carga alternativa en CPU sin nueva descarga. Los estados fuera de descarga eliminan porcentajes anteriores.
+
 ## 2026-10-03. Transcripciones JSONL completas
 
 * **Cambio:** El archivo JSONL de sesión conserva el texto completo después de la sanitización. La presentación de subtítulos en OBS/WebSocket y el VTT mantiene el límite actual de 600 caracteres.

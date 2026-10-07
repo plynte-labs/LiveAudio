@@ -42,6 +42,12 @@ uv sync --extra cu121
 
 ---
 
+## Preparación del modelo ASR
+
+El registro muestra la consulta de caché, la descarga y la carga en GPU o CPU. Cuando la descarga informa bytes, se muestran MiB disponibles (pueden incluir bytes recuperados de caché), no un porcentaje global ni una estimación de tiempo. Si el contador no está disponible, la descarga se indica sin porcentaje. Los mensajes periódicos indican espera, no garantizan que la red avance. Un modelo completo en caché evita consultar la red; un fallo de CUDA permite reintentar la carga en CPU sin volver a descargar.
+
+**Espera a que ASR indique que está listo antes de hablar:** durante la preparación puede descartarse audio en cola. La captura y la política de subtítulos OBS no cambian.
+
 ## 3. Verificar instalación
 
 - **Instalador:** ejecuta el launcher con `--self-test` para ver las rutas resueltas y el dispositivo detectado.
