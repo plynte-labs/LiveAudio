@@ -32,7 +32,7 @@ LiveAudio expone un **servidor WebSocket local** que envía los subtítulos tran
 |---|---|
 | **Protocolo** | WebSocket (`ws://`) |
 | **Host** | `127.0.0.1` (localhost únicamente) |
-| **Puerto** | `8765` (configurable vía `ws_port` en `config.json`) |
+| **Puerto** | `8765` (configurable vía `ws_port` en `config.json`). Si el puerto base está ocupado, el servidor prueba `base..base+9` (10 candidatos) y anuncia el puerto efectivo en el `hello` y en el log (`WS: localhost:XXXX`). Nunca asumas un puerto fijo: lee `hello.port`. |
 | **Endpoint** | `/` (raíz) |
 | **Formato de mensaje** | JSON |
 
@@ -70,6 +70,21 @@ Cuando Whisper produce una transcripción válida y la política de backlog perm
 
 El HTML de OBS solo necesita `text` y `style`; los demás campos son metadata para diagnóstico y control de backlog.
 
+### Handshake `hello` (recv-only)
+
+Al conectar, el servidor envía primero un handshake y luego ignora todo lo que el cliente mande (el overlay es solo-recepción):
+
+```json
+{"type": "hello", "app": "liveaudio", "proto": 1, "port": 8766}
+```
+
+| Campo | Descripción |
+|---|---|
+| `proto` | Versión del protocolo. Siempre `1`; si cambia, el lector debe revalidar. |
+| `port` | **Puerto efectivo**: el puerto donde realmente está sirviendo (puede diferir del base por el fallback `base..base+9`). |
+
+El overlay debe hacer `hello` antes de renderizar (cierra el gap "wrong socket") y, si el puerto efectivo no coincide con el esperado, reconectar ahí. Los payloads inbound (incluido `hello` del cliente) no generan transcripciones ni duplicados: 3 mensajes idénticos entrantes no tienen ningún efecto lateral.
+
 ---
 
 ## 3. Política de backlog para OBS
@@ -80,7 +95,7 @@ LiveAudio separa la persistencia completa de la salida visual en OBS. Toda trans
 |---|---|---|
 | Auto | `auto` | Envía subtítulos frescos, emite backlog corto con pacing y omite de OBS lo que supere el atraso máximo. |
 | Solo en vivo | `live_only` | Guarda todo, pero solo muestra subtítulos dentro de `subtitle_max_live_delay_sec`. |
-| Enviar todo | `send_all` | Manda todo a OBS aunque llegue tarde. |
+| Enviar todo | `send_all` | Manda todo a OBS aunque llegue tarde. Tras un freeze largo puede producir un burst bloqueante; el buffer de replay está acotado a 256 mensajes (drop-oldest con contador `ws.replay_drops`), así que en freezes muy largos se conserva el borde en vivo, no todo el historial. |
 
 Opciones de `config.json`:
 
@@ -97,6 +112,7 @@ Opciones de `config.json`:
 ## 4. Seguridad
 
 - **Solo conexiones locales:** el servidor rechaza cualquier conexión que no provenga de `127.0.0.1`, `::1` o `localhost`.
+- **Filtro Origin:** se aceptan clientes navegador con Origin de loopback en cualquier puerto (incluye `http://localhost:1420`, el frontend local de opencohost) más el host interno de OBS (`http://absolute`). Orígenes remotos se rechazan con 403 visible en consola y log.
 - **Sin autenticación:** al estar limitado a localhost, no se requiere token ni login.
 - **Broadcast:** si múltiples clientes se conectan (OBS + navegador de pruebas), todos reciben los mismos mensajes simultáneamente.
 

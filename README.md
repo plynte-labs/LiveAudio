@@ -18,8 +18,9 @@ LiveAudio is a real-time automatic speech recognition (ASR) engine designed for 
 - **Flexible capture:** physical microphone or system audio (WASAPI Loopback on Windows).
 - **Integrated WebSocket** to send subtitles to OBS or any HTML client.
 - **OBS backlog control:** prevents bursts of old subtitles after freezes, without losing the saved transcript.
+- **Output-purpose windows:** choose fast subtitles (5-second default, adjustable 1–15s), transcript continuity (30-second default, adjustable 1–60s), or combined mode. Combined mode can delay final subtitles by tens of seconds during continuous speech.
 - **Hallucination filtering** via a customizable blacklist.
-- **Session management:** saves transcriptions as `.jsonl` and subtitles as `.vtt`.
+- **Session management:** saves complete sanitized transcripts as `.jsonl` and subtitles as `.vtt`; OBS/WebSocket subtitle presentation keeps its existing 600-character cap.
 - **Intelligent hot-swap:** change device or model without restarting the program.
 - **Robust architecture:** isolated processes (multiprocessing), audio ring buffer, and automatic reconnection on hardware disconnects.
 
@@ -165,6 +166,7 @@ On first run, a `config.json` file is created automatically with default values 
     "subtitle_catchup_interval_sec": 1.5,
     "silence_timeout": 0.8,
     "max_chunk_duration": 5.0,
+    "asr_decode_timeout_sec": 15,
     "audio_device": null,
     "selected_profile_id": "balanced",
     "ws_port": 8765,
@@ -193,6 +195,8 @@ On first run, a `config.json` file is created automatically with default values 
 
 ## Configuration Profiles
 
+Choose the output purpose separately from the hardware profile. Hardware presets do not change the selected purpose or phrase window. Longer transcript windows improve phrase continuity but delay final subtitle output; the combined option prioritizes the transcript rather than promising low-latency subtitles.
+
 Profiles are built-in presets to avoid manually tuning every sensitive control.
 
 | Profile | Recommended for |
@@ -214,7 +218,63 @@ LiveAudio always saves valid transcriptions to the session (`transcript.jsonl` a
 |---|---|
 | `Auto` | Sends fresh subtitles. Short backlogs are emitted with pacing. If delay exceeds `subtitle_max_live_delay_sec`, they are saved but not shown in OBS. |
 | `Live only` | Saves everything, but only shows subtitles within the configured max delay in OBS. |
-| `Send all` | Sends everything to OBS even if it arrives late. Useful if you prefer full visual fidelity over avoiding bursts. |
+| `Send all` | Sends everything to OBS even if it arrives late. Useful if you prefer full visual fidelity over avoiding bursts. After a long freeze the replay buffer is bounded (256 messages, drop-oldest) so the live edge is preserved. |
+
+---
+
+## Headless service mode (integrators)
+
+LiveAudio can run as a **headless backend with no window**, spawned by an owner process (e.g. opencohost):
+
+```bash
+liveaudio-service --parent-pid <PID> [--health-file <path>]
+```
+
+> **Supported entry point:** on an installed Windows build, `liveaudio-service` (console script) is the ONLY supported headless path. The installed `liveaudio` GUI executable has no console/stdout, so `liveaudio --service ...` only works from a source checkout in a terminal — it is a dev convenience, not the integration contract.
+
+- **Process ownership:** the service lives until the owner dies (parent-PID watchdog, Windows + POSIX, machine-local PIDs only). There is no TCP control plane. Only one service instance runs per data home (stale locks are reclaimed).
+- **Lazy ASR:** the supervisor and WebSocket start immediately; audio/ASR load only on the first WS client. Before that the service reports `asr_state: unavailable` (≈ `stt_unreachable`).
+- **Config snapshot:** the service reads the CTK-saved config read-only and never writes `config.json`. Changing settings requires restarting the service (no hot reload).
+- **Port discovery:** same `base..base+9` fallback as the GUI (10 candidates from `ws_port`); the effective port is announced via `hello.port`, the `ws_port` stdout event, and health. Never assume a fixed port.
+- **Health:** versioned JSON lines on stdout (`service_state`, `ws_port`, `asr_state`, `fatal`) plus an optional atomic health-file snapshot. No transcripts, audio, logs, or private paths are ever emitted.
+- **Backlog bound:** `send_all` replays at most the last 256 subtitles (drop-oldest) after a freeze — the live edge, not the full history.
+- **Glossary:** *base port* = configured `ws_port`; *effective port* = port actually bound; *scope* = saved `save_transcript`/`save_vtt`/`obs_enabled`/`ws_port`/backlog settings the service obeys; *dueño-por-proceso* = single owner process via watchdog.
+- **Known limitation:** parent-PID checks are TOCTOU against OS PID reuse — if the owner dies and its PID is reassigned before the next 1 s poll, the service briefly considers the parent alive. A new owner cannot adopt it anyway (instance lock rejects a second service).
+
+> **Note:** reader-side auto-discovery lives in the VoiceAI unit (`feature/liveaudio-service-client`), AFTER this LiveAudio unit. Suggested order: LiveAudio first, VoiceAI second. This track ships the LiveAudio side only.
+
+## First-use model download: states, codes, times
+
+On a clean machine the ASR pill (GUI) and `asr_state` (service) are honest about
+Whisper provisioning instead of a generic loading spinner:
+
+| State | What it means | What to do |
+|---|---|---|
+| `downloading N%` | Model downloading with real progress (0–100, monotonic per attempt) | Wait; `N%` never moves backward except on manual retry |
+| `downloading…` | Downloading but progress unparseable (indeterminate fallback) | Wait; never a frozen 0% |
+| `loading` / `transcribing` | Model loading / warming up | Wait |
+| `stalled` | 120–180 s with zero events/progress | Press **Retry** (new attempt, `%` restarts once, then monotonic) |
+| `ready` | Model loaded | Stream |
+| `failed` + code | Provisioning failed (see codes below) | Follow the one-line hint, then Retry |
+
+Failure codes (`provision-*`, one-line remediation, no tracebacks in UI):
+
+| Code | Remediation |
+|---|---|
+| `model-not-found` (real absence only) | Check the model name and retry |
+| `provision-cache-corrupt` | Retry to re-download |
+| `provision-network` | Check your network and retry |
+| `provision-auth` | Check credentials and retry |
+| `provision-disk-full` | Free disk space and retry |
+| `provision-timeout-stalled` | Download took too long — retry |
+| `provision-tls` | Secure connection failed — retry |
+| `provision-unknown` | Unexpected error while preparing the model |
+
+Expected first-download sizes (time ∝ your connection; rough guide at ~50 Mbps:
+`tiny` ~150 MB ≈ 30 s · `base` ~300 MB ≈ 1 min · `small` ~480 MB ≈ 1.5 min ·
+`turbo` ~1.5 GB ≈ 4–5 min · Silero VAD ~2 MB ≈ instant). After that the app works
+fully offline. Service integrators: `asr_state_legacy` collapses these to
+`loading/ready/failed` for OpenCohost compat; a manual retry is a new `attempt`.
 
 ---
 
@@ -254,6 +314,21 @@ Press **Export diagnostics** in the main UI to generate a local JSON report.
 ---
 
 ## Contributing
+
+## Unified first-run experience
+
+The current checkpoint is aligning installation and first model preparation
+around one ES/EN checklist: installation selection, uv, LiveAudio code,
+dependencies, opening the app, VAD, Whisper, and ready to start. The handoff
+and phase vocabulary are present, but the full unified UX is not closed: clean
+packaged runtime, review, VM, and manual evidence remain pending. The launcher
+percentage fix is recorded; indeterminate work must never use a simulated
+percentage.
+
+The candidate includes VAD `provision-network`, `provision-tls`, and
+`provision-cache-corrupt` remediation and a conservative retry boundary. Full
+VAD/supervisor integration and no-burst behavior still require supported-runtime
+and manual evidence. No OBS subtitle should be sent during provisioning recovery.
 
 Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
 

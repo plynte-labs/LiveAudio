@@ -1,0 +1,8 @@
+{
+  "track_id": "firstuse-startup-progress_20260905",
+  "type": "enhancement",
+  "status": "in_progress",
+  "created_at": "2026-09-05T06:15:00Z",
+  "updated_at": "2026-09-06T03:32:48Z",
+  "description": "Implemented and reviewed in the working tree: honest first-use Whisper provisioning state, startup/stall deadline, actionable provisioning error codes, scoped TLS handling, and prewarm copy decision. Manual M1-M8 evidence remains pending; this is not a completed release gate."
+}

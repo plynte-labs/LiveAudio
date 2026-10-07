@@ -12,11 +12,12 @@ import sounddevice as sd
 import torch
 import warnings
 from liveaudio.core.diagnostics import create_store_from_config
+from liveaudio.core.provisioning import classify_provisioning_error
 from liveaudio.utils.streams import make_streams_encoding_safe
 # La enumeración de dispositivos vive en un módulo libre de torch para que la
 # GUI pueda listarlos sin importar torch. Se reexporta aquí por compatibilidad
 # (p. ej. el bloque __main__ de pruebas).
-from liveaudio.core.devices import list_audio_devices, _normalize_device_name
+from liveaudio.core.devices import list_audio_devices, _normalize_device_name, get_input_device_count
 
 # Suprimir solo advertencias de PyTorch/UserWarning, no todas
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -26,10 +27,63 @@ SAMPLE_RATE = 16000  # Whisper y Silero requieren 16kHz
 CHUNK_SIZE = 512     # Tamaño de ventana para el VAD (32 milisegundos)
 VAD_THRESHOLD = 0.5  # Probabilidad mínima para considerar que hay voz (0.0 a 1.0)
 
+
+def phrase_duration_limit_chunks(max_duration_sec):
+    """Return the frame ceiling for a phrase duration, allowing one partial frame."""
+    return max(1, math.ceil(float(max_duration_sec) * SAMPLE_RATE / CHUNK_SIZE))
+
+
+def phrase_end_reason(chunk_count, silence_count, max_chunks, silence_limit):
+    """Choose a duration cap or the existing early-silence closure."""
+    if chunk_count >= max_chunks:
+        return "duration"
+    if silence_count > silence_limit:
+        return "silence"
+    return None
+
 # Ring Buffer: capacidad máxima en chunks antes de descartar los más viejos.
 # 500 chunks * 32ms = 16 segundos de buffer. Más que suficiente para absorber
 # cualquier pico de CPU sin perder audio.
 RING_BUFFER_MAX_CHUNKS = 500
+
+
+class VadProvisionHeartbeat:
+    """Emit indeterminate VAD liveness without blocking capture or downloads."""
+
+    def __init__(self, emit, interval=5.0, attempt=1):
+        self._emit = emit
+        self._interval = max(float(interval), 0.01)
+        self._attempt = attempt
+        self._stopped = threading.Event()
+        self._thread = None
+
+    def _tick(self):
+        while not self._stopped.wait(self._interval):
+            try:
+                self._emit({
+                    "type": "status", "key": "vad", "text": "VAD: preparing",
+                    "state": "active", "phase": "provisioning", "attempt": self._attempt,
+                })
+            except Exception:
+                pass
+
+    def start(self):
+        if self._thread is not None:
+            return
+        try:
+            self._emit({
+                "type": "status", "key": "vad", "text": "VAD: preparing",
+                "state": "active", "phase": "provisioning", "attempt": self._attempt,
+            })
+        except Exception:
+            pass
+        self._thread = threading.Thread(target=self._tick, name="VAD-Provision-Heartbeat", daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._stopped.set()
+        if self._thread is not None:
+            self._thread.join(timeout=self._interval + 0.1)
 
 
 def vad_pre_buffer_chunks(vad_speech_pad_ms):
@@ -69,6 +123,49 @@ def _record_audio_runtime_health(
         diagnostics_store.record_counter("audio.queue_full_drops", int(dropped_phrases))
 
 
+def _append_capture_chunk(ring_buffer, audio_chunk, captured_monotonic, sequence, diagnostics_store=None):
+    if len(ring_buffer) == ring_buffer.maxlen and diagnostics_store is not None:
+        diagnostics_store.record_counter("audio.ring_overwrites")
+    ring_buffer.append((audio_chunk, float(captured_monotonic), int(sequence)))
+
+
+def _capture_config_snapshot(config):
+    """Return only safe, scalar settings that shaped this captured phrase."""
+    snapshot = {"sample_rate": SAMPLE_RATE}
+    purpose = config.get("transcription_purpose", "subtitles")
+    if purpose in {"subtitles", "transcription", "combined"}:
+        snapshot["transcription_purpose"] = purpose
+    for key, default in (
+        ("max_chunk_duration", 5.0),
+        ("silence_timeout", 0.8),
+        ("vad_threshold", VAD_THRESHOLD),
+        ("vad_speech_pad_ms", 200),
+    ):
+        value = config.get(key, default)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            value = default
+        if not math.isfinite(float(value)):
+            value = default
+        snapshot[key] = value
+    return snapshot
+
+
+def _record_vad_shutdown_outcomes(diagnostics_store, partial_speech_chunks, ring_chunks):
+    if diagnostics_store is None:
+        return
+    if partial_speech_chunks:
+        diagnostics_store.record_counter("audio.vad_partial_discard_chunks", int(partial_speech_chunks))
+    if ring_chunks:
+        diagnostics_store.record_counter("audio.ring_shutdown_discard_chunks", int(ring_chunks))
+
+
+def _capture_attempt(config, vad_attempt):
+    try:
+        return int(config.get("asr_attempt", vad_attempt))
+    except (TypeError, ValueError):
+        return int(vad_attempt)
+
+
 def _resolve_device_settings(config):
     """
     Resuelve el dispositivo de audio y sus extra_settings a partir de la config.
@@ -93,7 +190,7 @@ def _resolve_device_settings(config):
         return None, None  # Fallback al default
 
 
-def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = None, diagnostics_store=None):
+def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = None, diagnostics_store=None, stop_event=None):
     import sys
     import io
     if sys.stdout is None:
@@ -126,10 +223,12 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
                 pass
         print(msg)
 
-    def _status(key, text, state="idle"):
+    def _status(key, text, state="idle", **fields):
         if log_queue:
             try:
-                log_queue.put_nowait({"type": "status", "key": key, "text": text, "state": state})
+                event = {"type": "status", "key": key, "text": text, "state": state}
+                event.update(fields)
+                log_queue.put_nowait(event)
             except Exception:
                 pass
 
@@ -137,15 +236,26 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
     max_sec = config.get("max_chunk_duration", 5.0)
     vad_threshold = config.get("vad_threshold", VAD_THRESHOLD)
     vad_speech_pad_ms = config.get("vad_speech_pad_ms", 200)
+    capture_config = _capture_config_snapshot(config)
     diagnostics_store = diagnostics_store or create_store_from_config(config)
 
     SILENCE_CHUNKS_TO_END = int((SAMPLE_RATE / CHUNK_SIZE) * silence_sec)
-    MAX_CHUNKS_LIMIT = int((SAMPLE_RATE / CHUNK_SIZE) * max_sec)
+    MAX_CHUNKS_LIMIT = phrase_duration_limit_chunks(max_sec)
     PRE_BUFFER_CHUNKS = vad_pre_buffer_chunks(vad_speech_pad_ms)
 
-    _status("vad", "VAD: cargando", "active")
+    try:
+        vad_attempt = int(config.get("vad_attempt", 1))
+    except (TypeError, ValueError):
+        vad_attempt = 1
+    capture_attempt = _capture_attempt(config, vad_attempt)
+    _status("vad", "VAD: preparing", "active", phase="provisioning", attempt=vad_attempt)
     _log("[Productor] Cargando modelo Silero VAD en CPU...")
     # El VAD es extremadamente ligero, lo corremos en CPU para reservar la VRAM de la GPU
+    heartbeat = VadProvisionHeartbeat(
+        lambda event: log_queue.put_nowait(event) if log_queue is not None else None,
+        attempt=vad_attempt,
+    )
+    heartbeat.start()
     try:
         hub_dir = torch.hub.get_dir()
         ruta_local_vad = os.path.join(hub_dir, 'snakers4_silero-vad_master')
@@ -154,29 +264,14 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
         if not os.path.exists(ruta_local_vad) or not os.path.exists(os.path.join(ruta_local_vad, 'hubconf.py')):
             _log("[Productor] Caché de Silero VAD no encontrado. Descargando automáticamente desde GitHub...")
             
-            # Desactivar verificación de certificados SSL temporalmente para evitar fallos en Windows limpio sin certificados actualizados
-            import ssl
-            orig_context = getattr(ssl, '_create_default_https_context', None)
-            try:
-                ssl._create_default_https_context = ssl._create_unverified_context
-            except Exception:
-                pass
-                
-            try:
-                model, utils = torch.hub.load(
-                    repo_or_dir='snakers4/silero-vad',
-                    model='silero_vad',
-                    source='github',
-                    force_reload=False,
-                    onnx=False,
-                    trust_repo=True
-                )
-            finally:
-                if orig_context is not None:
-                    try:
-                        ssl._create_default_https_context = orig_context
-                    except Exception:
-                        pass
+            model, utils = torch.hub.load(
+                repo_or_dir='snakers4/silero-vad',
+                model='silero_vad',
+                source='github',
+                force_reload=False,
+                onnx=False,
+                trust_repo=True
+            )
         else:
             model, utils = torch.hub.load(
                 repo_or_dir=ruta_local_vad,
@@ -186,11 +281,14 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
                 onnx=False,
                 trust_repo=True
             )
-        _status("vad", "VAD: listo", "ok")
+        _status("vad", "VAD: ready", "ok", phase="ready", attempt=vad_attempt)
     except Exception as e:
-        _log(f"[Productor] ERROR cargando modelo VAD: {e}. Verifica conexion a internet o descarga manualmente Silero VAD.")
-        _status("vad", "VAD: error de carga", "error")
+        code = classify_provisioning_error(e)
+        _log(f"[Productor] VAD provisioning failed: {code} ({type(e).__name__})")
+        _status("vad", "VAD: error", "error", phase="failed", code=code, attempt=vad_attempt)
         raise
+    finally:
+        heartbeat.stop()
     
     # Resolver dispositivo de audio
     device_index, extra_settings = _resolve_device_settings(config)
@@ -200,13 +298,14 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
     # automáticamente en lugar de consumir RAM infinita.
     ring_buffer = collections.deque(maxlen=RING_BUFFER_MAX_CHUNKS)
     ring_event = threading.Event()  # Señal para despertar al worker cuando hay datos
+    capture_sequence = 0
     
     # Control de vida del worker
     worker_running = threading.Event()
     worker_running.set()
     
     # Señal de shutdown graceful
-    shutdown_event = threading.Event()
+    shutdown_event = stop_event if stop_event is not None else threading.Event()
     
     # Timestamp del último callback (para el watchdog)
     last_callback_time = time.time()
@@ -219,7 +318,7 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
         SOLO copia el audio al ring buffer. Nada de IA aquí.
         Tiempo de ejecución: ~0.01ms (copia de memoria).
         """
-        nonlocal last_callback_time
+        nonlocal last_callback_time, capture_sequence
         
         with callback_time_lock:
             last_callback_time = time.time()
@@ -229,9 +328,11 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
 
         # Extraer el canal mono y copiar (el buffer de C se reutiliza)
         audio_chunk = indata[:, 0].copy()
+        capture_sequence += 1
+        captured_monotonic = time.monotonic()
         
         # Meter al ring buffer (thread-safe en CPython por el GIL)
-        ring_buffer.append(audio_chunk)
+        _append_capture_chunk(ring_buffer, audio_chunk, captured_monotonic, capture_sequence, diagnostics_store)
         
         # Despertar al worker
         ring_event.set()
@@ -253,14 +354,19 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
         # default de 200ms son 7 chunks (~224ms de audio recuperado).
         pre_buffer = collections.deque(maxlen=PRE_BUFFER_CHUNKS)
 
-        def enqueue_phrase(full_audio):
+        def enqueue_phrase(full_audio, first_capture, last_capture):
             nonlocal utterance_sequence
             utterance_sequence += 1
             try:
                 audio_queue.put_nowait({
                     "audio": full_audio,
+                    "audio_duration_sec": len(full_audio) / SAMPLE_RATE,
                     "created_at": time.time(),
                     "sequence": utterance_sequence,
+                    "attempt": capture_attempt,
+                    "capture_started_monotonic": first_capture,
+                    "capture_completed_monotonic": last_capture,
+                    "capture_config": capture_config.copy(),
                 })
             except queue.Full:
                 # Queue is full — drop oldest phrase from speech_buffer to prevent blocking
@@ -283,7 +389,7 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
             # Procesar todos los chunks disponibles en el buffer
             while ring_buffer and worker_running.is_set():
                 try:
-                    audio_chunk = ring_buffer.popleft()
+                    audio_chunk, captured_monotonic, capture_chunk_sequence = ring_buffer.popleft()
                 except IndexError:
                     break  # Otro hilo consumió el chunk (no debería pasar, pero defensa)
                 
@@ -310,12 +416,15 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
                         _status("vad", "VAD: voz detectada", "active")
                         last_reported_state = "speech"
                     silence_counter = 0
-                    speech_buffer.append(audio_chunk)
+                    speech_buffer.append((audio_chunk, captured_monotonic, capture_chunk_sequence))
 
                     # Guillotina: cortar si superamos el máximo
-                    if len(speech_buffer) >= MAX_CHUNKS_LIMIT:
-                        full_audio = np.concatenate(speech_buffer)
-                        enqueue_phrase(full_audio)
+                    if phrase_end_reason(
+                        len(speech_buffer), silence_counter, MAX_CHUNKS_LIMIT,
+                        SILENCE_CHUNKS_TO_END,
+                    ):
+                        full_audio = np.concatenate([chunk for chunk, _, _ in speech_buffer])
+                        enqueue_phrase(full_audio, speech_buffer[0][1], speech_buffer[-1][1])
                         speech_buffer = []
                         is_speaking = False
                         silence_counter = 0
@@ -325,14 +434,17 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
                 elif is_speaking:
                     # No hay voz, pero estábamos grabando una frase
                     silence_counter += 1
-                    speech_buffer.append(audio_chunk)
+                    speech_buffer.append((audio_chunk, captured_monotonic, capture_chunk_sequence))
 
-                    # Si acumulamos suficiente silencio, cortamos y enviamos
-                    if silence_counter > SILENCE_CHUNKS_TO_END:
-                        full_audio = np.concatenate(speech_buffer)
+                    # Preserve early silence closure and enforce the total phrase cap.
+                    if phrase_end_reason(
+                        len(speech_buffer), silence_counter, MAX_CHUNKS_LIMIT,
+                        SILENCE_CHUNKS_TO_END,
+                    ):
+                        full_audio = np.concatenate([chunk for chunk, _, _ in speech_buffer])
                         
                         # Empaquetamos y enviamos a través de IPC
-                        enqueue_phrase(full_audio)
+                        enqueue_phrase(full_audio, speech_buffer[0][1], speech_buffer[-1][1])
                         
                         # Reiniciamos el estado para la siguiente frase
                         speech_buffer = []
@@ -343,7 +455,15 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
                 else:
                     # Silencio continuo — guardar chunk en pre-buffer
                     # para recuperar los primeros ms cuando se detecte voz
-                    pre_buffer.append(audio_chunk)
+                    pre_buffer.append((audio_chunk, captured_monotonic, capture_chunk_sequence))
+
+        _record_vad_shutdown_outcomes(
+            diagnostics_store,
+            partial_speech_chunks=len(speech_buffer) if is_speaking else 0,
+            ring_chunks=len(ring_buffer),
+        )
+        speech_buffer.clear()
+        ring_buffer.clear()
 
     # Construir kwargs para InputStream
     stream_kwargs = {
@@ -381,11 +501,35 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
         stream_active=False,
     )
 
+    is_loopback = config.get("audio_device", {}).get("is_loopback", False) if isinstance(config.get("audio_device"), dict) else False
+
     while not shutdown_event.is_set():
+        # Centinela pasivo: si no es loopback y no hay hardware de captura, esperar en STANDBY
+        if not is_loopback and get_input_device_count() == 0:
+            _status("audio", "Audio: en espera de micrófono", "standby")
+            _log("[Productor] ⏳ No hay micrófonos disponibles. En espera de hardware (Standby)...")
+            _record_audio_runtime_health(
+                diagnostics_store,
+                ring_buffer_chunks=len(ring_buffer),
+                worker_alive=vad_thread.is_alive(),
+                stream_active=False,
+            )
+            while not shutdown_event.is_set() and get_input_device_count() == 0:
+                shutdown_event.wait(1.0)
+            if shutdown_event.is_set():
+                break
+            _log("[Productor] 🎤 Dispositivo de audio detectado. Inicializando flujo...")
+            try:
+                sd._terminate()
+                sd._initialize()
+            except Exception:
+                pass
+
         try:
             with callback_time_lock:
                 last_callback_time = time.time()
             
+            stream_start_time = time.time()
             with sd.InputStream(**stream_kwargs) as stream:
                 
                 _log("[Productor] 🎤 Audio conectado y escuchando.")
@@ -399,10 +543,12 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
                 
                 while not shutdown_event.is_set():
                     sd.sleep(500)
+                    now = time.time()
+                    stream_age = now - stream_start_time
                     
-                    # 1. Si pasaron más de 2 segundos sin que el callback se ejecute = Dispositivo desconectado
+                    # 1. Watchdog con ventana de gracia (3.0s) y umbral relajado a 5.0 segundos
                     with callback_time_lock:
-                        elapsed = time.time() - last_callback_time
+                        elapsed = now - last_callback_time
                     _record_audio_runtime_health(
                         diagnostics_store,
                         ring_buffer_chunks=len(ring_buffer),
@@ -410,8 +556,8 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
                         worker_alive=vad_thread.is_alive(),
                         stream_active=stream.active,
                     )
-                    if elapsed > 2.0:
-                        raise sd.PortAudioError("Silencio total detectado (Watchdog timeout).")
+                    if stream_age > 3.0 and elapsed > 5.0:
+                        raise sd.PortAudioError("Silencio total detectado (Watchdog timeout: > 5s sin audio de hardware).")
                     
                     # 2. Si el sistema reporta que el stream murió
                     if not stream.active:
@@ -421,9 +567,7 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
                 stream.close()
                 
         except sd.PortAudioError as e:
-            _log(f"\n[Productor] ⚠️ ALERTA: Hardware de audio perdido. Detalles: {e}")
-            _log("[Productor] 🔄 Buscando dispositivo... reintentando en 3 segundos.")
-            _status("audio", "Audio: reconectando", "warn")
+            _log(f"\n[Productor] ⚠️ ALERTA: Hardware de audio perdido o error en flujo. Detalles: {e}")
             _record_audio_runtime_health(
                 diagnostics_store,
                 ring_buffer_chunks=len(ring_buffer),
@@ -434,14 +578,23 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
             
             # Limpiar el ring buffer y el estado del worker al reconectar
             ring_buffer.clear()
-            
+
+            # Si el micrófono físico fue desconectado, entrar a Standby limpio sin martillar PortAudio
+            if not is_loopback and get_input_device_count() == 0:
+                _status("audio", "Audio: en espera de micrófono", "standby")
+                _log("[Productor] ⏳ Micrófono desconectado. Entrando en modo Standby...")
+                shutdown_event.wait(1.0)
+                continue
+
+            _log("[Productor] 🔄 Reconectando dispositivo... reintentando en 3 segundos.")
+            _status("audio", "Audio: reconectando", "warn")
             try:
                 sd._terminate()
                 sd._initialize()
             except Exception:
                 pass
             
-            time.sleep(3) 
+            shutdown_event.wait(3.0)
             
         except Exception as e:
             _log(f"\n[Productor] ❌ Error inesperado: {e}")
@@ -452,7 +605,7 @@ def audio_producer(audio_queue: mp.Queue, config: dict, log_queue: mp.Queue = No
                 worker_alive=vad_thread.is_alive(),
                 stream_active=False,
             )
-            time.sleep(3)
+            shutdown_event.wait(3.0)
     
     # Graceful shutdown — signal worker to stop and wait for it
     _log("[Productor] Apagando sistema de audio...")

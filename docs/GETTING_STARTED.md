@@ -150,6 +150,59 @@ Separa cada palabra o frase con comas. Puedes personalizarla a tu gusto.
 
 ---
 
+### Objetivo de salida y ventana de frase
+
+En **Audio/VAD**, selecciona el objetivo independientemente del perfil de hardware:
+
+- **Subtítulos:** ventana predeterminada de 5 segundos, ajustable de 1 a 15 segundos para obtener frases finales con mayor rapidez.
+- **Transcripción:** ventana predeterminada de 30 segundos, ajustable de 1 a 60 segundos para favorecer la continuidad de la transcripción.
+- **Combinado:** usa la ventana larga y prioriza la continuidad de la transcripción. Durante el habla continua, los subtítulos finales pueden retrasarse decenas de segundos.
+
+El silencio todavía puede cerrar una frase antes de alcanzar su límite. Cambiar un perfil de hardware no modifica el objetivo ni la ventana elegidos.
+
+El **límite de decodificación ASR** es independiente de la ventana de frase: inicia cuando Whisper empieza a decodificar una frase ya formada, no durante la captura, la espera en cola ni la carga o preparación del modelo. Su valor predeterminado es 15 segundos y puede ajustarse de 5 a 120 segundos. Si una decodificación supera ese límite, LiveAudio detiene la captura, avisa que el audio o las transcripciones pendientes pueden perderse y no vuelve a procesar automáticamente esa frase.
+
+---
+
+## 5.5. Primera descarga del modelo: estados, códigos y tiempos
+
+En un equipo limpio, el pill ASR muestra el estado real de la descarga de Whisper
+(en vez de un "cargando" genérico):
+
+| Estado | Significado | Qué hacer |
+|---|---|---|
+| `ASR: descargando N%` | Descarga con progreso real (0–100, monotónico por intento) | Esperar; el % nunca retrocede salvo al Reintentar |
+| `ASR: descargando…` | Descargando pero sin % parseable (indeterminado) | Esperar; nunca es un 0% congelado |
+| `ASR: cargando` / `ASR: transcribiendo` | Cargando el modelo / calentando | Esperar |
+| `ASR: tiempo de decodificación excedido` | El decodificador superó 15 s durante una frase | La captura se detiene; el audio/transcriptos pendientes pueden perderse y no se reprocesan automáticamente |
+| `ASR: detenido. Pulsa Reintentar.` | 120–180 s sin ningún evento/progreso (stalled) | Pulsar **Reintentar** (intento nuevo, % a 0 una vez, luego monotónico) |
+| `ASR: listo` | Modelo cargado | Stremear |
+| Error + código | Fallo de aprovisionamiento (ver tabla) | Seguir el hint de una línea y Reintentar |
+
+Códigos `provision-*` (remediation de una línea, sin tracebacks en la UI):
+
+| Código | Qué hacer |
+|---|---|
+| `model-not-found` (solo ante ausencia real) | Revisa el nombre del modelo y reintenta |
+| `provision-cache-corrupt` | Caché dañada — reintenta para redescargar |
+| `provision-network` | Sin conexión — revisa tu red y reintenta |
+| `provision-auth` | Acceso denegado — revisa credenciales y reintenta |
+| `provision-disk-full` | Disco lleno — libera espacio y reintenta |
+| `provision-timeout-stalled` | La descarga tardó demasiado — reintenta |
+| `provision-tls` | Fallo de conexión segura — reintenta |
+| `provision-unknown` | Error inesperado al preparar el modelo |
+
+Tiempos esperados por modelo (orientativo; el tiempo es proporcional a tu conexión —
+guía a ~50 Mbps): `tiny` ~150 MB ≈ 30 s · `base` ~300 MB ≈ 1 min ·
+`small` ~480 MB ≈ 1.5 min · `turbo` ~1.5 GB ≈ 4–5 min · Silero VAD ~2 MB ≈
+instantáneo. Después, la app funciona totalmente offline.
+
+> El switch **Precalentar modelo al iniciar** (pestaña Modelo) controla la descarga en
+> primer uso (usa red). Viene activo por defecto; es la misma opción que
+> `--prewarm` / `--lazy` del modo servicio.
+
+---
+
 ## 6. Integrar con OBS Studio
 
 Consulta la guía completa en [WEBSOCKET_OBS.md](WEBSOCKET_OBS.md).
@@ -160,6 +213,18 @@ Resumen rápido:
 2. Activa la opción **"Archivo local"** y selecciona `subtitulos_obs.html`.
 3. Ajusta el ancho y alto (recomendado: 1920x200).
 4. Inicia LiveAudio y los subtítulos aparecerán automáticamente.
+
+### 6.1. Modo servicio headless (integradores, opcional)
+
+Para embeber LiveAudio como backend sin ventana (p. ej. desde opencohost):
+
+```bash
+liveaudio-service --parent-pid <PID> [--health-file <ruta>]
+```
+
+> Vía soportada: en Windows instalado, `liveaudio-service` (script de consola) es la ÚNICA vía headless soportada — el ejecutable GUI instalado no tiene stdout. `liveaudio --service` solo funciona desde un checkout en terminal (desarrollo).
+
+El servicio vive hasta que el proceso dueño termina (watchdog por PID local a la máquina, sin puerto de control nuevo), obedece la configuración guardada desde la interfaz en modo solo-lectura (cambiar ajustes exige reiniciar el servicio), carga Whisper de forma perezosa al primer cliente WebSocket, y anuncia el puerto efectivo (`base..base+9`) vía `hello.port` y eventos JSON en stdout. `send_all` reemite como máximo los últimos 256 subtítulos tras un freeze (borde en vivo, no historial completo). Detalles del protocolo en [WEBSOCKET_OBS.md](WEBSOCKET_OBS.md). El auto-discovery del lado lector vive en la unidad VoiceAI (`feature/liveaudio-service-client`), DESPUÉS de esta unidad LiveAudio: este modo expone el contrato, no lo consume.
 
 ---
 
@@ -174,6 +239,12 @@ sessions/
     ├── transcript.jsonl   # Transcripción cruda con metadatos
     └── session.json       # Metadatos de la sesión
 ```
+
+`transcript.jsonl` y `subtitles.vtt` conservan completo el texto transcrito después de la sanitización. Las marcas de tiempo VTT usan el momento de captura relativo al inicio de la sesión, por lo que reflejan también las pausas entre frases; las capturas históricas sin marcas de tiempo no reciben una hora inventada. La presentación de subtítulos en OBS/WebSocket mantiene el límite actual de 600 caracteres. Los controles de guardado de JSONL y VTT siguen siendo independientes.
+
+Cada entrada nueva de JSONL incluye la duración derivada del audio PCM y una instantánea limitada a ajustes de captura y tiempo máximo de decodificación; no incluye prompts ni identificadores de dispositivos.
+
+Si la cola o el almacenamiento de una salida de sesión falla, LiveAudio detiene la captura y muestra una alerta; el contenido pendiente puede no haberse guardado.
 
 ---
 
@@ -250,6 +321,14 @@ Si necesitás más detalle puntual, subí `diagnostics_level` a `deep` temporalm
 ---
 
 ## 10. Consejos de rendimiento
+
+## 10.1 Recorrido unificado de primera ejecución
+
+El checkpoint actual alinea el launcher y la app con la misma secuencia: seleccion de instalacion, uv, codigo, dependencias, apertura de LiveAudio, VAD, Whisper y listo para iniciar. El handoff y la copia de fases estan presentes, pero la experiencia unificada completa sigue pendiente de runtime empaquetado, revision, VM y evidencia manual. **Abriendo LiveAudio** significa que la ventana ya es visible; no significa que Whisper este listo.
+
+`uv sync`, VAD y la carga posterior a la descarga son indeterminados cuando no hay evidencia real por bytes o tqdm; el fix de porcentajes globales esta registrado, pero aun requiere validacion en Python 3.11 y runtime empaquetado. La implementacion candidata clasifica fallos VAD como `provision-network`, `provision-tls` o `provision-cache-corrupt`; **Reintentar fase** y su limite de productor requieren evidencia manual antes de considerarse cerrados.
+
+
 
 - **Cierra programas innecesarios** mientras streameas para liberar CPU/GPU.
 - **Usa SSD** para la carpeta de sesiones; escribir VTT/JSONL en disco lento puede causar micro-lag.

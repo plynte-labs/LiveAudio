@@ -15,6 +15,13 @@ from liveaudio.utils.streams import make_streams_encoding_safe
 
 WS_PORT_FALLBACK_RANGE = 10
 
+# Cota del buffer de replay (mitigacion OOM para backlog send_all tras freeze).
+# Al llenarse se descarta el mensaje mas viejo (drop-oldest: se preserva el
+# borde en vivo, que es lo que el overlay necesita) y se cuenta/loguea el
+# descarte. La semantica de cada politica (auto/live_only/send_all) no cambia:
+# el engine decide que entra al buffer; aqui solo se acota su tamaño.
+REPLAY_BUFFER_MAX = 256
+
 # Origenes permitidos en el handshake WebSocket. El navegador NO aplica
 # same-origin a los WebSockets: cualquier web abierta mientras se transmite
 # podria conectarse a ws://127.0.0.1:8765 y leer la transcripcion en vivo, asi
@@ -118,13 +125,31 @@ def _record_network_runtime_health(
     backpressure=None,
     queue_drained_count=None,
     rejected_client=None,
+    replay_dropped=None,
+    retry_dropped=None,
+    replay_shutdown_dropped=0,
+    retry_shutdown_dropped=0,
+    queue_wait_sec=None,
+    broadcast_call_sec=None,
 ):
     if diagnostics_store is None:
         return
     if rejected_client:
         diagnostics_store.record_counter("ws.rejected_clients")
+    if replay_dropped:
+        diagnostics_store.record_counter("ws.replay_drops", int(replay_dropped))
+    if retry_dropped:
+        diagnostics_store.record_counter("ws.retry_buffer_drops", int(retry_dropped))
+    if replay_shutdown_dropped:
+        diagnostics_store.record_counter("ws.replay_shutdown_drops", int(replay_shutdown_dropped))
+    if retry_shutdown_dropped:
+        diagnostics_store.record_counter("ws.retry_shutdown_drops", int(retry_shutdown_dropped))
     if queue_drained_count is not None:
         diagnostics_store.record_counter("ws.queue_drained_messages", int(queue_drained_count))
+    if queue_wait_sec is not None:
+        diagnostics_store.record_duration("ws.queue_wait_sec", float(queue_wait_sec))
+    if broadcast_call_sec is not None:
+        diagnostics_store.record_duration("ws.broadcast_call_sec", float(broadcast_call_sec))
     if backpressure:
         diagnostics_store.record_counter("ws.backpressure_events")
     payload = {}
@@ -168,8 +193,40 @@ def _reject_foreign_origin(connection, request, log_queue=None):
     return connection.respond(http.HTTPStatus.FORBIDDEN, "Origen no permitido\n")
 
 
-async def _handle_client(websocket, clients, log_queue, diagnostics_store=None, effective_port=8765):
-    """Handler para cada conexión WebSocket entrante."""
+def _notify_first_client(on_first_client, first_client_event, state=None):
+    """Dispara los ganchos de primer cliente. One-shot solo si state se comparte.
+
+    state es un dict mutable compartido por el servidor ({"fired": bool}).
+    Sin state (llamadas directas al handler) el gancho se dispara por conexion
+    y el one-shot lo garantiza el llamador (FirstClientGate / Event.set).
+    """
+    if state is not None:
+        if state.get("fired"):
+            return
+        state["fired"] = True
+    if on_first_client is not None:
+        try:
+            on_first_client()
+        except Exception:
+            pass
+    if first_client_event is not None:
+        try:
+            first_client_event.set()
+        except Exception:
+            pass
+
+
+async def _handle_client(websocket, clients, log_queue, diagnostics_store=None, effective_port=8765,
+                         on_first_client=None, first_client_event=None, _first_client_state=None):
+    """Handler para cada conexión WebSocket entrante.
+
+    on_first_client / first_client_event son ganchos opcionales que se
+    disparan al aceptar un cliente (el supervisor headless los usa para
+    arrancar audio/ASR de forma perezosa). El one-shot entre conexiones lo
+    garantiza el servidor (run_ws_server); las llamadas directas a este
+    handler disparan el gancho en cada conexion. Una conexion probe cuenta
+    como primer cliente: puede disparar la carga, es aceptable por diseño.
+    """
     remote = websocket.remote_address
     if remote and remote[0] not in ("127.0.0.1", "::1", "localhost"):
         _record_network_runtime_health(diagnostics_store, client_count=len(clients), rejected_client=True)
@@ -184,6 +241,7 @@ async def _handle_client(websocket, clients, log_queue, diagnostics_store=None, 
     _emit_log(log_queue, f"[WebSocket] Cliente conectado: {client_id}")
     _emit(log_queue, {"type": "status", "key": "obs", "text": f"OBS: {len(clients)} clientes", "state": "ok"})
     print(f"[WebSocket] Cliente conectado: {client_id}")
+    _notify_first_client(on_first_client, first_client_event, _first_client_state)
 
     try:
         await websocket.send(json.dumps({
@@ -205,6 +263,8 @@ async def _poll_queue(text_queue, server, log_queue, diagnostics_store=None):
     """Polling loop que lee la cola IPC y hace broadcast usando la API nativa de websockets 16."""
     replay_buffer = []
     next_replay_at = 0.0
+    replay_drops = 0
+    replay_drop_logged_at = 0
     HIGH_WATER_MARK = 65536  # 64KB — pause production if buffer exceeds this
     MAX_RETRY_BUFFER = 10  # Max messages to buffer during backpressure
     retry_buffer = []  # Buffer for messages that couldn't be sent due to backpressure
@@ -223,11 +283,25 @@ async def _poll_queue(text_queue, server, log_queue, diagnostics_store=None):
         return True
 
     def _broadcast_msg(msg):
-        payload = json.dumps(msg)
+        telemetry = msg.get("_telemetry") if isinstance(msg, dict) else None
+        if diagnostics_store is not None and isinstance(telemetry, dict):
+            queued_at = telemetry.get("queue_enqueued_monotonic")
+            if isinstance(queued_at, (int, float)):
+                _record_network_runtime_health(
+                    diagnostics_store,
+                    queue_wait_sec=max(0.0, asyncio.get_running_loop().time() - queued_at),
+                )
+        wire_msg = {key: value for key, value in msg.items() if key != "_telemetry"} if isinstance(msg, dict) else msg
+        payload = json.dumps(wire_msg)
         # broadcast() de websockets 16 — envía a TODOS los clientes
         # conectados al servidor sin backpressure, de forma óptima.
         # server.connections devuelve el set de conexiones activas.
+        started = asyncio.get_running_loop().time()
         broadcast(server.connections, payload)
+        _record_network_runtime_health(
+            diagnostics_store,
+            broadcast_call_sec=max(0.0, asyncio.get_running_loop().time() - started),
+        )
 
     def _flush_retry_buffer():
         """Try to send all buffered messages. Returns True if all sent."""
@@ -270,6 +344,8 @@ async def _poll_queue(text_queue, server, log_queue, diagnostics_store=None):
                 if msg is None:  # Señal de apagado
                     _record_network_runtime_health(
                         diagnostics_store,
+                        replay_shutdown_dropped=len(replay_buffer),
+                        retry_shutdown_dropped=len(retry_buffer),
                         client_count=len(server.connections),
                         replay_buffer_size=len(replay_buffer),
                         retry_buffer_size=len(retry_buffer),
@@ -279,6 +355,14 @@ async def _poll_queue(text_queue, server, log_queue, diagnostics_store=None):
                     return
 
                 if isinstance(msg, dict) and msg.get("is_replay") and msg.get("catchup_interval_sec", 0) > 0:
+                    if len(replay_buffer) >= REPLAY_BUFFER_MAX:
+                        replay_buffer.pop(0)  # Drop-oldest: preserva el borde en vivo
+                        replay_drops += 1
+                        now_monotonic = asyncio.get_running_loop().time()
+                        if now_monotonic - replay_drop_logged_at >= 5.0:
+                            replay_drop_logged_at = now_monotonic
+                            _emit_log(log_queue, f"[WebSocket] Replay buffer lleno ({REPLAY_BUFFER_MAX}) — descartando subtitulo viejo ({replay_drops} descartes)")
+                        _record_network_runtime_health(diagnostics_store, replay_dropped=1)
                     replay_buffer.append(msg)
                 else:
                     if _can_broadcast():
@@ -288,6 +372,7 @@ async def _poll_queue(text_queue, server, log_queue, diagnostics_store=None):
                         if len(retry_buffer) >= MAX_RETRY_BUFFER:
                             dropped = retry_buffer.pop(0)  # Drop oldest
                             _emit_log(log_queue, "[WebSocket] Buffer de retry lleno — descartando mensaje viejo")
+                            _record_network_runtime_health(diagnostics_store, retry_dropped=1)
                         retry_buffer.append(msg)
                         if not backpressure_start:
                             backpressure_start = asyncio.get_running_loop().time()
@@ -339,8 +424,14 @@ async def _poll_queue(text_queue, server, log_queue, diagnostics_store=None):
         await asyncio.sleep(0.05)
 
 
-def run_ws_server(text_queue, log_queue=None, port=8765, diagnostics_store=None, diagnostics_config=None):
-    """Punto de entrada para el multiprocesamiento."""
+def run_ws_server(text_queue, log_queue=None, port=8765, diagnostics_store=None, diagnostics_config=None, *,
+                  on_first_client=None, first_client_event=None):
+    """Punto de entrada para el multiprocesamiento.
+
+    on_first_client (callable) y first_client_event (mp.Event) son opcionales
+    y se disparan una sola vez al primer cliente aceptado por este servidor.
+    Compatibles hacia atras: los llamadores existentes no los pasan.
+    """
     # A legacy-codepage console (cp1252) must not crash this child on
     # non-ASCII print output; the log_queue path keeps the original text.
     make_streams_encoding_safe()
@@ -351,6 +442,7 @@ def run_ws_server(text_queue, log_queue=None, port=8765, diagnostics_store=None,
 
     async def main():
         clients = set()
+        first_client_state = {"fired": False}
 
         def check_origin(connection, request):
             return _reject_foreign_origin(connection, request, log_queue)
@@ -363,6 +455,9 @@ def run_ws_server(text_queue, log_queue=None, port=8765, diagnostics_store=None,
                     websocket, clients, log_queue,
                     diagnostics_store=diagnostics_store,
                     effective_port=effective_port,
+                    on_first_client=on_first_client,
+                    first_client_event=first_client_event,
+                    _first_client_state=first_client_state,
                 )
             try:
                 server_ctx = serve(

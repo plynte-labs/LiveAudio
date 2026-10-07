@@ -75,6 +75,20 @@ COLOR_ACCENT = "#3c9e66"
 APP_WINDOW_TITLE = "Plynte LiveAudio"
 APP_WINDOW_TIMEOUT = 120.0  # seconds to wait for the app window to appear
 
+# Keep this stdlib-only copy in lockstep with liveaudio.core.first_run. The
+# launcher runs before the package exists, so importing that module here would
+# break clean-machine bootstrap.
+PHASE_COPY = {
+    0: {"es": "Selección de instalación", "en": "Installation selection"},
+    1: {"es": "Preparando uv", "en": "Preparing uv"},
+    2: {"es": "Código de LiveAudio", "en": "LiveAudio code"},
+    3: {"es": "Instalando dependencias", "en": "Installing dependencies"},
+    4: {"es": "Abriendo LiveAudio", "en": "Opening LiveAudio"},
+    5: {"es": "Preparando VAD", "en": "Preparing VAD"},
+    6: {"es": "Descargando/cargando Whisper", "en": "Downloading/loading Whisper"},
+    7: {"es": "Listo para iniciar", "en": "Ready to start"},
+}
+
 GPU_FALLBACK_MESSAGE = (
     "GPU detected but driver too old / insufficient VRAM — installing CPU "
     "version. Update your NVIDIA driver and re-run with --device cuda"
@@ -204,7 +218,7 @@ def read_install_location(platform=None, environ=None):
         pass
     return None
 
-def write_install_location(install_root, hf_home, platform=None, environ=None):
+def write_install_location(install_root, hf_home, platform=None, environ=None, language=None):
     platform = platform or sys.platform
     environ = os.environ if environ is None else environ
     config_dir = _global_appdata_dir(platform, environ)
@@ -214,6 +228,8 @@ def write_install_location(install_root, hf_home, platform=None, environ=None):
         "install_root": os.path.abspath(install_root),
         "hf_home": os.path.abspath(hf_home)
     }
+    if language in ("es", "en"):
+        data["language"] = language
     fd, tmp = tempfile.mkstemp(prefix="install_location-", suffix=".tmp", dir=config_dir)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -260,8 +276,76 @@ def resolve_install_root(platform=None, environ=None, launcher_dir=None):
             migrated_root = _prompt_migration(default_root, platform, environ)
             if migrated_root:
                 return migrated_root, False
+            return default_root, False
+
+        # Automation may provide only LOCALAPPDATA (without the interactive
+        # APPDATA configuration root). In that case keep resolution pure and
+        # let the caller create the default location rather than opening Tk.
+        if "LOCALAPPDATA" in environ and "APPDATA" not in environ:
+            return default_root, False
+
+        chosen_root = _prompt_first_install(default_root, platform, environ)
+        if chosen_root:
+            return chosen_root, False
         return default_root, False
     return os.path.join(os.path.expanduser("~"), ".local", "share", "liveaudio"), False
+
+def _prompt_first_install(default_root, platform, environ):
+    import tkinter as tk
+    from tkinter import filedialog
+
+    result_path = [default_root]
+
+    def run_dialog():
+        root = tk.Tk()
+        root.title("LiveAudio - Instalación")
+        root.geometry("480x200")
+        root.configure(bg="#111b1e")
+        root.eval('tk::PlaceWindow . center')
+
+        tk.Label(
+            root,
+            text="Selecciona la ruta de instalación para LiveAudio:",
+            font=("Segoe UI", 10, "bold"),
+            bg="#111b1e",
+            fg="#e8f0ee",
+        ).pack(pady=(15, 5))
+
+        path_var = tk.StringVar(value=default_root)
+
+        entry_frame = tk.Frame(root, bg="#111b1e")
+        entry_frame.pack(fill="x", padx=20, pady=10)
+
+        entry = tk.Entry(entry_frame, textvariable=path_var, font=("Segoe UI", 9), bg="#16242a", fg="#e8f0ee", insertbackground="white")
+        entry.pack(side="left", fill="x", expand=True, padx=(0, 5))
+
+        def browse():
+            folder = filedialog.askdirectory(title="Seleccionar carpeta de instalación", parent=root)
+            if folder:
+                path_var.set(os.path.join(folder, "LiveAudio"))
+
+        tk.Button(entry_frame, text="Buscar...", command=browse, bg="#16242a", fg="#e8f0ee").pack(side="right")
+
+        def confirm():
+            chosen = os.path.abspath(path_var.get())
+            write_install_location(chosen, os.path.join(chosen, "hf-cache"), platform, environ)
+            result_path[0] = chosen
+            root.destroy()
+
+        btn_frame = tk.Frame(root, bg="#111b1e")
+        btn_frame.pack(pady=15)
+
+        tk.Button(btn_frame, text="Instalar aquí", command=confirm, width=18, bg="#3c9e66", fg="white", font=("Segoe UI", 10, "bold")).pack()
+
+        root.protocol("WM_DELETE_WINDOW", confirm)
+        root.mainloop()
+
+    try:
+        run_dialog()
+    except Exception:
+        pass
+    return result_path[0]
+
 
 def _prompt_migration(old_root, platform, environ):
     import tkinter as tk
@@ -950,7 +1034,6 @@ def run_uv_sync(uv_path, project_dir, extra, install_root, reporter, cancel=None
     )
     if cancel is not None:
         cancel.proc = proc
-    fraction = 0.45
     try:
         for line in proc.stdout:
             line = line.rstrip()
@@ -963,9 +1046,6 @@ def run_uv_sync(uv_path, project_dir, extra, install_root, reporter, cancel=None
                 reporter.status(
                     "Downloading PyTorch (~2.4 GB on CUDA) — this is the big one"
                 )
-            if any(key in lowered for key in ("downloading", "downloaded", "prepared", "installed", "audited")) or line.startswith(" + "):
-                fraction = min(0.95, fraction + 0.01)
-                reporter.progress(fraction)
             if cancel is not None and cancel.cancelled():
                 proc.terminate()
                 raise CancelledError()
@@ -977,7 +1057,53 @@ def run_uv_sync(uv_path, project_dir, extra, install_root, reporter, cancel=None
         raise CancelledError()
     if proc.returncode != 0:
         raise LauncherError("uv sync failed with exit code %d (see bootstrap.log)" % proc.returncode)
-    reporter.progress(0.97)
+
+
+def handoff_json_path(install_root):
+    return os.path.join(os.path.abspath(install_root), "handoff.json")
+
+
+def write_handoff(install_root, hf_home, extra, app_version, attempt=1,
+                  launcher_phases_done=None):
+    """Atomically persist the six-field launcher-to-app snapshot."""
+    if extra not in ("cpu", "cu121"):
+        raise LauncherError("unsupported install extra")
+    if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 1:
+        raise LauncherError("invalid launch attempt")
+    if launcher_phases_done is None:
+        launcher_phases_done = [0, 1, 2, 3]
+    if launcher_phases_done != [0, 1, 2, 3]:
+        raise LauncherError("invalid launcher phases")
+    install_root = os.path.abspath(install_root)
+    hf_home = os.path.abspath(hf_home)
+    try:
+        if os.path.commonpath((os.path.realpath(hf_home), os.path.realpath(install_root))) != os.path.realpath(install_root):
+            raise LauncherError("cache path is outside install root")
+    except ValueError as exc:
+        raise LauncherError("invalid cache path") from exc
+    payload = {
+        "hf_home": hf_home,
+        "install_root": install_root,
+        "extra": extra,
+        "app_version": str(app_version),
+        "attempt": attempt,
+        "launcher_phases_done": launcher_phases_done,
+    }
+    path = handoff_json_path(install_root)
+    fd, tmp = tempfile.mkstemp(prefix="handoff-", suffix=".tmp", dir=install_root)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, separators=(",", ":"))
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -992,7 +1118,7 @@ def check_portaudio(platform=None):
     return ctypes.util.find_library("portaudio") is not None
 
 
-def launch_app(install_root, portable, environ=None, platform=None, notify=None):
+def launch_app(install_root, portable, environ=None, platform=None, notify=None, handoff=None):
     """Start the installed app detached.
 
     Returns the (truthy) Popen handle on success, False when the app
@@ -1017,11 +1143,23 @@ def launch_app(install_root, portable, environ=None, platform=None, notify=None)
         env["LIVEAUDIO_LAUNCHER"] = os.path.abspath(sys.executable)
     
     location_data = read_install_location(platform, environ)
-    if location_data and "hf_home" in location_data:
+    if (location_data and "hf_home" in location_data
+            and os.path.abspath(location_data.get("install_root", "")) == os.path.abspath(install_root)):
         env["HF_HOME"] = location_data["hf_home"]
     elif portable:
         env["HF_HOME"] = os.path.join(install_root, "hf-cache")
     os.makedirs(env["LIVEAUDIO_HOME"], exist_ok=True)
+    if handoff is None:
+        installed = read_installed(install_root) or {}
+        handoff = {
+            "hf_home": env.get("HF_HOME", os.path.join(install_root, "hf-cache")),
+            "install_root": install_root,
+            "extra": installed.get("extra", "cpu"),
+            "app_version": installed.get("app_version", "0.0.0"),
+            "attempt": 1,
+            "launcher_phases_done": [0, 1, 2, 3],
+        }
+    write_handoff(**handoff)
     LOG.info("Launching %s (LIVEAUDIO_HOME=%s)", exe, env["LIVEAUDIO_HOME"])
     kwargs = {"env": env, "cwd": os.path.dirname(exe), "close_fds": True}
     if platform == "win32":
@@ -1350,7 +1488,6 @@ def run_bootstrap(meta, install_root, portable, device, reporter, cancel=None,
     """
     target = app_dir(install_root)
     os.makedirs(install_root, exist_ok=True)
-    reporter.progress(0.02)
 
     if meta.src_dir:
         reporter.status("Copying source from %s..." % meta.src_dir)
@@ -1368,11 +1505,8 @@ def run_bootstrap(meta, install_root, portable, device, reporter, cancel=None,
         os.unlink(zip_path)
     if cancel is not None and cancel.cancelled():
         raise CancelledError()
-    reporter.progress(0.35)
-
     reporter.status("Preparing uv...")
     uv_path, uv_ver = ensure_uv(install_root, reporter, cancel=cancel)
-    reporter.progress(0.45)
 
     run_uv_sync(uv_path, target, device, install_root, reporter, cancel=cancel)
 
@@ -1389,14 +1523,12 @@ def run_bootstrap(meta, install_root, portable, device, reporter, cancel=None,
             "uv_version": uv_ver,
         },
     )
-    reporter.progress(0.99)
     LOG.info("Bootstrap complete: version=%s extra=%s", meta.version, device)
 
     popen = None
     if not no_launch:
         reporter.status("Launching LiveAudio...")
         popen = launch_app(install_root, portable, notify=reporter.notify) or None
-    reporter.progress(1.0)
     return popen
 
 
@@ -1428,7 +1560,6 @@ def _await_app_window_gui(reporter, popen):
     if popen is None or sys.platform != "win32":
         return True
     reporter.status("Starting LiveAudio...")
-    reporter.progress(1.0)
     result = wait_for_app_window(proc_alive=lambda: popen.poll() is None)
     if result == "died":
         LOG.error("App process exited before its window appeared")

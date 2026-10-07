@@ -5,6 +5,7 @@ import json
 import datetime
 import copy
 import multiprocessing as mp
+import time
 from importlib import resources
 
 import customtkinter as ctk
@@ -16,7 +17,14 @@ from liveaudio.utils.dllpath import ensure_torch_dlls
 
 ensure_torch_dlls()
 
-from liveaudio.utils.config import load_config, save_config, _normalize_config
+from liveaudio.utils.config import (
+    audio_queue_capacity,
+    load_config,
+    save_config,
+    _normalize_config,
+    read_install_location,
+    valid_language,
+)
 from liveaudio.utils.i18n import t, set_language, autodetect_language, get_language
 from liveaudio.utils.crash_handler import install_crash_handler
 from liveaudio.utils.updater import check_for_updates_async, start_update, APP_VERSION
@@ -28,6 +36,7 @@ from liveaudio.utils.updater import check_for_updates_async, start_update, APP_V
 from liveaudio.core.devices import list_audio_devices
 from liveaudio.core.network import run_ws_server, port_range_available
 from liveaudio.core.diagnostics import build_diagnostics_report, normalize_export_dir
+from liveaudio.core.first_run import handoff_path, validate_handoff
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("green")
@@ -46,6 +55,38 @@ except Exception as e:  # pragma: no cover - depende de la versión de customtki
 def _asset_path(name: str) -> str:
     """Resolve a bundled asset to a filesystem path."""
     return os.fspath(resources.files("liveaudio.assets") / name)
+
+
+def _asr_event_superseded(last_attempt, event):
+    """True when a structured ASR event belongs to an older attempt.
+
+    The GUI consumes ``attempt`` so a delayed event from a previous attempt
+    never overwrites the fresh attempt's display (no inherited stale %).
+    Missing/unparseable attempt counts as current (applies).
+    """
+    try:
+        ev_attempt = event.get("attempt", None)
+        if ev_attempt is None:
+            return False
+        return int(ev_attempt) < int(last_attempt)
+    except (TypeError, ValueError, AttributeError):
+        return False
+
+
+def _vad_event_superseded(last_attempt, event):
+    """Apply the same stale-attempt rule to VAD provisioning events."""
+    return _asr_event_superseded(last_attempt, event)
+
+
+def _accepted_launcher_handoff():
+    """Accept only the local snapshot that matches the installed launcher."""
+    if not os.environ.get("LIVEAUDIO_LAUNCHER"):
+        return None
+    location = read_install_location() or {}
+    install_root = location.get("install_root")
+    if not isinstance(install_root, str):
+        return None
+    return validate_handoff(handoff_path(install_root), install_root, APP_VERSION)
 
 
 def _obs_overlay_url(port: int) -> str:
@@ -141,6 +182,12 @@ def build_app_runtime_summary(app_state: dict) -> dict:
             for name, proc in processes.items()
         },
         "queues": {name: value for name, value in queues.items()},
+        "loss_counters": {
+            name: int(value) for name, value in app_state.get("loss_counters", {}).items()
+            if name in {"audio.shutdown_discarded", "asr.text_shutdown_discarded",
+                        "runtime.log_shutdown_discarded", "audio.stop_control_rejected",
+                        "asr.text_stop_control_rejected", "asr.decode_interrupted"}
+        },
     }
 
 
@@ -193,7 +240,6 @@ PROFILE_PRESETS = {
             "device": "cpu",
             "model_size": "base (Rápido)",
             "silence_timeout": 0.4,
-            "max_chunk_duration": 3.0,
             "subtitle_backlog_policy": "live_only",
             "subtitle_max_live_delay_sec": 5.0,
             "subtitle_catchup_interval_sec": 0.8,
@@ -206,7 +252,6 @@ PROFILE_PRESETS = {
             "device": "cuda",
             "model_size": "small (Balance CPU)",
             "silence_timeout": 0.8,
-            "max_chunk_duration": 5.0,
             "subtitle_backlog_policy": "auto",
             "subtitle_max_live_delay_sec": 10.0,
             "subtitle_catchup_interval_sec": 1.5,
@@ -219,7 +264,6 @@ PROFILE_PRESETS = {
             "device": "cuda",
             "model_size": "turbo (Máxima precisión GPU)",
             "silence_timeout": 1.0,
-            "max_chunk_duration": 8.0,
             "subtitle_backlog_policy": "auto",
             "subtitle_max_live_delay_sec": 15.0,
             "subtitle_catchup_interval_sec": 2.0,
@@ -232,7 +276,6 @@ PROFILE_PRESETS = {
             "device": "cpu",
             "model_size": "small (Balance CPU)",
             "silence_timeout": 0.6,
-            "max_chunk_duration": 4.0,
             "subtitle_backlog_policy": "live_only",
             "subtitle_max_live_delay_sec": 6.0,
             "subtitle_catchup_interval_sec": 1.0,
@@ -243,6 +286,10 @@ PROFILE_LABEL_TO_ID = {profile["label"]: profile_id for profile_id, profile in P
 
 
 class LiveASRApp(ctk.CTk):
+    @staticmethod
+    def _new_audio_queue(config):
+        return mp.Queue(maxsize=audio_queue_capacity(config))
+
     def __init__(self):
         super().__init__()
         self.title("Plynte LiveAudio")
@@ -278,10 +325,18 @@ class LiveASRApp(ctk.CTk):
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
         self.config_data = load_config()
+        self._first_run_handoff = _accepted_launcher_handoff()
         # --- CONFIGURACIÓN DE IDIOMA ---
-        lang = self.config_data.get("language")
+        lang = valid_language(self.config_data.get("language"))
+        if self._first_run_handoff is not None:
+            location_language = valid_language((read_install_location() or {}).get("language"))
+            if location_language is not None:
+                lang = location_language
+                if self.config_data.get("language") != lang:
+                    self.config_data["language"] = lang
+                    save_config(self.config_data)
         if not lang:
-            lang = autodetect_language()
+            lang = valid_language((read_install_location() or {}).get("language")) or autodetect_language()
         set_language(lang)
 
         self.draft_config = copy.deepcopy(self.config_data)
@@ -295,9 +350,12 @@ class LiveASRApp(ctk.CTk):
         # real (ver la property shared_config), no en cada arranque.
         self._manager = None
         self._shared_config = None
+        self._writer_failure_handled_code = None
+        self._decode_timeout_handled_attempt = None
+        self._shutdown_loss_counters = {}
 
         # Colas IPC con límite de tamaño para prevenir OOM
-        self.audio_queue = mp.Queue(maxsize=QUEUE_MAXSIZE)
+        self.audio_queue = self._new_audio_queue(self.config_data)
         self.text_queue = mp.Queue(maxsize=QUEUE_MAXSIZE)
         self.log_queue = mp.Queue(maxsize=QUEUE_MAXSIZE)
         self.p_audio = self.p_ia = self.p_ws = None
@@ -307,6 +365,10 @@ class LiveASRApp(ctk.CTk):
         self._advanced_visible = False
         self.status_labels = {}
         self._asr_is_downloading = False
+        self._asr_attempt = 1
+        self.btn_asr_retry = None
+        self._vad_attempt = 1
+        self.btn_vad_retry = None
         self._pending_update_tag = None
         self._dismissed_update_tag = None
 
@@ -318,8 +380,14 @@ class LiveASRApp(ctk.CTk):
         self.build_welcome_screen()
         self.build_main_screen()
         self.screen_welcome.grid(row=0, column=0, sticky="nsew")
+        self._first_run_phase = None
+        self.after_idle(self._mark_first_run_painted)
         self.after(100, self.process_logs)
         self.after(1000, self.check_updates)
+
+    def _mark_first_run_painted(self):
+        """Phase 4 belongs to the app only after its own widgets can paint."""
+        self._first_run_phase = 4
 
     @property
     def shared_config(self):
@@ -877,6 +945,26 @@ class LiveASRApp(ctk.CTk):
         )
         self.lbl_whisper_context_help.pack(anchor="w", padx=10, pady=(0, 0))
 
+        # Prewarm (track firstuse T4/D5, REQ-8): same "prewarm" config key as
+        # --prewarm/--lazy (default true, unchanged). Explicit first-use
+        # download/network copy from the approved ES/EN strings.
+        self.var_prewarm = ctk.BooleanVar(value=self.config_data.get("prewarm", True))
+        self.switch_prewarm = ctk.CTkSwitch(
+            tab_model,
+            text=t("prewarm_toggle_label"),
+            variable=self.var_prewarm,
+            command=self.on_setting_change,
+        )
+        self.switch_prewarm.pack(anchor="w", padx=10, pady=(10, 0))
+        ctk.CTkLabel(
+            tab_model,
+            text=t("prewarm_toggle_desc"),
+            wraplength=260,
+            justify="left",
+            font=ctk.CTkFont(size=10),
+            text_color="#AEB8BC",
+        ).pack(anchor="w", padx=10, pady=(0, 15))
+
         # --- Sliders de Latencia ---
         ctk.CTkLabel(tab_audio, text=t("latency_control"), font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=10, pady=(10, 0))
         
@@ -887,12 +975,50 @@ class LiveASRApp(ctk.CTk):
         self.slider_silence.set(self.config_data["silence_timeout"])
         self.slider_silence.pack(fill="x", padx=10, pady=(0, 10))
 
+        # Capture purpose controls the phrase window, independently of hardware presets.
+        purpose_keys = {
+            "subtitles": "transcription_purpose_subtitles",
+            "transcription": "transcription_purpose_transcription",
+            "combined": "transcription_purpose_combined",
+        }
+        current_purpose = self.config_data.get("transcription_purpose", "subtitles")
+        self.var_transcription_purpose = ctk.StringVar(value=t(purpose_keys[current_purpose]))
+        ctk.CTkLabel(tab_audio, text=t("transcription_purpose_label")).pack(
+            anchor="w", padx=10,
+        )
+        self.opt_transcription_purpose = self._create_premium_option_menu(
+            tab_audio,
+            values=[t(key) for key in purpose_keys.values()],
+            variable=self.var_transcription_purpose,
+            command=self._on_transcription_purpose_select,
+        )
+        self.opt_transcription_purpose.pack(fill="x", padx=10, pady=(0, 6))
+        self.lbl_transcription_purpose_help = ctk.CTkLabel(
+            tab_audio,
+            text=t(f"transcription_purpose_{current_purpose}_help"),
+            justify="left",
+            wraplength=260,
+            text_color="#AEB8BC",
+        )
+        self.lbl_transcription_purpose_help.pack(anchor="w", padx=10, pady=(0, 10))
+
         # Slider Guillotina
         self.lbl_max_dur = ctk.CTkLabel(tab_audio, text=t("max_phrase_duration", self.config_data['max_chunk_duration']))
         self.lbl_max_dur.pack(anchor="w", padx=10)
-        self.slider_max_dur = ctk.CTkSlider(tab_audio, from_=2.0, to=15.0, command=self.on_setting_change)
+        purpose_max = 60.0 if current_purpose in {"transcription", "combined"} else 15.0
+        self.slider_max_dur = ctk.CTkSlider(tab_audio, from_=1.0, to=purpose_max, command=self.on_setting_change)
         self.slider_max_dur.set(self.config_data["max_chunk_duration"])
         self.slider_max_dur.pack(fill="x", padx=10, pady=(0, 15))
+
+        self.lbl_asr_decode_timeout = ctk.CTkLabel(
+            tab_audio, text=t("asr_decode_timeout", self.config_data["asr_decode_timeout_sec"]),
+        )
+        self.lbl_asr_decode_timeout.pack(anchor="w", padx=10)
+        self.slider_asr_decode_timeout = ctk.CTkSlider(
+            tab_audio, from_=5, to=120, number_of_steps=115, command=self.on_setting_change,
+        )
+        self.slider_asr_decode_timeout.set(self.config_data["asr_decode_timeout_sec"])
+        self.slider_asr_decode_timeout.pack(fill="x", padx=10, pady=(0, 15))
 
         # Slider Pre-roll de onset (vad_speech_pad_ms)
         self.lbl_vad_pad = ctk.CTkLabel(tab_audio, text=t("vad_speech_pad", self.config_data['vad_speech_pad_ms']))
@@ -1129,6 +1255,29 @@ class LiveASRApp(ctk.CTk):
             pill.grid(row=0, column=idx, sticky="ew", padx=3, pady=4)
             self.status_labels[key] = pill
 
+        # Manual ASR retry (track firstuse T2/D3): visible only on
+        # stalled/failed. No auto-retry: the user presses Reintentar.
+        self.btn_asr_retry = ctk.CTkButton(
+            frame_status,
+            text=t("asr_retry_action"),
+            height=28,
+            fg_color="#7A4B00",
+            hover_color="#9A6100",
+            command=self.request_asr_retry,
+        )
+        self.btn_asr_retry.grid(row=1, column=2, sticky="ew", padx=3, pady=(0, 4))
+        self.btn_asr_retry.grid_forget()
+        self.btn_vad_retry = ctk.CTkButton(
+            frame_status,
+            text=t("vad_retry_action"),
+            height=28,
+            fg_color="#7A4B00",
+            hover_color="#9A6100",
+            command=self.request_vad_retry,
+        )
+        self.btn_vad_retry.grid(row=1, column=1, sticky="ew", padx=3, pady=(0, 4))
+        self.btn_vad_retry.grid_forget()
+
         frame_privacy = ctk.CTkFrame(frame_der, fg_color="#1f2a2d")
         frame_privacy.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 8))
         frame_privacy.grid_columnconfigure(0, weight=1)
@@ -1207,6 +1356,8 @@ class LiveASRApp(ctk.CTk):
         draft["audio_device"] = copy.deepcopy(self.draft_config.get("audio_device", self.config_data.get("audio_device")))
         draft["silence_timeout"] = round(self.slider_silence.get(), 1)
         draft["max_chunk_duration"] = round(self.slider_max_dur.get(), 1)
+        draft["transcription_purpose"] = self._transcription_purpose_id()
+        draft["asr_decode_timeout_sec"] = int(round(self.slider_asr_decode_timeout.get()))
         draft["vad_speech_pad_ms"] = int(round(self.slider_vad_pad.get()))
         draft["vad_threshold"] = round(self.slider_vad_threshold.get(), 2)
         draft["subtitle_max_live_delay_sec"] = round(self.slider_max_live_delay.get(), 1)
@@ -1229,6 +1380,7 @@ class LiveASRApp(ctk.CTk):
         draft["obs_enabled"] = self.var_obs_enabled.get()
         draft["save_transcript_enabled"] = self.var_save_transcript.get()
         draft["save_vtt_enabled"] = self.var_save_vtt.get()
+        draft["prewarm"] = self.var_prewarm.get()
         # Reuse the single source of ws_port validation (clamped to [1, 65535])
         draft["ws_port"] = _normalize_config({"ws_port": self.var_ws_port.get()})[0]["ws_port"]
         # Preservar prompts de ambos idiomas desde draft_config (acumula cambios),
@@ -1262,7 +1414,20 @@ class LiveASRApp(ctk.CTk):
         self.slider_threads.set(config["cpu_threads"])
         self.var_model.set(next((m for m in self.opt_model.cget("values") if m.startswith(config["model_size"].split()[0])), "small (Balance CPU)"))
         self.slider_silence.set(config["silence_timeout"])
+        purpose = config.get("transcription_purpose", "subtitles")
+        purpose_keys = {
+            "subtitles": "transcription_purpose_subtitles",
+            "transcription": "transcription_purpose_transcription",
+            "combined": "transcription_purpose_combined",
+        }
+        self.var_transcription_purpose.set(t(purpose_keys[purpose]))
+        purpose_max = 60.0 if purpose in {"transcription", "combined"} else 15.0
+        self.slider_max_dur.configure(from_=1.0, to=purpose_max)
         self.slider_max_dur.set(config["max_chunk_duration"])
+        self.slider_asr_decode_timeout.set(config.get("asr_decode_timeout_sec", 15))
+        self.lbl_transcription_purpose_help.configure(
+            text=t(f"transcription_purpose_{purpose}_help"),
+        )
         self.slider_vad_pad.set(config["vad_speech_pad_ms"])
         self.slider_vad_threshold.set(config["vad_threshold"])
         self.var_session.set(config["continuous_session"])
@@ -1284,6 +1449,7 @@ class LiveASRApp(ctk.CTk):
         self.var_obs_enabled.set(config.get("obs_enabled", True))
         self.var_save_transcript.set(config.get("save_transcript_enabled", True))
         self.var_save_vtt.set(config.get("save_vtt_enabled", True))
+        self.var_prewarm.set(config.get("prewarm", True))
         self.var_ws_port.set(str(config.get("ws_port", 8765)))
         # Cargar el prompt según el idioma de voz activo
         asr_lang = config.get("asr_language", "es")
@@ -1294,6 +1460,33 @@ class LiveASRApp(ctk.CTk):
         help_key = f"whisper_context_help_{asr_lang}"
         self.lbl_whisper_context_help.configure(text=t(help_key))
         self._ui_ready = True
+        self.on_setting_change()
+
+    def _transcription_purpose_id(self):
+        for purpose in ("subtitles", "transcription", "combined"):
+            if self.var_transcription_purpose.get() == t(f"transcription_purpose_{purpose}"):
+                return purpose
+        return self.draft_config.get("transcription_purpose", "subtitles")
+
+    def _on_transcription_purpose_select(self, selected):
+        if not self._ui_ready:
+            return
+        purpose = next((
+            value for value in ("subtitles", "transcription", "combined")
+            if selected == t(f"transcription_purpose_{value}")
+        ), None)
+        if purpose is None:
+            return
+        is_long_window = purpose in {"transcription", "combined"}
+        duration = 30.0 if is_long_window else 5.0
+        self.draft_config["transcription_purpose"] = purpose
+        self.draft_config["max_chunk_duration"] = duration
+        self.var_transcription_purpose.set(t(f"transcription_purpose_{purpose}"))
+        self.slider_max_dur.configure(from_=1.0, to=60.0 if is_long_window else 15.0)
+        self.slider_max_dur.set(duration)
+        self.lbl_transcription_purpose_help.configure(
+            text=t(f"transcription_purpose_{purpose}_help"),
+        )
         self.on_setting_change()
 
     def _profile_id_for_current_values(self, config):
@@ -1413,6 +1606,9 @@ class LiveASRApp(ctk.CTk):
 
         self.lbl_silence.configure(text=t("silence_detection", self.slider_silence.get()))
         self.lbl_max_dur.configure(text=t("max_phrase_duration", self.slider_max_dur.get()))
+        self.lbl_asr_decode_timeout.configure(
+            text=t("asr_decode_timeout", int(round(self.slider_asr_decode_timeout.get()))),
+        )
         self.lbl_vad_pad.configure(text=t("vad_speech_pad", self.slider_vad_pad.get()))
         self.lbl_vad_threshold.configure(text=t("vad_threshold_label", self.slider_vad_threshold.get()))
         self.lbl_max_live_delay.configure(text=t("max_live_delay", self.slider_max_live_delay.get()))
@@ -1488,8 +1684,8 @@ class LiveASRApp(ctk.CTk):
         return url
 
     def _pending_restart_flags(self, draft):
-        needs_asr_restart = any(self.config_data.get(key) != draft.get(key) for key in ["device", "model_size", "cpu_threads"])
-        needs_audio_restart = any(self.config_data.get(key) != draft.get(key) for key in ["audio_device", "silence_timeout", "max_chunk_duration", "vad_speech_pad_ms", "vad_threshold"])
+        needs_asr_restart = any(self.config_data.get(key) != draft.get(key) for key in ["device", "model_size", "cpu_threads", "asr_decode_timeout_sec"])
+        needs_audio_restart = any(self.config_data.get(key) != draft.get(key) for key in ["audio_device", "silence_timeout", "max_chunk_duration", "transcription_purpose", "vad_speech_pad_ms", "vad_threshold"])
         return needs_asr_restart, needs_audio_restart
 
     def _validate_draft_config(self, draft):
@@ -1568,6 +1764,7 @@ class LiveASRApp(ctk.CTk):
                 if not self.shared_config["continuous_session"]:
                     timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
                     self.current_session_dir = os.path.join(self.shared_config["output_dir"], f"session_{timestamp}")
+                    self.shared_config["session_started_monotonic"] = time.monotonic()
                     self.update_session_label()
                 if not self.hot_swap_engine():
                     raise RuntimeError(t("log_hot_swap_failed"))
@@ -1692,6 +1889,43 @@ class LiveASRApp(ctk.CTk):
 
     def handle_event(self, event):
         event_type = event.get("type")
+        if event_type == "fatal" and event.get("code") == "asr-decode-timeout":
+            try:
+                attempt = event.get("attempt")
+                if (type(attempt) is not int or type(self._asr_attempt) is not int
+                        or attempt != self._asr_attempt):
+                    return
+            except AttributeError:
+                return
+            if getattr(self, "is_running", False):
+                self.toggle_system()
+            self.set_status("asr", t("status_asr_decode_timeout"), "error")
+            timeout_sec = event.get("timeout_sec", 15)
+            if type(timeout_sec) is not int or not 5 <= timeout_sec <= 120:
+                timeout_sec = 15
+            messagebox.showwarning(
+                t("decode_timeout_title"),
+                t("decode_timeout_msg", seconds=timeout_sec),
+            )
+            return
+
+        if event_type == "fatal" and event.get("code") in {
+            "writer_queue_full", "writer_storage_error", "writer_drain_timeout",
+        }:
+            try:
+                attempt = event.get("attempt")
+                if (type(attempt) is not int or type(self._asr_attempt) is not int
+                        or attempt != self._asr_attempt):
+                    return
+            except AttributeError:
+                return
+            self._writer_failure_handled_code = event["code"]
+            if getattr(self, "is_running", False):
+                self.toggle_system()
+            self.set_status("asr", t("status_asr_storage_failed"), "error")
+            messagebox.showerror(t("storage_failure_title"), t("storage_failure_msg"))
+            return
+
         if event_type == "status":
             raw_text = event.get("text", "")
             status_key = event.get("key")
@@ -1715,17 +1949,123 @@ class LiveASRApp(ctk.CTk):
                     found_key = "status_audio_listening"
                     
             translated_text = t(found_key) if found_key else raw_text
-            self.set_status(status_key, translated_text, state)
-            
+            if status_key not in ("asr", "vad"):
+                self.set_status(status_key, translated_text, state)
+
             if status_key == "asr":
+                from liveaudio.core.provisioning import HONEST_ASR_STATES, PROVISION_I18N_KEYS
                 was_downloading = getattr(self, "_asr_is_downloading", False)
-                
-                # Deshabilitar si está explícitamente en carga o descarga
-                is_loading = "cargando" in raw_text.lower() or "descargando" in raw_text.lower()
-                self._asr_is_downloading = event.get("is_download", is_loading)
-                
+
+                phase = event.get("phase")
+                honest = phase if phase in HONEST_ASR_STATES else None
+                if honest is None and phase == "importing":
+                    # REQ-6 pre-import heartbeat: child alive, engine not yet
+                    # emitting. Render as loading, never blank the pill.
+                    honest = "loading"
+                if honest is None and state in HONEST_ASR_STATES:
+                    honest = state
+                percent = event.get("percent")
+                code = event.get("code")
+                attempt = event.get("attempt")
+                if attempt is not None:
+                    # Consume attempt: stale events from a previous attempt
+                    # never inherit their old % over the fresh attempt.
+                    if _asr_event_superseded(self._asr_attempt, event):
+                        return
+                    try:
+                        self._asr_attempt = max(int(self._asr_attempt or 1), int(attempt))
+                    except (TypeError, ValueError):
+                        pass
+
+                if honest is not None or percent is not None or code is not None:
+                    # Structured path (T1): render from phase/percent/code keys.
+                    # Never reverse-match the human-readable text here.
+                    if honest == "downloading":
+                        if percent is not None:
+                            try:
+                                pct = "%g" % float(percent)
+                            except (TypeError, ValueError):
+                                pct = "?"
+                            if pct == "?":
+                                translated_text = t("status_asr_downloading_indeterminate")
+                            else:
+                                translated_text = t("status_asr_downloading", percent=pct)
+                        else:
+                            translated_text = t("status_asr_downloading_indeterminate")
+                        pill_state = "active"
+                    elif honest == "transcribing":
+                        translated_text = t("status_asr_transcribing")
+                        pill_state = "active"
+                    elif honest == "loading":
+                        translated_text = t("status_asr_loading")
+                        pill_state = "active"
+                    elif honest == "ready":
+                        translated_text = t("status_asr_ready")
+                        pill_state = "ok"
+                    elif honest == "stalled":
+                        translated_text = t("status_asr_stalled")
+                        pill_state = "warn"
+                    elif honest == "failed":
+                        hint_key = PROVISION_I18N_KEYS.get(code, "provision_unknown_hint")
+                        translated_text = t(hint_key)
+                        pill_state = "error"
+                        self.print_log(f"[IA] {code or 'provision-unknown'}: {translated_text}")
+                    else:
+                        translated_text = t("status_asr_loading")
+                        pill_state = "active"
+                    self.set_status(status_key, translated_text, pill_state)
+
+                    self._asr_is_downloading = bool(
+                        honest == "downloading" or event.get("is_download", False))
+                    # Manual retry offer only on actionable states.
+                    try:
+                        if honest in ("stalled", "failed"):
+                            self.btn_asr_retry.grid(row=1, column=2, sticky="ew", padx=3, pady=(0, 4))
+                        else:
+                            self.btn_asr_retry.grid_forget()
+                    except Exception:
+                        pass
+                else:
+                    # LEGACY fallback for old child events without structured
+                    # fields: keep the is_download flag, literal sniff last.
+                    is_loading = "cargando" in raw_text.lower() or "descargando" in raw_text.lower()
+                    self._asr_is_downloading = event.get("is_download", is_loading)
+                    self.set_status(status_key, translated_text, state)
+
                 if was_downloading != self._asr_is_downloading:
                     self.refresh_profile_status()
+
+            elif status_key == "vad":
+                attempt = event.get("attempt")
+                if attempt is not None:
+                    if _vad_event_superseded(self._vad_attempt, event):
+                        return
+                    try:
+                        self._vad_attempt = max(int(self._vad_attempt or 1), int(attempt))
+                    except (TypeError, ValueError):
+                        pass
+                phase = event.get("phase")
+                code = event.get("code")
+                if phase == "provisioning":
+                    translated_text = t("status_vad_preparing")
+                    pill_state = "active"
+                elif phase == "ready":
+                    translated_text = t("status_vad_ready")
+                    pill_state = "ok"
+                elif phase == "failed":
+                    from liveaudio.core.provisioning import PROVISION_I18N_KEYS
+                    translated_text = t(PROVISION_I18N_KEYS.get(code, "provision_unknown_hint"))
+                    pill_state = "error"
+                else:
+                    pill_state = state
+                self.set_status("vad", translated_text, pill_state)
+                try:
+                    if phase == "failed":
+                        self.btn_vad_retry.grid(row=1, column=1, sticky="ew", padx=3, pady=(0, 4))
+                    else:
+                        self.btn_vad_retry.grid_forget()
+                except Exception:
+                    pass
 
         elif event_type == "ws_port":
             port = int(event.get("port", 8765))
@@ -1762,9 +2102,9 @@ class LiveASRApp(ctk.CTk):
             else:
                 reason = event.get("reason", "policy")
                 if total_delay is not None:
-                    self.print_log(f"[IA] Transcripcion guardada, no enviada a OBS ({reason}, {total_delay:.1f}s total).")
+                    self.print_log(f"[IA] Transcripcion procesada, no enviada a OBS ({reason}, {total_delay:.1f}s total).")
                 else:
-                    self.print_log(f"[IA] Transcripcion guardada, no enviada a OBS ({reason}).")
+                    self.print_log(f"[IA] Transcripcion procesada, no enviada a OBS ({reason}).")
         elif event_type == "log":
             self.print_log(event.get("message", ""))
 
@@ -1785,8 +2125,51 @@ class LiveASRApp(ctk.CTk):
                 except (ValueError, OSError) as e:
                     self.print_log(f"[App Error] Queue error: {e}")
                     break
+            shared = getattr(self, "_shared_config", None)
+            try:
+                code = shared.get("writer_failure_code") if shared is not None else None
+                attempt = shared.get("writer_failure_attempt") if shared is not None else None
+            except Exception:
+                code = None
+                attempt = None
+            current_attempt = getattr(self, "_asr_attempt", None)
+            if (code in {"writer_queue_full", "writer_storage_error", "writer_drain_timeout"}
+                    and code != getattr(self, "_writer_failure_handled_code", None)
+                    and type(attempt) is int and type(current_attempt) is int
+                    and attempt == current_attempt):
+                self._writer_failure_handled_code = code
+                self.handle_event({"type": "fatal", "code": code, "attempt": attempt})
+            LiveASRApp._check_asr_decode_deadline(self)
         finally:
             self.after(100, self.process_logs)
+
+    def _check_asr_decode_deadline(self):
+        if not getattr(self, "is_running", False):
+            return
+        shared = getattr(self, "_shared_config", None)
+        try:
+            marker = shared.get("asr_decode") if shared is not None else None
+        except Exception:
+            return
+        if not isinstance(marker, dict) or marker.get("status") != "decoding":
+            return
+        attempt = marker.get("attempt")
+        deadline = marker.get("deadline_monotonic")
+        if (type(attempt) is not int or type(self._asr_attempt) is not int
+                or attempt != self._asr_attempt
+                or type(deadline) not in (int, float)
+                or time.monotonic() < deadline
+                or getattr(self, "_decode_timeout_handled_attempt", None) == attempt):
+            return
+        self._decode_timeout_handled_attempt = attempt
+        self._record_shutdown_loss("asr.decode_interrupted")
+        timeout_sec = marker.get("timeout_sec", 15)
+        if type(timeout_sec) is not int or not 5 <= timeout_sec <= 120:
+            timeout_sec = 15
+        self.handle_event({
+            "type": "fatal", "code": "asr-decode-timeout",
+            "attempt": attempt, "timeout_sec": timeout_sec,
+        })
 
     def _collect_runtime_diagnostics(self):
         statuses = {key: label.cget("text") for key, label in self.status_labels.items()}
@@ -1806,6 +2189,7 @@ class LiveASRApp(ctk.CTk):
                     "ws": self.p_ws,
                 },
                 "queues": queue_sizes,
+                "loss_counters": self._shutdown_loss_counters,
             }
         )
 
@@ -1825,13 +2209,35 @@ class LiveASRApp(ctk.CTk):
             proc.terminate()
             proc.join(timeout=2)
 
-    def _drain_queue(self, q):
+    def _record_shutdown_loss(self, name, count=1):
+        self._shutdown_loss_counters[name] = self._shutdown_loss_counters.get(name, 0) + int(count)
+
+    def _drain_queue(self, q, queue_name="audio"):
         """Vacía una cola para evitar que bloquee procesos al cerrarse."""
+        discarded = 0
         try:
-            while not q.empty():
-                q.get_nowait()
+            while True:
+                if q.get_nowait() is not None:
+                    discarded += 1
+        except queue.Empty:
+            pass
         except Exception:
             pass
+        metric = {"audio": "audio.shutdown_discarded", "text": "asr.text_shutdown_discarded",
+                  "log": "runtime.log_shutdown_discarded"}.get(queue_name)
+        if metric and discarded:
+            self._record_shutdown_loss(metric, discarded)
+            self.print_log(f"[Shutdown] {queue_name} queue discarded {discarded} pending item(s); their outcome is unknown.")
+        return discarded
+
+    def _signal_stop(self, q, queue_name):
+        try:
+            q.put_nowait(None)
+        except Exception:
+            metric = {"audio": "audio.stop_control_rejected", "text": "asr.text_stop_control_rejected"}.get(queue_name)
+            if metric:
+                self._record_shutdown_loss(metric)
+            self.print_log(f"[Shutdown] Could not enqueue {queue_name} stop control; pending items may be discarded.")
 
     def hot_swap_engine(self):
         # Guard de seguridad para prevenir spawn no deseado de procesos en segundo plano
@@ -1846,17 +2252,19 @@ class LiveASRApp(ctk.CTk):
         if self.p_audio and self.p_audio.is_alive():
             self.p_audio.terminate()
         if self.p_ia and self.p_ia.is_alive():
-            try:
-                self.audio_queue.put_nowait(None)  # Señal de fin
-            except Exception:
-                pass
+            self._signal_stop(self.audio_queue, "audio")
             self._stop_process(self.p_ia, "IA")
+
+        try:
+            self.shared_config["asr_decode"] = None
+        except Exception:
+            pass
         
         # Esperar y limpiar
         self._stop_process(self.p_audio, "Productor")
-        self._drain_queue(self.audio_queue)
+        self._drain_queue(self.audio_queue, "audio")
         
-        self.audio_queue = mp.Queue(maxsize=QUEUE_MAXSIZE)  # Tubería 100% nueva y limpia
+        self.audio_queue = self._new_audio_queue(self.shared_config)
 
         # Targets libres de torch: workers.py no importa nada pesado, así que la
         # GUI puede referenciar los targets sin importar torch. En spawn el hijo
@@ -1870,6 +2278,70 @@ class LiveASRApp(ctk.CTk):
         self.p_ia.start()
         self.after(3000, self.refresh_profile_status)
         return self.p_audio.is_alive() and self.p_ia.is_alive()
+
+    def request_asr_retry(self):
+        """Manual ASR retry (track firstuse T2/D3).
+
+        New attempt: % resets to 0 exactly once (fresh child), then monotonic
+        per attempt. Manual only — never auto-retried.
+        """
+        try:
+            current = int(self.shared_config.get("asr_attempt", self._asr_attempt or 1))
+        except (TypeError, ValueError):
+            current = self._asr_attempt or 1
+        new_attempt = current + 1
+        try:
+            self.shared_config["asr_attempt"] = new_attempt
+        except Exception:
+            pass
+        self._asr_attempt = new_attempt
+        self.set_status("asr", t("status_asr_loading"), "active")
+        try:
+            if self.btn_asr_retry is not None:
+                self.btn_asr_retry.grid_forget()
+        except Exception:
+            pass
+        if self.is_running:
+            self.hot_swap_engine()
+
+    def request_vad_retry(self):
+        """Replace only a verified-dead, pre-ready audio producer.
+
+        The ASR child and its queue remain intact. A live producer is never
+        force-replaced because it could still write to the shared queue.
+        """
+        if not self.is_running or self.p_audio is None:
+            return False
+        try:
+            if self.p_audio.is_alive():
+                self.set_status("vad", t("vad_full_restart_required"), "warn")
+                self.print_log("[VAD] producer is still alive; full restart required")
+                return False
+            self.p_audio.join(timeout=0)
+            if self.p_audio.is_alive():
+                self.set_status("vad", t("vad_full_restart_required"), "warn")
+                return False
+        except Exception:
+            self.set_status("vad", t("vad_full_restart_required"), "warn")
+            return False
+        self._vad_attempt += 1
+        try:
+            self.shared_config["vad_attempt"] = self._vad_attempt
+        except Exception:
+            pass
+        from liveaudio.core.workers import run_audio
+        self.p_audio = mp.Process(
+            target=run_audio,
+            args=(self.audio_queue, self.shared_config, self.log_queue),
+            daemon=True,
+        )
+        self.p_audio.start()
+        self.set_status("vad", t("status_vad_preparing"), "active")
+        try:
+            self.btn_vad_retry.grid_forget()
+        except Exception:
+            pass
+        return self.p_audio.is_alive()
 
     def toggle_system(self):
         if not self.is_running and self._ui_ready:
@@ -1894,6 +2366,17 @@ class LiveASRApp(ctk.CTk):
                 self.print_log(t("log_ws_port_busy").format(port=ws_port, end_port=end_port))
                 self.set_status("ws", t("status_ws_port_busy"), "error")
                 return
+            self.shared_config["writer_failure_code"] = None
+            self.shared_config["writer_failure_attempt"] = None
+            self.shared_config["asr_decode"] = None
+            self._writer_failure_handled_code = None
+            self._decode_timeout_handled_attempt = None
+            try:
+                current_attempt = int(self.shared_config.get("asr_attempt", self._asr_attempt or 1))
+            except (TypeError, ValueError):
+                current_attempt = int(self._asr_attempt or 1)
+            self._asr_attempt = current_attempt + 1
+            self.shared_config["asr_attempt"] = self._asr_attempt
             self.is_running = True
             self.btn_power.configure(text=t("stop_system"), fg_color="darkred", hover_color="red")
             
@@ -1913,6 +2396,7 @@ class LiveASRApp(ctk.CTk):
             # Generar carpeta principal de la sesión
             timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
             self.current_session_dir = os.path.join(self.shared_config["output_dir"], f"session_{timestamp}")
+            self.shared_config["session_started_monotonic"] = time.monotonic()
             self.update_session_label()
             
             # Recrear cola de texto para evitar pipes corruptos entre sesiones
@@ -1939,7 +2423,7 @@ class LiveASRApp(ctk.CTk):
             # Apagado limpio con señal → join → terminate
             if self.p_ia and self.p_ia.is_alive():
                 try:
-                    self.audio_queue.put_nowait(None)
+                    self._signal_stop(self.audio_queue, "audio")
                 except Exception:
                     pass
             
@@ -1948,14 +2432,14 @@ class LiveASRApp(ctk.CTk):
             
             # Señal de apagado limpio al servidor WebSocket antes de matar el proceso
             try:
-                self.text_queue.put_nowait(None)
+                self._signal_stop(self.text_queue, "text")
             except Exception:
                 pass
             
             self._stop_process(self.p_ws, "WebSocket")
             
-            self._drain_queue(self.audio_queue)
-            self._drain_queue(self.text_queue)
+            self._drain_queue(self.audio_queue, "audio")
+            self._drain_queue(self.text_queue, "text")
             self.current_session_dir = None
             self.update_session_label()
 
@@ -2006,7 +2490,7 @@ class LiveASRApp(ctk.CTk):
         
         # Señal de apagado limpio al servidor WebSocket
         try:
-            self.text_queue.put_nowait(None)
+            self._signal_stop(self.text_queue, "text")
         except Exception:
             pass
         
@@ -2015,8 +2499,8 @@ class LiveASRApp(ctk.CTk):
             self._stop_process(proc, timeout=2)
         
         # Drenar colas para desbloquear cualquier proceso
-        for q in [self.audio_queue, self.text_queue, self.log_queue]:
-            self._drain_queue(q)
+        for q, name in [(self.audio_queue, "audio"), (self.text_queue, "text"), (self.log_queue, "log")]:
+            self._drain_queue(q, name)
 
         # Cerrar el proceso del Manager (host del dict de config compartido).
         # Sin esto queda colgado tras un kill duro; el shutdown normal lo reclama

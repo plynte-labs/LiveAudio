@@ -132,13 +132,157 @@ class TestNormalizeConfig(unittest.TestCase):
         self.assertLessEqual(result["silence_timeout"], 2.0)
         self.assertTrue(updated)
 
+    def test_asr_decode_timeout_defaults_and_accepts_supported_values(self):
+        for value in (5, 15, 60, 120):
+            with self.subTest(value=value):
+                config = DEFAULT_CONFIG.copy()
+                config["asr_decode_timeout_sec"] = value
+                result, updated = _normalize_config(config)
+                self.assertEqual(result["asr_decode_timeout_sec"], value)
+                self.assertFalse(updated)
+
+        config = DEFAULT_CONFIG.copy()
+        config.pop("asr_decode_timeout_sec")
+        result, updated = _normalize_config(config)
+        self.assertEqual(result["asr_decode_timeout_sec"], 15)
+        self.assertTrue(updated)
+
+    def test_asr_decode_timeout_rejects_invalid_values_and_clamps_bounds(self):
+        for value in (True, None, "60", float("nan"), float("inf"), 10**500, [], {}):
+            with self.subTest(value=value):
+                config = DEFAULT_CONFIG.copy()
+                config["asr_decode_timeout_sec"] = value
+                result, updated = _normalize_config(config)
+                self.assertEqual(result["asr_decode_timeout_sec"], 15)
+                self.assertTrue(updated)
+
+        for value, expected in ((1, 5), (121, 120)):
+            with self.subTest(value=value):
+                config = DEFAULT_CONFIG.copy()
+                config["asr_decode_timeout_sec"] = value
+                result, updated = _normalize_config(config)
+                self.assertEqual(result["asr_decode_timeout_sec"], expected)
+                self.assertTrue(updated)
+
     def test_clamps_max_chunk_duration(self):
         """Max chunk duration outside range should be clamped."""
         config = DEFAULT_CONFIG.copy()
         config["max_chunk_duration"] = 1.0
         result, updated = _normalize_config(config)
-        self.assertGreaterEqual(result["max_chunk_duration"], 2.0)
+        self.assertEqual(result["max_chunk_duration"], 1.0)
+        self.assertFalse(updated)
+
+    def test_legacy_duration_is_preserved_and_purpose_defaults_to_subtitles(self):
+        config = DEFAULT_CONFIG.copy()
+        config.pop("transcription_purpose", None)
+        config["max_chunk_duration"] = 15.0
+
+        result, updated = _normalize_config(config)
+
+        self.assertEqual(result["transcription_purpose"], "subtitles")
+        self.assertEqual(result["max_chunk_duration"], 15.0)
         self.assertTrue(updated)
+
+    def test_transcription_duration_allows_sixty_seconds(self):
+        config = DEFAULT_CONFIG.copy()
+        config["transcription_purpose"] = "transcription"
+        config["max_chunk_duration"] = 60.0
+
+        result, _updated = _normalize_config(config)
+
+        self.assertEqual(result["max_chunk_duration"], 60.0)
+
+    def test_missing_duration_uses_explicit_purpose_default(self):
+        for purpose, expected in (("subtitles", 5.0), ("transcription", 30.0), ("combined", 30.0)):
+            with self.subTest(purpose=purpose):
+                config = DEFAULT_CONFIG.copy()
+                config["transcription_purpose"] = purpose
+                config.pop("max_chunk_duration")
+
+                result, updated = _normalize_config(config)
+
+                self.assertTrue(updated)
+                self.assertEqual(result["max_chunk_duration"], expected)
+
+    def test_invalid_duration_uses_explicit_purpose_default(self):
+        for invalid in (None, "60", True, []):
+            with self.subTest(invalid=invalid):
+                config = DEFAULT_CONFIG.copy()
+                config["transcription_purpose"] = "transcription"
+                config["max_chunk_duration"] = invalid
+
+                result, _updated = _normalize_config(config)
+
+                self.assertEqual(result["max_chunk_duration"], 30.0)
+
+    def test_valid_explicit_duration_is_preserved_for_each_purpose(self):
+        for purpose, duration in (("subtitles", 15.0), ("transcription", 60.0), ("combined", 60.0)):
+            with self.subTest(purpose=purpose):
+                config = DEFAULT_CONFIG.copy()
+                config["transcription_purpose"] = purpose
+                config["max_chunk_duration"] = duration
+
+                result, _updated = _normalize_config(config)
+
+                self.assertEqual(result["max_chunk_duration"], duration)
+
+    def test_invalid_purpose_and_non_finite_duration_are_sanitized(self):
+        config = DEFAULT_CONFIG.copy()
+        config["transcription_purpose"] = "unknown"
+        config["max_chunk_duration"] = float("nan")
+
+        result, updated = _normalize_config(config)
+
+        self.assertEqual(result["transcription_purpose"], "subtitles")
+        self.assertEqual(result["max_chunk_duration"], 5.0)
+        self.assertTrue(updated)
+
+    def test_wrong_purpose_type_and_boolean_duration_are_sanitized(self):
+        config = DEFAULT_CONFIG.copy()
+        config["transcription_purpose"] = []
+        config["max_chunk_duration"] = True
+
+        result, updated = _normalize_config(config)
+
+        self.assertEqual(result["transcription_purpose"], "subtitles")
+        self.assertEqual(result["max_chunk_duration"], 5.0)
+        self.assertTrue(updated)
+
+    def test_numeric_string_is_not_accepted_as_phrase_duration(self):
+        config = DEFAULT_CONFIG.copy()
+        config["transcription_purpose"] = "transcription"
+        config["max_chunk_duration"] = "45"
+
+        result, updated = _normalize_config(config)
+
+        self.assertEqual(result["max_chunk_duration"], 30.0)
+        self.assertTrue(updated)
+
+    def test_audio_queue_capacity_includes_silence_padding_and_frame(self):
+        from liveaudio.utils import config as config_module
+        capacity = getattr(config_module, "audio_queue_capacity", None)
+        self.assertTrue(callable(capacity), "audio queue sizing helper is missing")
+        self.assertEqual(capacity({
+            "max_chunk_duration": 5.0,
+            "silence_timeout": 0.8,
+            "vad_speech_pad_ms": 200,
+        }), 9)
+
+    def test_audio_queue_capacity_stays_finite_at_longest_phrase(self):
+        from liveaudio.utils import config as config_module
+        capacity = getattr(config_module, "audio_queue_capacity", None)
+        self.assertTrue(callable(capacity), "audio queue sizing helper is missing")
+        self.assertEqual(capacity({
+            "max_chunk_duration": 60.0,
+            "silence_timeout": 2.0,
+            "vad_speech_pad_ms": 500,
+        }), 1)
+
+    def test_audio_queue_capacity_uses_safe_defaults_for_wrong_types(self):
+        from liveaudio.utils import config as config_module
+        capacity = getattr(config_module, "audio_queue_capacity", None)
+        self.assertTrue(callable(capacity), "audio queue sizing helper is missing")
+        self.assertEqual(capacity({"max_chunk_duration": "60"}), 9)
 
     def test_normalizes_output_dir(self):
         """Output dir should be normalized to absolute path."""
@@ -434,7 +578,7 @@ class TestConfigValidation(unittest.TestCase):
         config = DEFAULT_CONFIG.copy()
         config["max_chunk_duration"] = -5.0
         result, updated = _normalize_config(config)
-        self.assertGreaterEqual(result["max_chunk_duration"], 2.0)
+        self.assertEqual(result["max_chunk_duration"], 1.0)
 
     def test_rejects_excessive_max_chunk_duration(self):
         """Excessive max_chunk_duration should be clamped to maximum."""

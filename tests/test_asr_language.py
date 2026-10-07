@@ -590,6 +590,9 @@ class TestReadUIConfigASRLanguage(unittest.TestCase):
         mock.slider_silence.get.return_value = 0.8
         mock.slider_max_dur = MagicMock()
         mock.slider_max_dur.get.return_value = 5.0
+        mock.slider_asr_decode_timeout = MagicMock()
+        mock.slider_asr_decode_timeout.get.return_value = 60.0
+        mock._transcription_purpose_id = lambda: "subtitles"
         mock.slider_vad_pad = MagicMock()
         mock.slider_vad_pad.get.return_value = 200
         mock.slider_vad_threshold = MagicMock()
@@ -600,6 +603,8 @@ class TestReadUIConfigASRLanguage(unittest.TestCase):
         mock.slider_catchup_interval.get.return_value = 1.5
         mock.var_session = MagicMock()
         mock.var_session.get.return_value = True
+        mock.var_prewarm = MagicMock()
+        mock.var_prewarm.get.return_value = True
         mock.text_blacklist = MagicMock()
         mock.text_blacklist.get.return_value = "amara.org"
         mock.var_style = MagicMock()
@@ -723,6 +728,29 @@ class TestReadUIConfigASRLanguage(unittest.TestCase):
         self.assertIsInstance(result["vad_speech_pad_ms"], int)
         self.assertEqual(result["vad_threshold"], 0.67)
 
+    def test_read_ui_config_collects_asr_decode_timeout(self):
+        from liveaudio.app import LiveASRApp
+
+        mock = self._make_mock_app_for_read({"asr_language": "es"}, {"asr_language": "es"})
+        mock.slider_asr_decode_timeout.get.return_value = 59.6
+        result = LiveASRApp._read_ui_config(mock)
+        self.assertEqual(result["asr_decode_timeout_sec"], 60)
+
+    def test_read_ui_config_preserves_prewarm_enabled_value(self):
+        """_read_ui_config must carry the selected prewarm value into the draft."""
+        from liveaudio.app import LiveASRApp
+
+        for prewarm_enabled in (True, False):
+            with self.subTest(prewarm=prewarm_enabled):
+                mock = self._make_mock_app_for_read(
+                    {"asr_language": "es"}, {"asr_language": "es"}
+                )
+                mock.var_prewarm.get.return_value = prewarm_enabled
+
+                result = LiveASRApp._read_ui_config(mock)
+
+                self.assertIs(result["prewarm"], prewarm_enabled)
+
 
 class TestLoadUIFromConfigASRLanguage(unittest.TestCase):
     """Tests for _load_ui_from_config handling of ASR language — runtime verification."""
@@ -741,11 +769,15 @@ class TestLoadUIFromConfigASRLanguage(unittest.TestCase):
         mock.var_model = MagicMock()
         mock.slider_silence = MagicMock()
         mock.slider_max_dur = MagicMock()
+        mock.slider_asr_decode_timeout = MagicMock()
+        mock.var_transcription_purpose = MagicMock()
+        mock.lbl_transcription_purpose_help = MagicMock()
         mock.slider_vad_pad = MagicMock()
         mock.slider_vad_threshold = MagicMock()
         mock.slider_max_live_delay = MagicMock()
         mock.slider_catchup_interval = MagicMock()
         mock.var_session = MagicMock()
+        mock.var_prewarm = MagicMock()
         mock.var_style = MagicMock()
         mock.var_backlog_policy = MagicMock()
         mock.text_blacklist = MagicMock()
@@ -767,6 +799,7 @@ class TestLoadUIFromConfigASRLanguage(unittest.TestCase):
             "model_size": "small (Balance CPU)",
             "silence_timeout": 0.8,
             "max_chunk_duration": 5.0,
+            "asr_decode_timeout_sec": 60,
             "vad_speech_pad_ms": 200,
             "vad_threshold": 0.5,
             "continuous_session": True,
@@ -781,6 +814,20 @@ class TestLoadUIFromConfigASRLanguage(unittest.TestCase):
             "whisper_context_prompt_es": "ES prompt",
             "whisper_context_prompt_en": "EN prompt",
         }
+
+    def test_load_ui_from_config_applies_prewarm_enabled_value(self):
+        """_load_ui_from_config must apply either persisted prewarm value."""
+        from liveaudio.app import LiveASRApp
+
+        for prewarm_enabled in (True, False):
+            with self.subTest(prewarm=prewarm_enabled):
+                mock = self._make_mock_app_for_load()
+                config = self._make_full_config()
+                config["prewarm"] = prewarm_enabled
+
+                LiveASRApp._load_ui_from_config(mock, config)
+
+                mock.var_prewarm.set.assert_called_once_with(prewarm_enabled)
 
     def test_load_ui_sets_asr_lang_var_to_english(self):
         """_load_ui_from_config should set var_asr_lang to 'English' when asr_language='en'."""
@@ -875,6 +922,15 @@ class TestLoadUIFromConfigASRLanguage(unittest.TestCase):
 
         mock.slider_vad_pad.set.assert_called_with(config["vad_speech_pad_ms"])
         mock.slider_vad_threshold.set.assert_called_with(config["vad_threshold"])
+
+    def test_load_ui_applies_asr_decode_timeout_slider(self):
+        from liveaudio.app import LiveASRApp
+
+        mock = self._make_mock_app_for_load()
+        config = self._make_full_config()
+        config["asr_decode_timeout_sec"] = 60
+        LiveASRApp._load_ui_from_config(mock, config)
+        mock.slider_asr_decode_timeout.set.assert_called_with(60)
 
 
 class TestOnASRLanguageChangeMethodExists(unittest.TestCase):

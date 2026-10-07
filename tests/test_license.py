@@ -2,6 +2,7 @@
 """Tests for MIT license file and SPDX headers."""
 
 import os
+import tempfile
 import unittest
 
 
@@ -36,7 +37,7 @@ class TestMITHeadersInSourceFiles(unittest.TestCase):
         for root, dirs, files in os.walk(self.project_root):
             dirs[:] = [
                 d for d in dirs
-                if not d.startswith(".") and d not in ("__pycache__", "legacy", "sessions", "dist")
+                if not d.startswith(".") and d not in ("__pycache__", "legacy", "sessions", "dist", "build_artifacts")
             ]
             for f in files:
                 if f.endswith(".py"):
@@ -63,6 +64,17 @@ class TestMITHeadersInSourceFiles(unittest.TestCase):
             missing, [],
             f"These .py files are missing MIT SPDX header: {missing}"
         )
+
+    def test_generated_build_artifacts_are_excluded_but_source_is_checked(self):
+        with tempfile.TemporaryDirectory() as root:
+            self.project_root = root
+            for directory in ("build_artifacts", "liveaudio"):
+                os.mkdir(os.path.join(root, directory))
+                with open(os.path.join(root, directory, "probe.py"), "w", encoding="utf-8") as handle:
+                    handle.write("print('fixture')\n")
+            self.assertEqual(self._get_py_files(), [os.path.join(root, "liveaudio", "probe.py")])
+            with self.assertRaisesRegex(AssertionError, "missing MIT SPDX header"):
+                self.test_all_py_files_contain_mit_header()
 
     def test_subtitulos_obs_html_contains_mit_header(self):
         """subtitulos_obs.html should contain SPDX-License-Identifier: MIT."""

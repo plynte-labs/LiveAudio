@@ -198,6 +198,56 @@ class TestMessageRouting(unittest.TestCase):
         self.assertEqual(parsed["text"], "Hello world")
         self.assertEqual(parsed["style"], "default")
 
+    def test_internal_timing_is_removed_before_wire_broadcast_and_measured_server_side(self):
+        import queue
+        import time
+        from types import SimpleNamespace
+        from liveaudio.core.diagnostics import DiagnosticsStore
+        from liveaudio.core.network import _poll_queue
+
+        text_queue = queue.Queue()
+        text_queue.put({
+            "id": "safe-id", "text": "safe", "style": "default",
+            "_telemetry": {
+                "attempt": 3, "sequence": 8,
+                "queue_enqueued_monotonic": time.monotonic() - 0.2,
+            },
+        })
+        text_queue.put(None)
+        diagnostics = DiagnosticsStore(level="deep")
+        broadcasts = []
+
+        async def run_test():
+            with patch("liveaudio.core.network.broadcast", side_effect=lambda _clients, payload: broadcasts.append(payload)):
+                await _poll_queue(text_queue, SimpleNamespace(connections=set()), MockQueue(), diagnostics)
+
+        asyncio.run(run_test())
+        wire_payload = json.loads(broadcasts[0])
+        snapshot = diagnostics.snapshot_runtime_health()
+
+        self.assertEqual(wire_payload, {
+            "id": "safe-id", "text": "safe", "style": "default",
+        })
+        self.assertIn("ws.queue_wait_sec", snapshot["durations"])
+        self.assertIn("ws.broadcast_call_sec", snapshot["durations"])
+        self.assertNotIn("safe", json.dumps(snapshot))
+
+    def test_shutdown_counts_unbroadcast_replay_items(self):
+        import queue
+        from types import SimpleNamespace
+        from liveaudio.core.diagnostics import DiagnosticsStore
+        from liveaudio.core.network import _poll_queue
+
+        text_queue = queue.Queue()
+        text_queue.put({"text": "private", "is_replay": True, "catchup_interval_sec": 2.0})
+        text_queue.put(None)
+        diagnostics = DiagnosticsStore(level="deep")
+
+        asyncio.run(_poll_queue(text_queue, SimpleNamespace(connections=set()), MockQueue(), diagnostics))
+
+        counters = diagnostics.snapshot_runtime_health()["counters"]
+        self.assertEqual(counters["ws.replay_shutdown_drops"], 1)
+
 
 class TestPortAvailable(unittest.TestCase):
     """Tests for the advisory pre-flight port check."""

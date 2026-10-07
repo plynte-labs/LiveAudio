@@ -2,7 +2,13 @@
 import os
 import json
 import multiprocessing as mp
+import math
 import time
+
+
+def valid_language(value):
+    """Return the persisted language only when it is part of the UI contract."""
+    return value if value in ("es", "en") else None
 
 
 def get_global_appdata_dir():
@@ -24,7 +30,7 @@ def read_install_location():
         pass
     return None
 
-def write_install_location(install_root, hf_home):
+def write_install_location(install_root, hf_home, language=None):
     config_dir = get_global_appdata_dir()
     os.makedirs(config_dir, exist_ok=True)
     path = os.path.join(config_dir, "install_location.json")
@@ -32,6 +38,9 @@ def write_install_location(install_root, hf_home):
         "install_root": os.path.abspath(install_root),
         "hf_home": os.path.abspath(hf_home)
     }
+    language = valid_language(language)
+    if language is not None:
+        data["language"] = language
     tmp_path = f"{path}.{os.getpid()}.tmp"
     try:
         with open(tmp_path, "w", encoding="utf-8") as f:
@@ -86,6 +95,13 @@ VALID_SUBTITLE_STYLES = {"default", "karaoke", "neon", "minimal", "bold", "rgb",
 VALID_SUBTITLE_DISPLAY_MODES = {"single", "ribbon", "adaptive"}
 VALID_BACKLOG_POLICIES = {"auto", "live_only", "send_all"}
 VALID_DIAGNOSTICS_LEVELS = {"off", "minimal", "deep"}
+VALID_TRANSCRIPTION_PURPOSES = {"subtitles", "transcription", "combined"}
+AUDIO_QUEUE_MAXSIZE = 100
+AUDIO_QUEUE_BUDGET_SEC = 60.0
+AUDIO_FRAME_DURATION_SEC = 512 / 16000
+ASR_DECODE_TIMEOUT_MIN_SEC = 5
+ASR_DECODE_TIMEOUT_MAX_SEC = 120
+ASR_DECODE_TIMEOUT_DEFAULT_SEC = 15
 
 DEFAULT_CONFIG = {
     "output_dir": os.path.join(get_data_home(), "sessions"),  # Default sessions dir under the data home
@@ -102,11 +118,14 @@ DEFAULT_CONFIG = {
     "subtitle_catchup_interval_sec": 1.5,
     "silence_timeout": 0.8,
     "max_chunk_duration": 5.0,
+    "transcription_purpose": "subtitles",
+    "asr_decode_timeout_sec": ASR_DECODE_TIMEOUT_DEFAULT_SEC,
     "audio_device": None,  # None = dispositivo por defecto del OS
     "selected_profile_id": "balanced",
     "profile_mode": "preset",
     "ws_port": 8765,
     "obs_enabled": True,
+    "prewarm": True,  # T4/D5: prewarm default true; first use downloads model (uses network)
     "save_transcript_enabled": True,  # Write transcript.jsonl to disk
     "save_vtt_enabled": True,  # Write subtitles.vtt to disk
     "whisper_context_prompt_es": "",
@@ -124,9 +143,13 @@ DEFAULT_CONFIG = {
 
 
 def _clamp_number(value, default, min_value, max_value, cast=float):
+    if isinstance(value, bool):
+        return default, True
     try:
         number = cast(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        return default, True
+    if isinstance(number, float) and not math.isfinite(number):
         return default, True
     if number < min_value:
         return min_value, True
@@ -135,11 +158,33 @@ def _clamp_number(value, default, min_value, max_value, cast=float):
     return number, False
 
 
+def audio_queue_capacity(config):
+    """Bound queued phrase duration while reserving space for phrase margins.
+
+    This is a nominal queued-audio budget, not a process RSS guarantee: IPC may
+    hold additional copies of an enqueued array.
+    """
+    def _finite_setting(key, default, minimum, maximum):
+        raw_value = config.get(key)
+        if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
+            return default
+        value, _changed = _clamp_number(raw_value, default, minimum, maximum, float)
+        return value
+
+    max_duration = _finite_setting("max_chunk_duration", 5.0, 1.0, 60.0)
+    silence_timeout = _finite_setting("silence_timeout", 0.8, 0.3, 2.0)
+    speech_pad_ms = _finite_setting("vad_speech_pad_ms", 200, 0.0, 500.0)
+    phrase_budget = max_duration + silence_timeout + speech_pad_ms / 1000 + AUDIO_FRAME_DURATION_SEC
+    return min(AUDIO_QUEUE_MAXSIZE, max(1, int(AUDIO_QUEUE_BUDGET_SEC // phrase_budget)))
+
+
 def _normalize_config(config):
     """Valida tipos/rangos sin eliminar configuracion del usuario."""
     updated = False
 
     for key, default_value in DEFAULT_CONFIG.items():
+        if key == "max_chunk_duration" and key not in config:
+            continue
         if key not in config:
             config[key] = default_value
             updated = True
@@ -176,8 +221,32 @@ def _normalize_config(config):
     config["silence_timeout"] = round(silence_timeout, 1)
     updated = updated or changed
 
-    max_chunk_duration, changed = _clamp_number(config.get("max_chunk_duration"), DEFAULT_CONFIG["max_chunk_duration"], 2.0, 15.0, float)
+    purpose = config.get("transcription_purpose")
+    if not isinstance(purpose, str) or purpose not in VALID_TRANSCRIPTION_PURPOSES:
+        purpose = DEFAULT_CONFIG["transcription_purpose"]
+        config["transcription_purpose"] = purpose
+        updated = True
+
+    max_duration = 60.0 if purpose in {"transcription", "combined"} else 15.0
+    default_duration = 30.0 if purpose in {"transcription", "combined"} else DEFAULT_CONFIG["max_chunk_duration"]
+    raw_max_chunk_duration = config.get("max_chunk_duration")
+    if isinstance(raw_max_chunk_duration, bool) or not isinstance(raw_max_chunk_duration, (int, float)):
+        max_chunk_duration, changed = default_duration, True
+    else:
+        max_chunk_duration, changed = _clamp_number(raw_max_chunk_duration, default_duration, 1.0, max_duration, float)
     config["max_chunk_duration"] = round(max_chunk_duration, 1)
+    updated = updated or changed
+
+    raw_decode_timeout = config.get("asr_decode_timeout_sec")
+    if isinstance(raw_decode_timeout, bool) or not isinstance(raw_decode_timeout, (int, float)):
+        decode_timeout, changed = ASR_DECODE_TIMEOUT_DEFAULT_SEC, True
+    else:
+        decode_timeout, changed = _clamp_number(
+            raw_decode_timeout, ASR_DECODE_TIMEOUT_DEFAULT_SEC,
+            ASR_DECODE_TIMEOUT_MIN_SEC, ASR_DECODE_TIMEOUT_MAX_SEC, float,
+        )
+        decode_timeout = int(round(decode_timeout))
+    config["asr_decode_timeout_sec"] = decode_timeout
     updated = updated or changed
 
     vad_speech_pad_ms, changed = _clamp_number(config.get("vad_speech_pad_ms"), DEFAULT_CONFIG["vad_speech_pad_ms"], 0, 500, int)
@@ -190,6 +259,10 @@ def _normalize_config(config):
 
     if not isinstance(config.get("continuous_session"), bool):
         config["continuous_session"] = bool(config.get("continuous_session"))
+        updated = True
+
+    if not isinstance(config.get("prewarm"), bool):
+        config["prewarm"] = bool(config.get("prewarm", True))
         updated = True
 
     if not isinstance(config.get("blacklist"), str) or not config.get("blacklist", "").strip():
@@ -454,6 +527,42 @@ def migrate_install_root(src_root, dst_root):
         except Exception:
             pass
 
+def _apply_cuda_fallback_in_memory(config):
+    """Force device to CPU when CUDA is unavailable. In-memory only, no disk writes."""
+    try:
+        from liveaudio.utils.cuda import cuda_is_available
+        if config.get("device") == "cuda" and not cuda_is_available():
+            config["device"] = "cpu"
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def load_config_readonly():
+    """Load config as an in-memory snapshot. NEVER writes to disk.
+
+    Unlike load_config(), this skips the legacy CWD migration, never creates
+    an initial config.json, and never persists normalization. Missing or
+    corrupt files fall back to safe in-memory defaults.
+
+    Returns (config, info) with info {"source", "error_code"}; error_code is
+    None on a clean file read, else a sanitized code (no paths, no content).
+    """
+    try:
+        with open(_config_file(), "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        if not isinstance(raw, dict):
+            raise ValueError("config root is not an object")
+        source, error_code = "file", None
+    except FileNotFoundError:
+        raw, source, error_code = {}, "defaults-missing-file", "config-missing-defaults"
+    except (OSError, ValueError):
+        raw, source, error_code = {}, "defaults-corrupt-file", "config-corrupt-defaults"
+    config, _updated = _normalize_config(dict(raw))
+    _apply_cuda_fallback_in_memory(config)
+    return config, {"source": source, "error_code": error_code}
+
 def load_config():
     """
     Carga la configuracion desde config.json.
@@ -473,13 +582,8 @@ def load_config():
 
         config, updated = _normalize_config(config)
 
-        try:
-            from liveaudio.utils.cuda import cuda_is_available
-            if config.get("device") == "cuda" and not cuda_is_available():
-                config["device"] = "cpu"
-                updated = True
-        except Exception:
-            pass
+        if _apply_cuda_fallback_in_memory(config):
+            updated = True
 
         if updated:
             # La migracion/normalizacion tambien debe persistirse o avisar:

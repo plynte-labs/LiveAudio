@@ -2,6 +2,17 @@
 
 Este documento detalla todas las modificaciones realizadas durante la auditoría técnica y de seguridad del proyecto LiveAudio, así como la justificación técnica de cada decisión.
 
+## 2026-10-03. Transcripciones JSONL completas
+
+* **Cambio:** El archivo JSONL de sesión conserva el texto completo después de la sanitización. La presentación de subtítulos en OBS/WebSocket y el VTT mantiene el límite actual de 600 caracteres.
+    * **Por qué:** Evitar que la persistencia pierda el final de transcripciones largas sin cambiar el contrato de presentación ni la independencia entre los controles de guardado.
+
+## 2026-10-04. Límite de decodificación ASR configurable
+
+* **Cambio:** Se agregó un límite de decodificación ASR independiente de la ventana máxima de frase, con valor predeterminado de 15 segundos y rango de 5 a 120 segundos.
+    * **Por qué:** Permitir que la supervisión termine una decodificación completa que exceda el presupuesto elegido sin confundir espera de audio, carga del modelo y procesamiento de la frase.
+* **Comportamiento:** Al superar el límite se detiene la captura, se informa la posible pérdida de datos pendientes y la frase no se reprocesa automáticamente.
+
 ## 1. Reestructuración del Proyecto
 
 Se reorganizaron los archivos para que coincidieran con lo descrito en la documentación de `arquitectura.md`.
@@ -108,3 +119,53 @@ Se reorganizaron los archivos para que coincidieran con lo descrito en la docume
     *   **Por qué:** Centraliza las instrucciones operativas para cualquier agente que trabaje en este repositorio.
 *   **Cambio:** Se registraron tracks completados en `conductor/tracks.md`: backlog OBS (`e6575b2`), equipo especializado (`1644b11`), perfiles/apply flow (`26598e8`).
     *   **Por qué:** Mantiene historial trazable entre commits y decisiones de producto.
+
+## 11. Modo Servicio Backend Headless — Unidad 1 (2026-09-03, track `service-backend_20260903`, sin commit)
+
+*   **Cambio:** Nuevo runtime headless `liveaudio/service/` (paquete: fachada + `errors`/`watchdog`/`health`/`lock`/`supervisor`) y dispatcher `liveaudio/cli.py`; vía soportada `liveaudio-service --parent-pid PID` (script de consola; el GUI instalado no tiene stdout, `liveaudio --service` solo vale en checkout de desarrollo). Sin ventana CTK y sin cargar CTK/torch en el padre.
+    *   **Por qué:** Permite que opencohost levante LiveAudio como backend sin los 3 pasos manuales de la GUI, con ciclo de vida atado al dueño y sin superficie TCP nueva.
+*   **Cambio:** El lock de instancia crea `LIVEAUDIO_HOME` en instalación fresca y mapea fallos OS a `ServiceError` sanitizado (`service-lock-unwritable`); shutdown con fallback `terminate→kill`, cierre de colas mp y `Manager.shutdown` garantizado si `start()` falla tras crearlo.
+    *   **Por qué:** Higiene de recursos en instalaciones frescas y ante hijos tercos; sin fugas de Manager/colas en ningún camino de fallo.
+*   **Cambio:** Nueva API `load_config_readonly()` en `utils/config.py` (reutiliza normalización; jamás escribe) y snapshot de config al spawn; el servicio obedece alcance/puerto/backlog guardados desde CTK.
+    *   **Por qué:** Garantiza que el servicio nunca modifique ni "repare" la config del usuario; cambios CTK requieren reiniciar el servicio.
+*   **Cambio:** Arranque perezoso: supervisor + WS inmediatos, audio/ASR solo al primer cliente WS (ganchos opcionales `on_first_client`/`first_client_event` en `run_ws_server`, compatibles hacia atrás); estados `asr_state` (`unavailable`/`starting`/`loading`/`ready`/`failed`); `hello` intacto (`proto:1` + puerto efectivo).
+    *   **Por qué:** Whisper no se carga hasta el primer uso real; el estado de carga es observable sin romper el protocolo del overlay.
+*   **Cambio:** Corrección normativa: `WS_PORT_FALLBACK_RANGE=10` son candidatos `base..base+9` (no `base..base+10`); spec/plan/tasks del track corregidos. Fail-fast con `port-range-exhausted` si el rango se agota; pre-flight antes de spawnear.
+    *   **Por qué:** El código ya implementaba `base..base+9`; la documentación del track contradecía al código.
+*   **Cambio:** `replay_buffer` acotado a 256 mensajes con drop-oldest, contador `ws.replay_drops` y log acotado (respeta cada política; `send_all` conserva el borde en vivo en freezes largos).
+    *   **Por qué:** El buffer sin cota era riesgo OOM; la mitigación estructural reemplaza el "solo documentar" sin cambiar semántica de políticas.
+*   **Cambio:** Health por stdout JSON Lines versionado (`service_state`/`ws_port`/`asr_state`/`fatal`) + snapshot atómico opcional (`--health-file`, sin rotación); scrub anti-fugas (cero transcripts/logs/audio/paths).
+    *   **Por qué:** Observabilidad sin PII para el proceso dueño; si el health-file falla, avisa una vez por stdout y sigue sirviendo.
+*   **Cambio:** Docs de comportamiento implementado (`README`, `GETTING_STARTED`, `WEBSOCKET_OBS`): handshake `hello`, fallback y descubrimiento, recv-only, Origin loopback incl. `http://localhost:1420`, glosario base/efectivo.
+    *   **Por qué:** Un integrador puede hacer spawn y descubrir el puerto sin leer código. El auto-discovery lado lector vive en la unidad VoiceAI real (`feature/liveaudio-service-client`), DESPUÉS de esta unidad LiveAudio (sin cambios en VoiceAI en este track).
+*   **Deuda registrada:** reciclaje del hijo ASR a N=3 timeouts (el timeout `ThreadPool` no mata el hilo; requiere refactor mayor). Mitigación actual: techo 3-fallos/5min con backoff + fail-fast por muerte de hijo.
+*   **Limitación documentada:** el watchdog por PID es TOCTOU ante reuso de PID por el OS (PIDs locales a la máquina); el lock de instancia impide que un dueño nuevo adopte el servicio. Ver `liveaudio/service/watchdog.py`.
+
+## 12. Progreso honesto de primer uso / First-use startup progress (2026-09-05, track `firstuse-startup-progress_20260905`, rama `feature/firstuse-startup-progress`, sin commit)
+
+## 13. Unified first-run launcher and app experience (2026-09-05, track `unified-first-run_20260905`, uncommitted)
+
+* **Checkpoint status:** Partial implementation checkpoint. The entries below describe candidate behavior and approved scope; they do not close the full ES/EN checklist, VAD/supervisor integration, supported-runtime validation, review, VM, or manual E2E gates.
+
+* **Change:** Added an atomic six-field launcher handoff, truthful indeterminate dependency progress, and the shared ES/EN phase vocabulary. Launcher window visibility is explicitly separate from ASR readiness.
+* **Change:** VAD now reports structured indeterminate provisioning heartbeats and stable `provision-*` failures, without disabling TLS verification. A phase retry preserves ASR and queues only after the failed producer has exited and joined.
+* **Safety:** `--reinstall` continues to leave `hf-cache` untouched. Launcher-side Whisper downloads, new IPC, mirrors, custom resume, and simulated progress remain out of scope.
+* **Verification:** Automated tests are recorded in the track validation report. Collective review, VM v2, E2E-1–E2E-10, and first-use M1–M8 are still pending.
+
+*   **Cambio:** El supervisor emite `asr_state` honesto (`downloading/loading/transcribing/ready/stalled/failed`) + espejo legacy (`loading/ready/failed`) para OpenCohost; el progreso viaja como evento estructurado `{phase,percent,attempt,code}` con % monotónico por intento.
+    *   **Por qué:** El primer uso mostraba un "cargando" genérico y perdía el % de descarga; ahora el streamer sabe si el modelo está descargando, detenido, listo o fallido.
+*   **Cambio:** Heartbeat pre-import (REQ-6 opción a): el hijo ASR emite `phase: importing` vía `put_nowait` antes del import pesado torch/faster-whisper; el watchdog lo trata como `loading` y el silencio desde el inicio cuenta para stalled-import.
+    *   **Por qué:** Cubre el gap donde el import pesado pasaba minutos sin ningún evento observable.
+*   **Cambio:** Botón Reintentar manual (visible solo en stalled/failed): intento nuevo, % a 0 una sola vez y luego monotónico; la GUI descarta eventos de intentos viejos. Sin auto-retry. Switch de prewarm en la pestaña Modelo con copy ES/EN aprobada (misma config que `--prewarm/--lazy`, default true).
+    *   **Por qué:** Recuperación manual predecible + control visible de la descarga en primer uso.
+*   **Cambio:** Catálogo `provision-*` con hint ES/EN de una línea (`model-not-found` reservado a ausencia real); TLS acotado con patrón save/restore + código `provision-tls`; docs (`README`, `GETTING_STARTED`) con tabla de estados, códigos y tiempos por modelo + matriz manual M1-M8 en el track.
+    *   **Por qué:** Fallos accionables sin tracebacks en UI y cerrabilidad con validación manual.
+
+*   **Change:** Supervisor emits honest `asr_state` (`downloading/loading/transcribing/ready/stalled/failed`) + legacy mirror (`loading/ready/failed`) for OpenCohost; progress travels as a structured `{phase,percent,attempt,code}` event with per-attempt monotonic %.
+    *   **Why:** First use showed a generic loading state and dropped download %; streamers now see downloading, stalled, ready, or failed.
+*   **Change:** Pre-import heartbeat (REQ-6 option a): the ASR child emits `phase: importing` via `put_nowait` before the heavy torch/faster-whisper import; the watchdog treats it as `loading`, and silence since start counts toward stalled-import.
+    *   **Why:** Closes the gap where the heavy import stalled for minutes with zero observable events.
+*   **Change:** Manual Retry button (visible only on stalled/failed): new attempt, % to 0 exactly once then monotonic; the GUI drops stale-attempt events. No auto-retry. Prewarm switch in the Model tab with approved ES/EN copy (same config as `--prewarm/--lazy`, default true).
+    *   **Why:** Predictable manual recovery + visible first-use download control.
+*   **Change:** `provision-*` catalog with one-line ES/EN hints (`model-not-found` reserved for real absence); scoped TLS via save/restore + `provision-tls` code; docs (`README`, `GETTING_STARTED`) with state table, codes, and per-model times + manual matrix M1-M8 in the track.
+    *   **Why:** Actionable failures with no UI tracebacks, closable with manual validation.

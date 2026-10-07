@@ -20,9 +20,11 @@ class TestPendingRestartFlags(unittest.TestCase):
             "device": "cpu",
             "model_size": "small (Balance CPU)",
             "cpu_threads": 2,
+            "asr_decode_timeout_sec": 15,
             "audio_device": None,
             "silence_timeout": 0.8,
             "max_chunk_duration": 5.0,
+            "transcription_purpose": "subtitles",
             "vad_speech_pad_ms": 200,
             "vad_threshold": 0.5,
         }
@@ -53,10 +55,24 @@ class TestPendingRestartFlags(unittest.TestCase):
         self.assertFalse(needs_asr_restart)
         self.assertTrue(needs_audio_restart)
 
+    def test_transcription_purpose_change_triggers_audio_restart_only(self):
+        draft = dict(self.base)
+        draft["transcription_purpose"] = "transcription"
+        needs_asr_restart, needs_audio_restart = self._flags(draft)
+        self.assertFalse(needs_asr_restart)
+        self.assertTrue(needs_audio_restart)
+
     def test_model_change_triggers_asr_restart(self):
         """Sanity: model change still triggers ASR restart (tuple order asr-first)."""
         draft = dict(self.base)
         draft["model_size"] = "turbo (Máxima precisión GPU)"
+        needs_asr_restart, needs_audio_restart = self._flags(draft)
+        self.assertTrue(needs_asr_restart)
+        self.assertFalse(needs_audio_restart)
+
+    def test_decode_timeout_change_triggers_asr_restart_only(self):
+        draft = dict(self.base)
+        draft["asr_decode_timeout_sec"] = 60
         needs_asr_restart, needs_audio_restart = self._flags(draft)
         self.assertTrue(needs_asr_restart)
         self.assertFalse(needs_audio_restart)

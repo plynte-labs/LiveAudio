@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import defaultdict, deque
 from copy import deepcopy
 from datetime import datetime, timezone
 import os
@@ -11,6 +11,7 @@ import re
 
 VALID_DIAGNOSTICS_LEVELS = {"off", "minimal", "deep"}
 REDACTED = "<redacted>"
+MAX_DURATION_SAMPLES = 256
 _WINDOWS_ABS_PATH_RE = re.compile(r"[A-Za-z]:\\[^\\\s]+(?:\\[^\\\s]+)*")
 _URL_RE = re.compile(r"https?://[^\s]+")
 
@@ -77,7 +78,7 @@ class DiagnosticsStore:
     def __init__(self, level: str = "off"):
         self.level = _normalize_level(level)
         self.counters = defaultdict(int)
-        self.durations = defaultdict(list)
+        self.durations = defaultdict(lambda: deque(maxlen=MAX_DURATION_SAMPLES))
         self.states = {}
 
     def record_counter(self, name: str, delta: int = 1, tags: dict | None = None):
