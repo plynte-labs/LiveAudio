@@ -4,7 +4,7 @@ Todos los cambios notables de LiveAudio se documentan aquí.
 
 ---
 
-## [Unreleased]
+## [1.2.7rc2] - 2026-10-07
 
 ### Corregido
 
