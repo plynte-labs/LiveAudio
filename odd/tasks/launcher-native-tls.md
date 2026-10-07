@@ -18,7 +18,7 @@ Use native Windows certificate-chain validation for launcher-owned HTTPS. A Wind
   - Acceptance: explicit `truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)` for Windows launcher requests; hostname/certificate validation retained; actionable missing-dependency error; Linux unchanged; no global injection.
   - Checks: observe RED before implementation; focused launcher/first-run tests; lint; launcher self-test; Python compilation; full test suite.
   - Runtime checks: frozen dependency inclusion and clean Windows 10 VM bootstrap remain pending until an authorized build and manual run.
-  - Commit: authorized; identity recorded after creation.
+  - Source commit: `6c608a2331f4248724659998309b08f8db03c33f` (`fix(launcher): use native Windows certificate validation`).
 
 ## Verification and progress
 - RED: `uv run python -m pytest -q tests/test_launcher.py -k TestLauncherTls` produced 3 expected failures and 1 pass before implementation (missing explicit native context / missing-dependency fail-closed behavior).
@@ -34,10 +34,10 @@ Use native Windows certificate-chain validation for launcher-owned HTTPS. A Wind
 - Authored source/test/docs diff: 106 lines before this progress record; generated lockfile changes excluded from forecast.
 - Frozen executable build/inclusion and clean Windows 10 VM bootstrap: NOT RUN; pending explicit build/manual verification. No claim that warmed VM success proves the new backend.
 - Independent verification: 97 focused tests passed; four source reviews reported no blockers. RDD off globally.
-- Local work-unit commit authorized; no publication or remote mutation; unrelated dirty files preserved.
+- Approved local source work-unit committed as `6c608a2331f4248724659998309b08f8db03c33f`; no publication or remote mutation; unrelated dirty files preserved.
 
 ## Rollback boundary
 Revert only this task's launcher context, dependency/lock additions, packaging inclusion, tests, and associated documentation; preserve unrelated audio and release behavior.
 
 ## Next step
-Record the approved local commit; then separately authorized frozen build/inclusion and clean VM runtime validation.
+Separately authorized frozen build/inclusion and clean VM runtime validation; T1 remains open until that evidence exists.
