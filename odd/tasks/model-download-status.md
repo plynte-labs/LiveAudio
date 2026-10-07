@@ -13,7 +13,7 @@ Installed faster-whisper suppresses its download tqdm output. Terminal intercept
 Existing ASR provisioning, log/status routing, focused tests and user documentation only. Preserve model aliases, local paths, cache fast path, CUDA/CPU fallback, hot-swap attempt isolation, WS v1 and OBS backlog behavior. No tokens, URLs, private paths or transcripts in progress logs. No dependency upgrades, automatic downloads in tests, pause-capture redesign or remote delivery. Preserve unrelated local registry/track/ADR changes.
 
 ## Work unit
-- [ ] M1: Implement and verify cache/download/device-load states, bounded truthful progress and preparation warning; include offline failure/cache/hot-swap regressions, independent reviews and user docs; close with one auditor-approved Conventional Commit.
+- [x] M1: Implement and verify cache/download/device-load states, bounded truthful progress and preparation warning; include offline failure/cache/hot-swap regressions, independent reviews and user docs; closed with auditor-approved commit `1946c3436e95da1f5239c44b50c3f4bf4a0f6467`.
 
 Route: delegated direct; preparation and multi-file writer triggers. Research mapping completed by model_progress_map; one writer owns implementation. Four review areas: research compatibility, performance/resilience, architecture/privacy, QA.
 
@@ -27,7 +27,7 @@ Owner explicitly approved retaining this cohesive change as one work unit with a
 Branch: codex/model-download-status; base cb22514a080515351eb4fd35fefe335ce9d05f6a. Delivery strategy ask-on-risk; forecast about 250–400 authored lines, advisory not a code-minification target. No push/PR/release authorized for this new feature. RDD off (global). Rollback: revert this work unit's progress/provisioning and related tests/docs without unrelated capture/export changes.
 
 ## Progress
-Implementation is uncommitted and unstaged, pending the Auditor's four independent reviews and commit approval. M1 remains unchecked until those gates and the commit are complete. Engram mirror: odd/model-download-status/tasks.
+Implementation committed locally as `1946c3436e95da1f5239c44b50c3f4bf4a0f6467` after four specialized role sign-offs (performance was writer self-review), independent QA and auditor approval. Engram mirror: odd/model-download-status/tasks.
 
 Implemented: cache-only snapshot resolution before device construction; partial-cache detection (model/config/tokenizer); public snapshot progress callback, byte availability without growing-total percentages; bounded heartbeat and byte events with idempotent reporter cleanup; device loading and CPU fallback without redownload; attempt fencing and stale percentage clearing; concise user docs. No capture, subtitle queue, OBS, dependency, remote or unrelated-file changes.
 
@@ -44,5 +44,4 @@ Truthfulness: byte availability may include resumed cached data; it is not claim
 - Architecture/privacy review: PASS with nonblocking notes retained by the Auditor. Research compatibility review initially FAIL/P2: importing `LocalEntryNotFoundError` from `huggingface_hub.errors` breaks permitted older Hub versions where that module is absent.
 - Bounded compatibility correction: use the public `huggingface_hub.utils` export in production/tests, without upgrading dependencies. RED: simulated absent errors module produced ModuleNotFoundError (1 failed, 22 passed); GREEN: final focused compatibility suite 177 passed in 21.46s; Ruff, compile and diff checks passed. A file-count-only progress bar remains indeterminate with no bytes or percentage claimed. Actual legacy package installation was not performed; the regression simulates its missing-module layout.
 - Runtime boundary: fake Hub/tqdm, queue and constructor harness proves byte reporting, growing totals, cached/future alias/local paths, failure classification and CPU reuse; no real downloads or GPU load performed.
-- Pending: independent final-candidate full-suite verification, four independent reviews, owner-installed first-use/download/GPU smoke test, Auditor-approved Conventional Commit. No source-control delivery claim yet. Current authored scope: 548 additions plus deletions, including tests/docs/task and excluding unrelated registry/track/ADR; one cohesive work unit, not code-minified to meet the advisory forecast.
-
+- Final: independent QA 852 passed and 75 subtests in 57.66s; auditor spot check 23 passed. Ruff passed. Feature commit has 552 authored additions/deletions, owner-approved size exception. Commit-time staged whitespace check detected one extra blank line at task-document EOF; corrected in this recovery closeout. Pending only actual older-Hub installation, Linux and owner-installed download/GPU smoke. No push/PR/release for this feature.
