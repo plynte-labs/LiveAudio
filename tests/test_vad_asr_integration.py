@@ -38,7 +38,7 @@ class _FakeVad:
                 self.condition.wait(remaining)
 
 
-def _produce_fake_capture(speech_frames, silence_frames=0):
+def _produce_fake_capture(speech_frames, silence_frames=0, stop_event=None):
     from liveaudio.core import audio as audio_module
 
     vad = _FakeVad(speech_frames)
@@ -124,9 +124,10 @@ def _produce_fake_capture(speech_frames, silence_frames=0):
     with (
         patch.object(audio_module, "torch", fake_torch),
         patch.object(audio_module, "sd", fake_sd),
+        patch.object(audio_module, "get_input_device_count", return_value=1),
         patch.object(audio_module, "threading", threading_proxy),
     ):
-        audio_module.audio_producer(audio_queue, config, log_queue)
+        audio_module.audio_producer(audio_queue, config, log_queue, stop_event=stop_event)
 
     item = audio_queue.get_nowait()
     statuses = []
@@ -138,6 +139,31 @@ def _produce_fake_capture(speech_frames, silence_frames=0):
 
 
 class TestFakeVadToAsrIntegration(unittest.TestCase):
+    def test_fake_capture_completes_without_host_input_hardware(self):
+        import ctypes
+        from liveaudio.core import audio, devices
+
+        stop_event = threading.Event()
+        deadline = threading.Timer(2, stop_event.set)
+        with contextlib.ExitStack() as patches:
+            patches.enter_context(patch.object(devices.sd, "query_devices", return_value=[]))
+            if os.name == "nt":
+                patches.enter_context(patch.object(ctypes.windll.winmm, "waveInGetNumDevs", return_value=0))
+            self.assertEqual(audio.get_input_device_count(), 0)
+            deadline.start()
+            try:
+                try:
+                    audio_item, statuses = _produce_fake_capture(4, silence_frames=10, stop_event=stop_event)
+                except queue.Empty:
+                    self.fail("fake capture entered host hardware standby instead of producing a phrase")
+            finally:
+                stop_event.set()
+                deadline.cancel()
+                deadline.join(3)
+
+        self.assertEqual(len(audio_item["audio"]), 14 * 512)
+        self.assertTrue(any(event["text"] == "VAD: frase enviada" for event in statuses))
+
     def test_sixty_second_vad_phrase_is_decoded_and_persisted_once(self):
         from liveaudio.core.engine import MAX_SUBTITLE_CHARS, asr_consumer
 
