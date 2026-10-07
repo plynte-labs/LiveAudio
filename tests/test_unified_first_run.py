@@ -91,10 +91,17 @@ class TestAtomicHandoff(unittest.TestCase):
             "attempt": 1,
             "launcher_phases_done": [0, 1, 2, 3],
         }
-        with unittest.mock.patch.object(launcher, "write_handoff") as write_handoff:
-            with unittest.mock.patch.object(launcher.subprocess, "Popen", return_value=object()):
-                launcher.launch_app(self.root, False, platform="linux", handoff=handoff)
-        write_handoff.assert_called_once_with(**handoff)
+        process = object()
+
+        def start_app(command, **_kwargs):
+            self.assertEqual(command, [exe])
+            with open(self.path, encoding="utf-8") as handle:
+                self.assertEqual(json.load(handle), handoff)
+            return process
+
+        with unittest.mock.patch.object(launcher, "check_portaudio", return_value=True):
+            with unittest.mock.patch.object(launcher.subprocess, "Popen", side_effect=start_app):
+                self.assertIs(launcher.launch_app(self.root, False, platform="linux", handoff=handoff), process)
 
 
 class TestVadProvisioning(unittest.TestCase):
