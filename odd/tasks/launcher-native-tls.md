@@ -12,7 +12,7 @@ Use native Windows certificate-chain validation for launcher-owned HTTPS. A Wind
 - Auditor approved the local source work-unit commit after four scoped reviews and independent focused verification. Owner now authorized installer build/publication; clean Windows VM runtime verification remains pending.
 
 ## Tasks
-- [ ] T2: Prepare 1.2.7rc4 version and release notes, then Auditor builds/publishes through GitHub. Route: delegated release writer for metadata/docs; source logic unchanged. Local preparation checks and commit recorded below; closure requires observed remote build and publication.
+- [x] T2: Prepare 1.2.7rc4 version and release notes, then Auditor builds/publishes through GitHub. Route: delegated release writer for metadata/docs; source logic unchanged. Release-preparation commit `ee1b7c1069ead5f21b93bd05408a09fb49638a58`; GitHub Release run `37702101849` succeeded and prerelease published. Evidence below; frozen clean-VM verification is still pending under T1.
 - [ ] T1: Integrate Windows native TLS context, build/dev dependency, packaging inclusion, regression tests, and documentation.
   - Source implementation approved and automated verification complete; task closure awaits packaged runtime evidence.
   - Route: delegated; preparation and two or more non-trivial files.
@@ -41,9 +41,14 @@ Use native Windows certificate-chain validation for launcher-owned HTTPS. A Wind
 Revert only this task's launcher context, dependency/lock additions, packaging inclusion, tests, and associated documentation; preserve unrelated audio and release behavior.
 
 ## Next step
-Auditor executes the authorized GitHub build/publication for v1.2.7rc4, then owner validates bootstrap in a clean Windows 10 VM. T1 remains open until packaged runtime evidence exists.
+Owner validates bootstrap with the published v1.2.7rc4 installer in a clean Windows 10 VM. T1 remains open until packaged runtime evidence exists. Master integration requires separate authorization.
 
 ## T2 rc4 release preparation
 Owner explicitly authorized the v1.2.7rc4 GitHub prerelease using the configured gh session. This local work unit changes package version and adds an accurate Spanish release entry while retaining rc3 history. Strict version check observed RED: actual 1.2.7rc3 failed the 1.2.7rc4 assertion. Runtime logic is unchanged. No remote operations performed by the writer; Auditor owns exact-commit CI, tag/build/publication. Runtime harness here is offline launcher/version validation; frozen dependency and clean Windows 10 VM checks remain pending. Rollback boundary: only rc4 version/release-note preparation, preserving the native TLS feature and prior releases.
 
 Local GREEN: `uv run python -c "from liveaudio import __version__; assert __version__ == '1.2.7rc4', __version__"` passed. `uv run python -m pytest -q tests/test_launcher.py tests/test_unified_first_run.py`: 97 passed in 3.25 seconds. `uv lock --check`, `uv run ruff check .`, `git diff --check`, and launcher `--self-test --headless` passed. Lockfile requires no new bytes because the project version is dynamic and dependencies are unchanged. Full suite not repeated for version-only preparation; prior feature suite evidence remains above. No remote or frozen VM success claimed.
+
+## T2 final delivery evidence
+Auditor confirmed release-preparation commit `ee1b7c1069ead5f21b93bd05408a09fb49638a58`, pushed branch `codex/launcher-native-tls`, and tag `v1.2.7rc4` at that commit. GitHub Release run `37702101849` succeeded for Windows, Linux and source artifacts. Published release state: draft false, prerelease true, latest false, seven nonempty assets. Windows installer size: 35,880,609 bytes; SHA256: `29605ec4f7bba3c1a33302dd056954e64fc3b31248d6a6cd83d81642c2525e06`.
+
+Workflow evidence confirms installation of truststore 0.10.4 and successful executable builds, but does not establish actual frozen backend execution or fresh-VM bootstrap success. T1 stays open. Master was deliberately not merged because integration was not authorized. Earlier local-only/pending publication wording above records historical checkpoints, superseded only for T2 delivery by this section. No further remote operations are part of this evidence update.
