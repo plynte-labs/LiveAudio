@@ -233,3 +233,52 @@ def test_legacy_file_count_bar_remains_indeterminate_without_claiming_bytes(monk
     assert events[-1]['phase'] == 'downloading'
     assert all(event['percent'] is None for event in events)
     assert not any('bytes_available' in event for event in events)
+
+
+@pytest.mark.parametrize("count,label", [(15, "15 B"), (1024, "1.0 KiB"), (1048576, "1.0 MiB")])
+def test_small_download_counts_remain_readable(monkeypatch, count, label):
+    from huggingface_hub.utils import LocalEntryNotFoundError
+    monkeypatch.setattr('faster_whisper.utils.download_model', Mock(side_effect=LocalEntryNotFoundError('missing')))
+    events = []
+    def snapshot(repo, **kwargs):
+        bar = kwargs['tqdm_class'](unit='B')
+        bar.update(count)
+        bar.close()
+        return 'cache'
+    monkeypatch.setattr('huggingface_hub.snapshot_download', snapshot)
+    provisioning.prepare_model('tiny', events.append)
+    assert label + ' disponibles' in events[-1]['text']
+    assert events[-1]['bytes_available'] == count
+
+
+def test_wait_heartbeat_shows_elapsed_phase_time_without_claiming_transfer(monkeypatch):
+    clock = Mock(side_effect=[100.0, 115.0, 130.0])
+    monkeypatch.setattr('time.monotonic', clock)
+    events = []
+    progress = provisioning.PreparationProgress(events.append)
+    assert progress.interval == 15.0
+    progress.report('loading', 'ASR: consultando caché local')
+    progress._stop = Mock()
+    progress._stop.wait.side_effect = [False, False, True]
+    progress._heartbeat()
+    assert events[-2]['text'].endswith('(espera: 15 s)')
+    assert events[-1]['text'].endswith('(espera: 30 s)')
+    assert all(e['percent'] is None and 'bytes_available' not in e for e in events)
+
+
+@pytest.mark.parametrize('phase,bytes_available', [('loading', None), ('downloading', 15)])
+def test_wait_clock_restarts_for_stage_and_preserves_last_bytes(monkeypatch, phase, bytes_available):
+    monkeypatch.setattr('time.monotonic', Mock(side_effect=[100.0, 110.0, 125.0]))
+    events = []
+    progress = provisioning.PreparationProgress(events.append, attempt=4)
+    progress.report('loading', 'ASR: consultando caché local')
+    progress.report(phase, 'ASR: nueva etapa', bytes_available)
+    progress._stop = Mock()
+    progress._stop.wait.side_effect = [False, True]
+    progress._heartbeat()
+    assert events[-1]['text'].endswith('(espera: 15 s)')
+    assert events[-1]['attempt'] == 4
+    assert events[-1]['phase'] == phase
+    assert events[-1]['percent'] is None
+    if bytes_available is not None:
+        assert events[-1]['bytes_available'] == bytes_available

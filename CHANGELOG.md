@@ -4,6 +4,12 @@ Todos los cambios notables de LiveAudio se documentan aquí.
 
 ---
 
+## [Unreleased]
+
+### Mejorado
+
+- Preparación ASR: avisos de espera cada 15 segundos con tiempo de la etapa, sin implicar avance de red; los contadores pequeños usan B/KiB en lugar de redondear a 0.0 MiB.
+
 ## [1.2.7rc2] - 2026-10-07
 
 ### Corregido
