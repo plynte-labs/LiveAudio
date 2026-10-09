@@ -10,11 +10,13 @@ import importlib.util
 import json
 import os
 import re
+import ssl
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 _LAUNCHER_PATH = Path(__file__).resolve().parents[1] / "packaging" / "launcher.py"
@@ -22,6 +24,70 @@ _spec = importlib.util.spec_from_file_location("liveaudio_launcher", _LAUNCHER_P
 launcher = importlib.util.module_from_spec(_spec)
 sys.modules["liveaudio_launcher"] = launcher
 _spec.loader.exec_module(launcher)
+
+
+class TestLauncherTls(unittest.TestCase):
+    """Launcher requests select a verified native context without global mutation."""
+
+    def test_windows_request_uses_verified_native_context(self):
+        contexts = []
+        original_context = ssl.SSLContext
+
+        def native_context(protocol):
+            context = original_context(protocol)
+            contexts.append(context)
+            return context
+
+        def open_request(request, timeout, *, context):
+            self.assertEqual(request.full_url, "https://example.com/source.zip")
+            self.assertEqual(timeout, 12)
+            self.assertIs(context, contexts[0])
+            self.assertEqual(context.protocol, ssl.PROTOCOL_TLS_CLIENT)
+            self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
+            self.assertTrue(context.check_hostname)
+            return "verified response"
+
+        native = SimpleNamespace(SSLContext=native_context)
+        with patch.object(launcher.sys, "platform", "win32"), \
+                patch.dict(sys.modules, {"truststore": native}), \
+                patch.object(launcher.urllib.request, "urlopen", open_request):
+            self.assertEqual(launcher._http_open("https://example.com/source.zip", 12), "verified response")
+        self.assertIs(ssl.SSLContext, original_context)
+
+    def test_missing_windows_dependency_fails_without_network_fallback(self):
+        def forbidden_request(*args, **kwargs):
+            self.fail("Missing native TLS backend must not trigger another download path")
+
+        with patch.object(launcher.sys, "platform", "win32"), \
+                patch.dict(sys.modules, {"truststore": None}), \
+                patch.object(launcher.urllib.request, "urlopen", forbidden_request):
+            with self.assertRaisesRegex(launcher.LauncherError, "native TLS.*reinstall"):
+                launcher._http_open("https://example.com/source.zip")
+
+    def test_non_windows_request_preserves_default_context(self):
+        def open_request(request, timeout):
+            self.assertEqual(timeout, 60)
+            return "default response"
+
+        with patch.object(launcher.sys, "platform", "linux"), \
+                patch.dict(sys.modules, {"truststore": None}), \
+                patch.object(launcher.urllib.request, "urlopen", open_request):
+            self.assertEqual(launcher._http_open("https://example.com/source.zip"), "default response")
+
+    def test_windows_certificate_rejection_propagates(self):
+        failure = ssl.SSLCertVerificationError("untrusted issuer")
+
+        def reject_request(request, timeout, *, context):
+            self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
+            raise failure
+
+        native = SimpleNamespace(SSLContext=ssl.SSLContext)
+        with patch.object(launcher.sys, "platform", "win32"), \
+                patch.dict(sys.modules, {"truststore": native}), \
+                patch.object(launcher.urllib.request, "urlopen", reject_request):
+            with self.assertRaises(ssl.SSLCertVerificationError) as caught:
+                launcher._http_open("https://example.com/source.zip")
+            self.assertIs(caught.exception, failure)
 
 
 class TestDetectDevice(unittest.TestCase):
@@ -726,6 +792,19 @@ class TestUvSyncCommand(unittest.TestCase):
         self.assertIn("--no-dev", command)
         self.assertIn("--locked", command)
         self.assertEqual(command[command.index("--extra") + 1], "cpu")
+
+    def test_broken_venv_purged_before_sync(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            venv_dir = os.path.join(tmp, ".venv")
+            os.makedirs(venv_dir)
+            proc = MagicMock()
+            proc.stdout = []
+            proc.returncode = 0
+            with patch.object(launcher.subprocess, "Popen", return_value=proc):
+                launcher.run_uv_sync(
+                    "uv", tmp, "cpu", tmp, reporter=MagicMock()
+                )
+            self.assertFalse(os.path.exists(venv_dir))
 
 
 class TestDesktopEntry(unittest.TestCase):

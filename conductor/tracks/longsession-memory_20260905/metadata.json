@@ -1,0 +1,8 @@
+{
+  "track_id": "longsession-memory_20260905",
+  "type": "enhancement",
+  "status": "new",
+  "created_at": "2026-09-05T06:15:00Z",
+  "updated_at": "2026-09-05T06:15:00Z",
+  "description": "Exploratory-audit proposal: bound long-session retention paths (SessionWriter pending cap + deterministic stop, no per-timeout worker accumulation, DiagnosticsStore ring cap keeping default-off). Retained work/history paths, NOT an allocator-leak claim. Read-only findings from Engram #6430/session #6436. PO approval pending; nothing implemented."
+}

@@ -1,0 +1,18 @@
+[package]
+name = "liveaudio-audio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+liveaudio-ipc = { path = "../liveaudio-ipc" }
+serde.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+crossbeam-channel.workspace = true
+tracing.workspace = true
+cpal = "0.18"
+ringbuf = "0.5"
+rubato = "5.0"
+

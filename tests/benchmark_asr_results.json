@@ -1,0 +1,32 @@
+{
+  "cuda": {
+    "device": "cuda",
+    "compute_type": "float16",
+    "mean_latency_ms": 280.6,
+    "p50_latency_ms": 272.0,
+    "min_latency_ms": 260.0,
+    "max_latency_ms": 307.0,
+    "rtf": 0.038847787901599914,
+    "realtime_speedup": 25.7414914468995,
+    "transcribed_text": "Hey yo everyone, welcome to the live stream. Today we are testing real-time audio transcription.",
+    "wer": 0.13333333333333333,
+    "ram_mb": 765.2,
+    "vram_mb": 1690.0,
+    "teardown_ms": 654.5283000000381
+  },
+  "cpu": {
+    "device": "cpu",
+    "compute_type": "int8",
+    "mean_latency_ms": 2416.0,
+    "p50_latency_ms": 2411.0,
+    "min_latency_ms": 2404.0,
+    "max_latency_ms": 2432.0,
+    "rtf": 0.3344841609774247,
+    "realtime_speedup": 2.989678187086093,
+    "transcribed_text": "Hey yo everyone, welcome to the live stream. Today we are testing real-time audio transcription.",
+    "wer": 0.13333333333333333,
+    "ram_mb": 777.4,
+    "vram_mb": 1032.0,
+    "teardown_ms": 603.0680000003485
+  }
+}

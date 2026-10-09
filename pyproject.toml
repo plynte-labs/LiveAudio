@@ -32,7 +32,10 @@ cu121 = [
 ]
 
 [project.gui-scripts]
-liveaudio = "liveaudio.app:main"
+liveaudio = "liveaudio.cli:main"
+
+[project.scripts]
+liveaudio-service = "liveaudio.service:main"
 
 [project.urls]
 Homepage = "https://github.com/plynte-labs/LiveAudio"
@@ -40,6 +43,7 @@ Issues = "https://github.com/plynte-labs/LiveAudio/issues"
 
 [dependency-groups]
 dev = [
+    "truststore>=0.10.4,<0.11; sys_platform == 'win32'",
     "pytest>=8.0",
     "ruff>=0.12,<0.13",
     "tomli>=2.0; python_version < '3.11'",
@@ -47,6 +51,7 @@ dev = [
 # Release-only tooling (PyInstaller launcher builds); kept out of dev so
 # regular development installs stay light.
 build = [
+    "truststore>=0.10.4,<0.11; sys_platform == 'win32'",
     "pyinstaller>=6.11,<7",
 ]
 

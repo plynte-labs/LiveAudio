@@ -67,6 +67,40 @@ class TestMainDiagnosticsExports(unittest.TestCase):
         self.assertEqual(summary["queues"]["audio"], 3)
         self.assertTrue(summary["processes"]["audio"])
 
+    def test_build_app_runtime_summary_includes_fixed_shutdown_loss_counters(self):
+        from liveaudio.app import build_app_runtime_summary
+
+        summary = build_app_runtime_summary({
+            "loss_counters": {"audio.shutdown_discarded": 2, "asr.text_shutdown_discarded": 1},
+        })
+
+        self.assertEqual(summary["loss_counters"], {
+            "audio.shutdown_discarded": 2, "asr.text_shutdown_discarded": 1,
+        })
+
+    def test_gui_shutdown_counts_discarded_queue_items_and_rejected_stop_control(self):
+        import queue
+        from unittest.mock import MagicMock
+        from liveaudio.app import LiveASRApp
+
+        app = LiveASRApp.__new__(LiveASRApp)
+        app._shutdown_loss_counters = {}
+        app.print_log = MagicMock()
+        audio_queue = queue.Queue()
+        audio_queue.put_nowait({"audio": [1]})
+        audio_queue.put_nowait(None)
+
+        app.print_log.reset_mock()
+        self.assertEqual(app._drain_queue(audio_queue, "audio"), 1)
+        self.assertIn("outcome is unknown", app.print_log.call_args[0][0])
+        full_queue = queue.Queue(maxsize=1)
+        full_queue.put_nowait({"text": "private"})
+        app._signal_stop(full_queue, "text")
+
+        self.assertEqual(app._shutdown_loss_counters["audio.shutdown_discarded"], 1)
+        self.assertEqual(app._shutdown_loss_counters["asr.text_stop_control_rejected"], 1)
+        self.assertIn("pending items may be discarded", app.print_log.call_args[0][0])
+
     def test_export_local_diagnostics_report_writes_json_locally(self):
         from liveaudio.app import export_local_diagnostics_report
 

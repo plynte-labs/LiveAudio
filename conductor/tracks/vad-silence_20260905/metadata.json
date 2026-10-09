@@ -1,0 +1,8 @@
+{
+  "track_id": "vad-silence_20260905",
+  "type": "enhancement",
+  "status": "new",
+  "created_at": "2026-09-05T06:15:00Z",
+  "updated_at": "2026-09-05T06:15:00Z",
+  "description": "Exploratory-audit proposal: VAD/silence honesty (segmentation-only regression lock, contract-checked voiced gate, thread-fault surfacing + reconnect state contract, pinned acquisition policy, production-honest threshold tests). Must not contradict vad-onset-grace contract. Read-only findings from Engram #6429/#6434/session #6435. PO approval pending; nothing implemented."
+}

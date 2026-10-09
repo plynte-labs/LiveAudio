@@ -9,9 +9,24 @@ installed and updated. User-facing instructions live in the
 ## 1. Architecture Overview
 
 LiveAudio is distributed as a **small bootstrapper launcher** (a frozen
-PyInstaller executable of `packaging/launcher.py`, stdlib + tkinter only)
+PyInstaller executable of `packaging/launcher.py`, stdlib + tkinter and a
+bundled Windows native TLS backend)
 rather than a multi-GB bundle. The launcher provisions everything else on
-first run:
+first run.
+
+On Windows, launcher-owned HTTPS downloads and release metadata requests use
+`truststore` with an explicit verified client context. Windows CryptoAPI can
+resolve certificate chains through native trust stores, including missing
+intermediates and managed root updates. The dependency is bundled before
+bootstrap, not downloaded into the application environment afterward. Missing
+backend files fail with a reinstall instruction; certificate and hostname
+checks are never disabled. Other platforms keep Python's default HTTPS
+validation. This does not alter the application's TLS configuration or `uv`'s
+own downloads, and cannot guarantee success when network policy blocks
+certificate updates. The build and Windows dev dependency groups include the
+backend for packaging and source-checkout launcher tests.
+
+Provisioning sequence:
 
 ```
 LiveAudio-Setup-X.Y.Z.exe / liveaudio-launcher
@@ -147,6 +162,23 @@ matches, the launcher reports "already up to date" and exits.
 ---
 
 ## 5. Troubleshooting
+
+## 5.1 Unified first-run boundary (checkpoint)
+
+The candidate deliberately uses two sequential windows. The launcher can
+report that **Opening LiveAudio** has reached a visible window, but this never
+means Whisper is ready. It writes a local atomic handoff before starting the
+app; malformed or stale handoff data is ignored safely by the app. This
+boundary is implemented in the current checkpoint, but its clean packaged
+runtime and manual E2E proof are still pending.
+
+`uv sync`, VAD preparation, and post-download model loading are indeterminate
+unless the underlying operation provides real byte or tqdm evidence. The
+launcher does not download Whisper, keep an IPC connection open, or present
+global 100% as transcription readiness.
+
+`--reinstall` replaces `app/` and its virtual environment only. It preserves
+`hf-cache` unconditionally; this MVP has no model-purge command or UI.
 
 | Problem | What to do |
 |---|---|

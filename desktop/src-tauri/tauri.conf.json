@@ -1,0 +1,59 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "LiveAudio",
+  "version": "1.5.0",
+  "identifier": "com.liveaudio.desktop",
+  "build": {
+    "frontendDist": "../src"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "LiveAudio",
+        "width": 1100,
+        "height": 780,
+        "minWidth": 850,
+        "minHeight": 620,
+        "resizable": true,
+        "fullscreen": false,
+        "decorations": false,
+        "shadow": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico",
+      "icons/icon.png"
+    ],
+    "category": "Music",
+    "shortDescription": "Real-time local transcription with OBS subtitle overlay",
+    "longDescription": "LiveAudio provides fast, accurate local speech-to-text with faster-whisper and Silero VAD.",
+    "publisher": "franguh",
+    "copyright": "Copyright (c) 2026 franguh",
+    "resources": {
+      "../../liveaudio/*.py": "liveaudio",
+      "../../liveaudio/assets/*": "liveaudio/assets",
+      "../../liveaudio/core/*.py": "liveaudio/core",
+      "../../liveaudio/service/*.py": "liveaudio/service",
+      "../../liveaudio/utils/*.py": "liveaudio/utils"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["English", "SpanishInternational"],
+        "displayLanguageSelector": false
+      }
+    }
+  }
+}

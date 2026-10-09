@@ -47,6 +47,20 @@ class TestAudioQueueBackpressure(unittest.TestCase):
         self.assertIn('"VAD: cola llena"', source)
         self.assertIn('"warn"', source)
 
+    @patch("liveaudio.app.mp.Queue")
+    def test_gui_audio_queue_uses_phrase_window_capacity(self, queue_factory):
+        from liveaudio.app import LiveASRApp
+
+        new_audio_queue = getattr(LiveASRApp, "_new_audio_queue", None)
+        self.assertTrue(callable(new_audio_queue), "GUI queue sizing is missing")
+        new_audio_queue({
+            "max_chunk_duration": 60.0,
+            "silence_timeout": 2.0,
+            "vad_speech_pad_ms": 500,
+        })
+
+        queue_factory.assert_called_once_with(maxsize=1)
+
 
 class TestVadWorkerNonBlocking(unittest.TestCase):
     """Tests for VAD worker non-blocking behavior."""

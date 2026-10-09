@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 360" width="720" height="360">
+  <style>
+    .title { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 18px; font-weight: 700; fill: #f1f5f9; }
+    .subtitle { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 13px; fill: #94a3b8; }
+    .label { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 14px; font-weight: 600; fill: #cbd5e1; }
+    .val { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 14px; font-weight: 700; fill: #ffffff; }
+    .delta { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 12px; font-weight: 700; fill: #10b981; }
+  </style>
+  <rect width="720" height="360" rx="12" fill="#0b0f11" stroke="#2b3d44" stroke-width="1.5" />
+  <text x="24" y="34" class="title">Latencia de Cierre Limpio (Shutdown &amp; Teardown)</text>
+  <text x="24" y="56" class="subtitle">Historical shutdown measurements from different implementations; not a speedup</text>
+  <text x="165" y="106" text-anchor="end" class="label">Python v1.2.7</text>
+  <rect x="180" y="80" width="440" height="42" rx="6" fill="#1b262a" />
+  <rect x="180" y="80" width="440" height="42" rx="6" fill="#ef4444" />
+  <text x="632" y="106" class="val">3,401.0 ms</text>
+  <text x="165" y="176" text-anchor="end" class="label">Rust (Win32 Job Object)</text>
+  <rect x="180" y="150" width="440" height="42" rx="6" fill="#1b262a" />
+  <rect x="180" y="150" width="6" height="42" rx="6" fill="#10b981" />
+  <text x="198" y="176" class="val">6.6 ms</text>
+  <text x="24" y="342" class="subtitle">Values are retained as reported; protocols and measurement scopes differ.</text>
+</svg>

@@ -79,33 +79,77 @@ This file tracks major LiveAudio tracks. Each track should have its own detailed
 
 ---
 
-- [~] **Track: Automatic WebSocket Port Fallback & Overlay Endpoint Identification**
+- [x] **Track: Automatic WebSocket Port Fallback & Overlay Endpoint Identification**
   *Link: N/A - no Conductor track folder created; tracked via PR #12.*
   *Status: open PR #12 (`feat/ws-port-fallback` → `master`), commit `7d82cc5`. Server-side bind fallback walks `base..base+9` on `EADDRINUSE`/WinSock `10048` and announces the effective port to the GUI; the OBS overlay now identifies its server via a `hello` handshake before rendering anything, closing the "wrong socket" gap behind issue #9's incident. Closes issue #11. Manually validated end-to-end against real OBS.*
-  *Pending: review and merge.*
+  *Landed: via 4c34766/c2aae32 (CLOSED on GitHub, ancestor of master verified 2026-09-06).*
 
 ---
 
-- [~] **Track: Independent Output Sink Toggles & UI WebSocket Port**
+- [x] **Track: Independent Output Sink Toggles & UI WebSocket Port**
   *Link: N/A - no Conductor track folder created; tracked via PR #13.*
   *Status: open PR #13 (`feat/output-sink-toggles`), stacked on #12. Commit `491eb52`. Adds independent `save_transcript_enabled` / `save_vtt_enabled` disk toggles (transcript persistence was previously unconditional) and a `ws_port` field in the UI, warning when the base port changes since a pinned overlay only scans `base..base+9`.*
-  *Pending: merge of #12, then review and merge.*
+  *Landed: via 4c34766/c2aae32 (CLOSED on GitHub, ancestor of master verified 2026-09-06).*
 
 ---
 
-- [~] **Track: OBS Overlay Visibility Fix (Hidden-Scene Reveal)**
+- [x] **Track: OBS Overlay Visibility Fix (Hidden-Scene Reveal)**
   *Link: N/A - no Conductor track folder created; tracked via PR #14.*
   *Status: open PR #14 (`fix/overlay-visibility`), stacked on #12. Commit `4d6bac4`. Subtitles never revealed while the OBS scene was hidden because the reveal was gated behind `requestAnimationFrame`, which browsers suspend when the document is hidden, while the expiry `setTimeout`s kept firing. Replaced with a synchronous reflow force; added a `visibilitychange` hard reset so a resumed overlay never replays what was missed.*
-  *Pending: merge of #12, then review and merge.*
+  *Landed: via 4c34766/c2aae32 (CLOSED on GitHub, ancestor of master verified 2026-09-06).*
 
 ---
 
-- [~] **Track: Defer Manager Startup for Faster Launch**
+- [x] **Track: Defer Manager Startup for Faster Launch**
   *Link: N/A - no Conductor track folder created; tracked via PR #15.*
   *Status: open PR #15 (`perf/defer-manager-startup`), stacked on #13 (itself stacked on #12). Commit `315eeed`. Moved `mp.Manager()` out of `LiveASRApp.__init__` into a lazy accessor, removing a measured 455-478ms from every launch that was previously paid even when the user never pressed Start.*
-  *Pending: merge of #12 and #13, then review and merge.*
+  *Landed: via 4c34766/c2aae32 (CLOSED on GitHub, ancestor of master verified 2026-09-06).*
 
 ---
 
 - **Note: stale branch triage**
   *Status: local branch `audit-ui-security-privacy` deleted on 2026-07-24 after triage — one docs-only commit (`dcdf5c8`), never pushed to the remote; all five findings from its audit report verified as already implemented on master.*
+
+---
+
+- [~] **Track: Modo servicio backend headless (opencohost)**
+  *Link: [./tracks/service-backend_20260903/](./tracks/service-backend_20260903/)*
+  *Status: in progress. Unidad 1 implementada sin commit en `feature/service-backend` (T1-T6, T8 hechos; T7/T9/T10 parciales; TBD-1..TBD-5 cerrados por auditor; corrección normativa `base..base+9`). Segunda unidad pendiente: auto-discovery VoiceAI + changelog espejo.*
+
+---
+
+- [~] **Track: First-use startup & Whisper progress honesty (exploratory audit)**
+  *Link: [./tracks/firstuse-startup-progress_20260905/](./tracks/firstuse-startup-progress_20260905/)*
+  *Status: [~] Implemented and reviewed in the working tree; manual M1–M8 pending evidence.*
+
+---
+
+- [ ] **Track: Long-session memory bounds (exploratory audit)**
+  *Link: [./tracks/longsession-memory_20260905/](./tracks/longsession-memory_20260905/)*
+  *Status: propuesta exploratoria pendiente de aprobación PO, sin commit. Read-only findings (Engram #6430/sesión #6436): SessionWriter sin cota, un worker vivo por timeout ASR repetido, DiagnosticsStore sin cota (opt-in, deshabilitado por defecto). Rutas retenidas, NO prueba de leak.*
+
+---
+
+- [ ] **Track: i18n completeness ES/EN (exploratory audit)**
+  *Link: [./tracks/i18n-completeness_20260905/](./tracks/i18n-completeness_20260905/)*
+  *Status: propuesta exploratoria pendiente de aprobación PO, sin commit. Read-only findings (Engram #6431/sesión #6433): selector stable_streaming en silent no-op ES+EN por mismatch `stable_label` vs `stable_streaming_label`; restos sin traducir y eventos dinámicos con reverse-match.*
+
+---
+
+- [ ] **Track: VAD silence honesty (exploratory audit)**
+  *Link: [./tracks/vad-silence_20260905/](./tracks/vad-silence_20260905/)*
+  *Status: propuesta exploratoria pendiente de aprobación PO, sin commit. Read-only findings (Engram #6429/#6434/sesión #6435): segmentación probada, NO clasificación de silencio real; sin gate voiced mínimo; excepciones escapan del daemon thread; adquisición sin pinear e insegura. No contradice vad-onset-grace.*
+
+
+---
+
+- [~] **Track: Unified first-run launcher and app experience**
+  *Link: [./tracks/unified-first-run_20260905/](./tracks/unified-first-run_20260905/)*
+  *Status: partial checkpoint reviewed (Sol/Luna/Luna/Terra); implementation, supported-runtime proof, VM v2, and manual E2E-1–E2E-10 remain unfinished. Native review exception authorized by PO (Engram #6471), not a native PASS. Depends on firstuse-startup-progress_20260905, whose M1–M8 remain pending.*
+
+---
+
+- [ ] **Track: WebSocket IPC Auth Token (Anti-Eavesdropping & Anti-Impersonation)**
+  *Link: [./tracks/ws-ipc-auth-token_20260911/](./tracks/ws-ipc-auth-token_20260911/)*
+  *Status: 🔲 proposed / spec drafted. Scope confirmed with PO (Option 1: mandatory in headless mode, optional toggle in desktop GUI). Scaffolding created in `conductor/tracks/ws-ipc-auth-token_20260911/` (`spec.md` + `plan.md`).*
+

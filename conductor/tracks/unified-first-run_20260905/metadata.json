@@ -1,0 +1,8 @@
+{
+  "track_id": "unified-first-run_20260905",
+  "type": "enhancement",
+  "status": "in_progress",
+  "created_at": "2026-09-05T20:32:16Z",
+  "updated_at": "2026-09-06T03:32:48Z",
+  "description": "Partial checkpoint after the implementation interruption: the bounded launcher percentage fix is recorded, while the track continues the truthful bilingual first-run experience across the sequential launcher and LiveAudio app with atomic six-field handoff, early app paint, VAD provisioning heartbeat/retry, real-evidence-only progress, cache-preserving reinstall, and no new IPC or transport duplication. Depends on firstuse-startup-progress_20260905; M1-M8, supported-runtime validation, review, VM v2, and manual E2E evidence remain pending."
+}

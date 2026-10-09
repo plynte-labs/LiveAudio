@@ -99,3 +99,8 @@ tools/
 # Local CodeGraph index (per checkout, never shared)
 .codegraph/
 
+# ============================================
+# Rust
+# ============================================
+/target/
+

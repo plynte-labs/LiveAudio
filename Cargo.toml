@@ -1,0 +1,34 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/liveaudio-ipc",
+    "crates/liveaudio-audio",
+    "crates/liveaudio-vad",
+    "crates/liveaudio-core",
+    "crates/liveaudio-network",
+    "crates/liveaudio-cli",
+    "desktop/src-tauri",
+]
+
+[workspace.package]
+version = "1.5.0"
+edition = "2021"
+authors = ["franguh"]
+license = "MIT"
+repository = "https://github.com/plynte-labs/LiveAudio"
+homepage = "https://github.com/plynte-labs/LiveAudio"
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+tracing = "0.1"
+tokio = { version = "1", features = ["sync", "time", "macros", "rt-multi-thread", "signal", "process", "io-util", "fs"] }
+tokio-util = "0.7"
+crossbeam-channel = "0.5"
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }

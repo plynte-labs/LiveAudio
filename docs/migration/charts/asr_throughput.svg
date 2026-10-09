@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 360" width="720" height="360">
+  <style>
+    .title { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 18px; font-weight: 700; fill: #f1f5f9; }
+    .subtitle { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 13px; fill: #94a3b8; }
+    .label { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 14px; font-weight: 600; fill: #cbd5e1; }
+    .val { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 14px; font-weight: 700; fill: #ffffff; }
+    .delta { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 12px; font-weight: 700; fill: #10b981; }
+  </style>
+  <rect width="720" height="360" rx="12" fill="#0b0f11" stroke="#2b3d44" stroke-width="1.5" />
+  <text x="24" y="34" class="title">Inferencia Faster-Whisper (Small, RTX 3060)</text>
+  <text x="24" y="56" class="subtitle">Python worker, warmed clip RTF; not a Rust-vs-Python comparison</text>
+  <text x="165" y="106" text-anchor="end" class="label">Python worker (warmed clip)</text>
+  <rect x="180" y="80" width="440" height="42" rx="6" fill="#1b262a" />
+  <rect x="180" y="80" width="440" height="42" rx="6" fill="#10b981" />
+  <text x="632" y="106" class="val">25.7 x RT</text>
+  <text x="24" y="176" class="subtitle">Historical measurement only; no migration speedup is claimed.</text>
+</svg>

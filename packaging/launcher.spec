@@ -44,10 +44,12 @@ if os.path.exists(vendor_uv):
 # SRC_ZIP_SHA256). Declare it as a hidden import only when it exists so dev
 # builds (no metadata -> --src-dir mode) still work.
 hiddenimports = []
+if IS_WINDOWS:
+    hiddenimports.extend(["truststore", "truststore._windows"])
 if os.path.exists(os.path.join(HERE, "_release_meta.py")):
     hiddenimports.append("_release_meta")
 
-# The launcher is stdlib+tkinter only. Exclude heavyweight packages
+# The launcher bundles only stdlib, tkinter, and Windows native TLS. Exclude heavyweight packages
 # defensively in case the build environment has them installed.
 excludes = [
     "torch",

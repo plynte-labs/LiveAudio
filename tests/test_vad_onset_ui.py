@@ -76,5 +76,94 @@ class TestVadSliderWiring(unittest.TestCase):
         self.assertTrue(callable(getattr(LiveASRApp, "_load_ui_from_config", None)))
 
 
+class _StubVar:
+    def __init__(self, value=""):
+        self.value = value
+
+    def get(self):
+        return self.value
+
+    def set(self, value):
+        self.value = value
+
+
+class _StubSlider:
+    def __init__(self):
+        self.value = None
+        self.options = {}
+
+    def configure(self, **kwargs):
+        self.options.update(kwargs)
+
+    def set(self, value):
+        self.value = value
+
+
+class _StubLabel:
+    def __init__(self):
+        self.text = None
+
+    def configure(self, **kwargs):
+        self.text = kwargs.get("text", self.text)
+
+
+class TestTranscriptionPurposeControl(unittest.TestCase):
+    def test_purpose_labels_exist_in_both_languages(self):
+        keys = (
+            "transcription_purpose_label",
+            "transcription_purpose_subtitles",
+            "transcription_purpose_transcription",
+            "transcription_purpose_combined",
+            "transcription_purpose_subtitles_help",
+            "transcription_purpose_transcription_help",
+            "transcription_purpose_combined_help",
+        )
+        for lang in ("es", "en"):
+            for key in keys:
+                self.assertIn(key, TRANSLATIONS[lang], f"missing {key} in {lang}")
+
+    def test_selecting_transcription_changes_only_the_draft_window(self):
+        config = {
+            "transcription_purpose": "subtitles",
+            "max_chunk_duration": 5.0,
+        }
+        app = type("AppStub", (), {})()
+        app._ui_ready = True
+        app.draft_config = dict(config)
+        app.var_transcription_purpose = _StubVar(t("transcription_purpose_subtitles"))
+        app.slider_max_dur = _StubSlider()
+        app.lbl_max_dur = _StubLabel()
+        app.lbl_transcription_purpose_help = _StubLabel()
+        app.on_setting_change = lambda: None
+
+        select_purpose = getattr(LiveASRApp, "_on_transcription_purpose_select", None)
+        self.assertTrue(callable(select_purpose), "purpose selector handler is missing")
+        select_purpose(
+            app, t("transcription_purpose_transcription"),
+        )
+
+        self.assertEqual(app.draft_config["transcription_purpose"], "transcription")
+        self.assertEqual(app.draft_config["max_chunk_duration"], 30.0)
+        self.assertEqual(app.slider_max_dur.options["from_"], 1.0)
+        self.assertEqual(app.slider_max_dur.options["to"], 60.0)
+        self.assertEqual(app.slider_max_dur.value, 30.0)
+        self.assertEqual(
+            app.lbl_transcription_purpose_help.text,
+            t("transcription_purpose_transcription_help"),
+        )
+
+    def test_presets_do_not_overwrite_purpose_or_phrase_window(self):
+        user_config = {
+            "transcription_purpose": "combined",
+            "max_chunk_duration": 45.0,
+        }
+        for profile_id, profile in PROFILE_PRESETS.items():
+            self.assertNotIn("max_chunk_duration", profile["values"], profile_id)
+            draft = dict(user_config)
+            draft.update(profile["values"])
+            self.assertEqual(draft["transcription_purpose"], "combined")
+            self.assertEqual(draft["max_chunk_duration"], 45.0)
+
+
 if __name__ == "__main__":
     unittest.main()

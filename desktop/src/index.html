@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: MIT -->
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title data-i18n="app_title">LiveAudio Desktop</title>
+  <link rel="icon" type="image/png" href="assets/logo.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app-container" class="asr-lang-es">
+    <!-- Top Header / Custom Titlebar -->
+    <header data-tauri-drag-region>
+      <div class="brand" data-tauri-drag-region>
+        <img src="assets/logo.png" alt="LiveAudio Fran" class="brand-logo" data-tauri-drag-region>
+        <h1>LiveAudio</h1>
+        <span class="brand-badge" data-i18n="app_version">v1.5.0 Tauri 2</span>
+        <a id="author-profile-link" class="author-profile-link" href="https://github.com/franguh" target="_blank" rel="noopener noreferrer" data-i18n="author_credit" data-i18n-aria-label="author_credit_accessible">by Franguh</a>
+      </div>
+
+      <div class="header-right">
+        <div class="header-status">
+          <div id="pill-status" class="pill state-stopped" role="status" aria-live="polite">
+            <span class="pill-dot"></span>
+            <span id="pill-status-text">Detenido</span>
+          </div>
+
+          <details class="status-details">
+            <summary data-i18n="header_details">Detalles</summary>
+            <div class="status-detail-items">
+              <div id="pill-vad" class="pill pill-vad">
+                <span class="pill-dot"></span>
+                <span id="pill-vad-text">VAD: Silencio</span>
+              </div>
+
+              <div id="pill-ws" class="pill pill-ws">
+                <span class="pill-dot"></span>
+                <span id="pill-ws-text">WS: 8765 (0 cli)</span>
+              </div>
+
+              <div id="pill-hw" class="pill" title="Hardware y modelo ASR activo">
+                small | CUDA
+              </div>
+            </div>
+          </details>
+
+          <div class="lang-switch-container">
+            <select id="select-ui-lang" class="ui-lang-select" title="Idioma de interfaz / UI Language">
+              <option value="es">🇪🇸 ES</option>
+              <option value="en">🇺🇸 EN</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Custom Frameless Window Controls -->
+        <div class="window-controls">
+          <button id="win-btn-minimize" class="win-btn" title="Minimizar" data-i18n-title="btn_minimize">
+            <svg width="12" height="12" viewBox="0 0 12 12"><rect x="1" y="5.5" width="10" height="1" fill="currentColor"/></svg>
+          </button>
+          <button id="win-btn-maximize" class="win-btn" title="Maximizar / Restaurar" data-i18n-title="btn_maximize">
+            <svg width="12" height="12" viewBox="0 0 12 12"><rect id="win-icon-rect" x="1.5" y="1.5" width="9" height="9" stroke="currentColor" stroke-width="1" fill="none"/></svg>
+          </button>
+          <button id="win-btn-close" class="win-btn win-btn-close" title="Cerrar" data-i18n-title="btn_close">
+            <svg width="12" height="12" viewBox="0 0 12 12"><path d="M2 2L10 10M10 2L2 10" stroke="currentColor" stroke-width="1.2"/></svg>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Workspace Split -->
+    <main>
+      <!-- Left Pane: Controls & Settings -->
+      <div class="left-pane">
+        <!-- Master Action Bar -->
+        <div class="master-action-bar">
+          <button id="btn-toggle-service" class="btn-toggle-service start">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+              <polygon points="5 3 19 12 5 21 5 3"></polygon>
+            </svg>
+            <span id="btn-toggle-service-text" data-i18n="btn_start">Iniciar Transcripción</span>
+          </button>
+
+          <button id="btn-save-config" class="btn-secondary" title="Guardar Cambios" data-i18n-title="title_save_btn">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
+              <polyline points="17 21 17 13 7 13 7 21"></polyline>
+              <polyline points="7 3 7 8 15 8"></polyline>
+            </svg>
+            <span data-i18n="btn_save">Guardar</span>
+          </button>
+
+          <button id="btn-reset-config" class="btn-secondary" title="Valores por Defecto" data-i18n-title="title_reset_btn">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="1 4 1 10 7 10"></polyline>
+              <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path>
+            </svg>
+            <span data-i18n="btn_reset">Restablecer</span>
+          </button>
+
+          <button id="btn-export-diag" class="btn-secondary" title="Exportar Reporte Diagnóstico" data-i18n-title="title_diag_btn">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+              <polyline points="7 10 12 15 17 10"></polyline>
+              <line x1="12" y1="15" x2="12" y2="3"></line>
+            </svg>
+            <span data-i18n="btn_diag">Diagnóstico</span>
+          </button>
+        </div>
+
+        <!-- Settings Tabs -->
+        <div class="tabs-card">
+          <nav class="tab-nav" role="tablist" data-i18n-aria-label="settings_tabs_label" aria-label="Configuración">
+            <button type="button" id="tab-setup-tab" class="tab-btn active" role="tab" aria-selected="true" aria-controls="tab-setup" tabindex="0" data-tab="tab-setup" data-i18n="tab_setup">Inicio</button>
+            <button type="button" id="tab-subtitles-tab" class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-subtitles" tabindex="-1" data-tab="tab-subtitles" data-i18n="tab_subtitles">Subtítulos</button>
+            <button type="button" id="tab-advanced-tab" class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-advanced" tabindex="-1" data-tab="tab-advanced" data-i18n="tab_advanced">Avanzado</button>
+            <button type="button" id="tab-files-tab" class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-files" tabindex="-1" data-tab="tab-files" data-i18n="tab_files">Archivos</button>
+          </nav>
+
+          <div class="tab-content">
+            <section id="tab-setup" class="tab-pane active" role="tabpanel" aria-labelledby="tab-setup-tab" tabindex="0">
+              <div class="form-group">
+                <label for="select-audio-device" data-i18n="lbl_audio_device">Fuente de audio</label>
+                <select id="select-audio-device" class="form-control">
+                  <option value="default_microphone" data-i18n="opt_default_mic">Micrófono predeterminado del sistema</option>
+                  <option value="wasapi_loopback" data-i18n="opt_loopback">Audio del sistema (WASAPI Loopback)</option>
+                </select>
+                <span class="form-hint" data-i18n="hint_audio_device">Elige el micrófono o el audio del sistema que quieres transcribir.</span>
+              </div>
+
+              <div class="form-group">
+                <label for="select-asr-lang" data-i18n="lbl_asr_lang">Idioma hablado</label>
+                <select id="select-asr-lang" class="form-control">
+                  <option value="es" selected data-i18n="opt_asr_es">Español (es)</option>
+                  <option value="en" data-i18n="opt_asr_en">Inglés (en)</option>
+                </select>
+                <span class="form-hint" data-i18n="hint_asr_lang">Selecciona el idioma que se habla en el audio.</span>
+              </div>
+
+              <div class="form-group">
+                <label for="select-profile" data-i18n="lbl_profile">Perfil recomendado</label>
+                <select id="select-profile" class="form-control">
+                  <option value="custom" data-i18n="opt_profile_custom">Personalizado</option>
+                  <option value="fast" data-i18n="opt_profile_fast">Rápido</option>
+                  <option value="balanced" data-i18n="opt_profile_balanced">Balanceado</option>
+                  <option value="quality" data-i18n="opt_profile_quality">Calidad</option>
+                  <option value="stable_streaming" data-i18n="opt_profile_stable">Streaming estable</option>
+                </select>
+                <span id="profile-description" class="form-hint" data-i18n="hint_profile">Empieza con el perfil recomendado; puedes ajustar cada opción después.</span>
+              </div>
+
+            </section>
+
+            <section id="tab-subtitles" class="tab-pane" role="tabpanel" aria-labelledby="tab-subtitles-tab" tabindex="0" hidden>
+              <div class="form-row">
+                <div class="form-group">
+                  <label for="select-subtitle-style" data-i18n="lbl_sub_style">Tema de Subtítulos</label>
+                  <select id="select-subtitle-style" class="form-control">
+                    <option value="default" selected data-i18n="opt_style_default">Default (Limpio con sombra)</option>
+                    <option value="karaoke" data-i18n="opt_style_karaoke">Karaoke (Palabra por palabra dorado)</option>
+                    <option value="neon" data-i18n="opt_style_neon">Neon Cyberpunk (Cian brillante)</option>
+                    <option value="minimal" data-i18n="opt_style_minimal">Minimalista (Sin bordes)</option>
+                    <option value="bold" data-i18n="opt_style_bold">Bold Impact (Mayúsculas oscuras)</option>
+                    <option value="rgb" data-i18n="opt_style_rgb">RGB Fade (Suave vertical)</option>
+                    <option value="typewriter" data-i18n="opt_style_typewriter">Typewriter (Máquina de escribir)</option>
+                  </select>
+                  <span class="form-hint" data-i18n="hint_sub_style">Estilo visual del subtítulo (tipografía y colores) renderizado en OBS.</span>
+                </div>
+
+                <div class="form-group">
+                  <label for="select-display-mode" data-i18n="lbl_display_mode">Modo de Visualización</label>
+                  <select id="select-display-mode" class="form-control">
+                    <option value="adaptive" selected data-i18n="opt_mode_adaptive">Adaptive (Inteligente)</option>
+                    <option value="single" data-i18n="opt_mode_single">Single (Línea única)</option>
+                    <option value="ribbon" data-i18n="opt_mode_ribbon">Ribbon (Pila vertical multilínea)</option>
+                  </select>
+                  <span class="form-hint" data-i18n="hint_display_mode">Adaptive ajusta según longitud; Single muestra última frase; Ribbon apila líneas.</span>
+                </div>
+
+                <div class="form-group">
+                  <label for="slider-ribbon-lines" data-i18n="lbl_ribbon_lines">Líneas Máximas Ribbon</label>
+                  <div class="slider-container">
+                    <input type="range" id="slider-ribbon-lines" min="1" max="8" step="1" value="3">
+                    <span id="val-ribbon-lines" class="slider-value">3</span>
+                  </div>
+                  <span class="form-hint" data-i18n="hint_ribbon_lines">Máximo de líneas de subtítulos acumuladas simultáneamente en modo Ribbon.</span>
+                </div>
+              </div>
+
+            </section>
+
+            <section id="tab-advanced" class="tab-pane" role="tabpanel" aria-labelledby="tab-advanced-tab" tabindex="0" hidden>
+              <div class="form-row">
+                <div class="form-group">
+                  <label for="select-model-size" data-i18n="lbl_model_size">Tamaño del modelo Whisper</label>
+                  <select id="select-model-size" class="form-control">
+                    <option value="tiny (Más rápido, baja precisión)" data-i18n="opt_model_tiny">tiny (Más rápido, baja precisión)</option>
+                    <option value="base (Rápido)" data-i18n="opt_model_base">base (Rápido)</option>
+                    <option value="small (Balance CPU)" selected data-i18n="opt_model_small">small (Balance CPU / GPU equilibrado)</option>
+                    <option value="turbo (Máxima precisión GPU)" data-i18n="opt_model_turbo">turbo (Máxima precisión GPU)</option>
+                  </select>
+                  <span class="form-hint" data-i18n="hint_model_size">Los modelos grandes pueden consumir más memoria de GPU.</span>
+                </div>
+                <div class="form-group">
+                  <label for="select-compute-device" data-i18n="lbl_compute_device">Dispositivo de cómputo</label>
+                  <select id="select-compute-device" class="form-control">
+                    <option value="cuda" id="device-cuda" data-i18n="opt_cuda" selected>CUDA (GPU Nvidia - Recomendado)</option>
+                    <option value="cpu" id="device-cpu" data-i18n="opt_cpu">CPU (Sin GPU dedicada)</option>
+                  </select>
+                  <span class="form-hint" data-i18n="hint_compute_device">CUDA usa la GPU compatible; CPU es una alternativa si no hay GPU disponible.</span>
+                </div>
+              </div>
+              <div class="form-group">
+                <label for="slider-cpu-threads" data-i18n="lbl_cpu_threads">Hilos de CPU</label>
+                <div class="slider-container">
+                  <input type="range" id="slider-cpu-threads" min="1" max="16" step="1" value="8">
+                  <span id="val-cpu-threads" class="slider-value">8</span>
+                </div>
+                <span class="form-hint" data-i18n="hint_cpu_threads">Número de hilos que se usarán al transcribir con CPU.</span>
+              </div>
+              <div class="form-row">
+                <div class="form-group">
+                  <label for="slider-silence-timeout" data-i18n="lbl_silence_timeout">Pausa para cerrar una frase</label>
+                  <div class="slider-container"><input type="range" id="slider-silence-timeout" min="0.3" max="2.0" step="0.1" value="0.8"><span id="val-silence-timeout" class="slider-value">0.8s</span></div>
+                  <span class="form-hint" data-i18n="hint_silence_timeout">Pausa de voz antes de procesar la frase.</span>
+                </div>
+                <div class="form-group">
+                  <label for="slider-max-chunk" data-i18n="lbl_max_chunk">Duración máxima del segmento</label>
+                  <div class="slider-container"><input type="range" id="slider-max-chunk" min="1.0" max="60.0" step="0.5" value="5.0"><span id="val-max-chunk" class="slider-value">5.0s</span></div>
+                  <span class="form-hint" data-i18n="hint_max_chunk">Límite antes de procesar un segmento de audio.</span>
+                </div>
+              </div>
+              <div class="form-row">
+                <div class="form-group">
+                  <label for="slider-vad-pad" data-i18n="lbl_vad_pad">Audio previo a la voz (VAD)</label>
+                  <div class="slider-container"><input type="range" id="slider-vad-pad" min="0" max="500" step="25" value="200"><span id="val-vad-pad" class="slider-value">200ms</span></div>
+                  <span class="form-hint" data-i18n="hint_vad_pad">Audio previo incluido para evitar cortar el inicio de una palabra.</span>
+                </div>
+                <div class="form-group">
+                  <label for="slider-vad-threshold" data-i18n="lbl_vad_threshold">Sensibilidad de voz</label>
+                  <div class="slider-container"><input type="range" id="slider-vad-threshold" min="0.1" max="0.9" step="0.05" value="0.5"><span id="val-vad-threshold" class="slider-value">0.5</span></div>
+                  <span class="form-hint" data-i18n="hint_vad_threshold">Un valor mayor requiere una voz más fuerte para activarse.</span>
+                </div>
+              </div>
+              <div class="form-group">
+                <label for="select-backlog-policy" data-i18n="lbl_backlog_policy">Entrega de subtítulos atrasados</label>
+                <select id="select-backlog-policy" class="form-control">
+                  <option value="auto" selected data-i18n="opt_backlog_auto">Automática (Recomendado)</option>
+                  <option value="live_only" data-i18n="opt_backlog_live_only">Solo subtítulos en vivo</option>
+                  <option value="send_all" data-i18n="opt_backlog_send_all">Enviar todos</option>
+                </select>
+                <span class="form-hint" data-i18n="hint_backlog_policy">Controla cómo se entregan a OBS los subtítulos que se acumulan.</span>
+              </div>
+              <div class="form-row">
+                <div class="form-group">
+                  <label for="slider-max-live-delay" data-i18n="lbl_max_live_delay">Retraso máximo</label>
+                  <div class="slider-container"><input type="range" id="slider-max-live-delay" min="1.0" max="60.0" step="1.0" value="10.0"><span id="val-max-live-delay" class="slider-value">10.0s</span></div>
+                  <span class="form-hint" data-i18n="hint_max_live_delay">Retraso permitido antes de descartar subtítulos acumulados.</span>
+                </div>
+                <div class="form-group">
+                  <label for="slider-catchup-interval" data-i18n="lbl_catchup_interval">Pausa entre subtítulos atrasados</label>
+                  <div class="slider-container"><input type="range" id="slider-catchup-interval" min="0.1" max="5.0" step="0.1" value="1.5"><span id="val-catchup-interval" class="slider-value">1.5s</span></div>
+                  <span class="form-hint" data-i18n="hint_catchup_interval">Pausa entre elementos históricos enviados a OBS.</span>
+                </div>
+              </div>
+              <div class="form-group">
+                <label for="input-ws-port" data-i18n="lbl_ws_port">Puerto local de OBS</label>
+                  <input type="number" id="input-ws-port" class="form-control" value="8765" min="1024" max="65535">
+                <span class="form-hint" data-i18n="hint_ws_port">Puerto local que usa la conexión WebSocket para OBS.</span>
+              </div>
+
+              <div class="form-group" id="group-blacklist">
+                <div class="lang-header-row" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                  <div style="display: flex; align-items: center; gap: 8px;">
+                    <label for="input-blacklist" id="lbl-blacklist" data-i18n="lbl_blacklist">Filtro de Frases Alucinadas (Blacklist)</label>
+                    <span id="badge-blacklist-lang" class="badge-lang-indicator">🇪🇸 ES</span>
+                  </div>
+                </div>
+                <textarea id="input-blacklist" class="form-control" rows="2" placeholder="Palabras separadas por comas que se omitirán si Whisper las genera en silencio..."></textarea>
+                <span id="hint-blacklist" class="form-hint" data-i18n="hint_blacklist">Palabras separadas por comas que se omitirán si Whisper las genera en silencio.</span>
+              </div>
+
+              <div class="form-group" id="group-prompt">
+                <div class="lang-header-row">
+                  <div class="lang-field-title"><label for="prompt-es" id="lbl-prompt-title" data-i18n="lbl_prompt">Vocabulario y contexto</label><span id="badge-prompt-lang" class="badge-lang-indicator">🇪🇸 ES</span></div>
+                  <button type="button" id="btn-suggest-prompt-es" class="btn-link" data-i18n="btn_use_preset_prompt">Cargar sugerencia</button>
+                </div>
+                <textarea id="prompt-es" class="form-control" rows="3" placeholder="Términos técnicos, jerga de juego, nombres propios..." data-i18n-placeholder="ph_prompt_es"></textarea>
+                <span id="hint-prompt" class="form-hint" data-i18n="hint_prompt_es">Añade vocabulario que ayude al reconocimiento en el idioma seleccionado.</span>
+              </div>
+            </section>
+
+            <section id="tab-files" class="tab-pane" role="tabpanel" aria-labelledby="tab-files-tab" tabindex="0" hidden>
+              <div class="form-group session-box">
+                <div class="session-box-heading">
+                  <label data-i18n="lbl_subtitles_folder">Carpeta de sesión</label>
+                  <button id="btn-open-session-folder" class="btn-secondary" type="button" data-i18n="btn_open_session">Abrir carpeta</button>
+                </div>
+                <div id="session-path" class="session-path">Cargando ruta de sesión…</div>
+                <span class="form-hint" data-i18n="hint_subtitles_folder">Aquí se guardan los archivos de sesión según tus opciones.</span>
+                <span id="session-error" class="form-hint error" hidden></span>
+              </div>
+              <div class="form-group">
+                <label class="switch-label">
+                  <span class="switch-track"><input type="checkbox" id="check-continuous" class="switch-input" checked><span class="switch-slider"></span></span>
+                  <span data-i18n="lbl_continuous">Continuar la sesión entre reinicios</span>
+                </label>
+                <span class="form-hint" data-i18n="hint_continuous">Mantiene la carpeta y el archivo de subtítulos de la sesión al reiniciar el servicio.</span>
+              </div>
+              <div class="form-group">
+                <label class="switch-label">
+                  <span class="switch-track"><input type="checkbox" id="check-save-transcript" class="switch-input"><span class="switch-slider"></span></span>
+                  <span data-i18n="lbl_save_jsonl">Guardar transcripción JSONL</span>
+                </label>
+                <label class="switch-label">
+                  <span class="switch-track"><input type="checkbox" id="check-save-vtt" class="switch-input"><span class="switch-slider"></span></span>
+                  <span data-i18n="lbl_save_vtt">Guardar subtítulos WebVTT</span>
+                </label>
+                <span class="form-hint" data-i18n="hint_save_sinks">Los archivos opcionales de sesión se guardan en el dispositivo.</span>
+              </div>
+            </section>
+        </div>
+      </div>
+      </div>
+
+      <!-- Right Pane: Live Subtitle Preview & OBS Integration -->
+      <div class="right-pane">
+        <!-- Live Preview Card -->
+        <div class="card preview-card">
+          <div class="card-title">
+            <span data-i18n="title_preview">Vista Previa de Subtítulos</span>
+            <button id="btn-test-subtitle" class="btn-secondary" style="padding: 4px 10px; font-size: 0.75rem;" data-i18n="btn_test_subtitle">
+              Probar Animación
+            </button>
+          </div>
+
+          <div class="preview-stage">
+            <span class="preview-badge" data-i18n="preview_badge">Preview 1920x1080</span>
+            <div id="subtitle-box" class="sub-box style-default" data-i18n="sample_preview_text">
+              Subtítulos en tiempo real para streamers y creadores con LiveAudio
+            </div>
+          </div>
+        </div>
+
+        <!-- OBS Studio Integration Card -->
+        <div class="card obs-card">
+          <div class="card-title">
+            <span data-i18n="title_obs">Integración con OBS Studio</span>
+          </div>
+
+          <div class="form-group">
+            <label for="input-obs-url" data-i18n="lbl_obs_url">URL de Fuente de Navegador (Browser Source)</label>
+            <div class="obs-url-container">
+              <input type="text" id="input-obs-url" class="obs-url-input" readonly value="file:///E:/LiveAudio/liveaudio/assets/subtitulos_obs.html?port=8765">
+              <button id="btn-copy-obs-url" class="btn-secondary btn-copy-url" data-i18n="btn_copy_url">Copiar URL</button>
+            </div>
+          </div>
+
+          <details class="obs-help">
+            <summary data-i18n="obs_help_summary">Instrucciones de configuración</summary>
+            <div class="obs-guidance" data-i18n-html="obs_instructions_html">
+              <strong>Instrucciones para OBS Studio:</strong><br>
+              1. En OBS, haz clic en el botón <strong>+</strong> en Fuentes y selecciona <strong>Navegador</strong>.<br>
+              2. Desmarca "Archivo local" y pega la URL de arriba en el campo <strong>URL</strong>.<br>
+              3. Ajusta <strong>Ancho: 1920</strong> y <strong>Alto: 1080</strong>, FPS: 60.<br>
+              4. Los subtítulos se mostrarán en vivo con fondo transparente.
+            </div>
+          </details>
+        </div>
+      </div>
+    </main>
+
+    <!-- Accessible Modal Dialog System (replaces window.alert / window.confirm) -->
+    <div id="modal-container" class="modal-backdrop" hidden>
+      <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title" aria-describedby="modal-message">
+        <div class="modal-header">
+          <div class="modal-header-title">
+            <span id="modal-icon" class="modal-icon">⚠️</span>
+            <h3 id="modal-title" class="modal-title">Confirmar Acción</h3>
+          </div>
+          <button id="modal-btn-close" class="modal-btn-close" type="button" aria-label="Cerrar modal">×</button>
+        </div>
+        <div class="modal-body">
+          <p id="modal-message" class="modal-message">¿Estás seguro de continuar?</p>
+          <p id="modal-detail" class="modal-detail" hidden></p>
+        </div>
+        <div class="modal-footer">
+          <button id="modal-btn-cancel" class="btn-secondary" type="button">Cancelar</button>
+          <button id="modal-btn-confirm" class="btn-primary" type="button">Aceptar</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Floating Toast Feedback Container -->
+    <div id="toast-container"></div>
+  </div>
+
+  <script src="app.js" type="module"></script>
+</body>
+</html>

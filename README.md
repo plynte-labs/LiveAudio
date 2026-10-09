@@ -1,7 +1,9 @@
 # Plynte LiveAudio
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
+[![Rust: 2021 Edition](https://img.shields.io/badge/Rust-2021%20Edition-orange.svg)](https://www.rust-lang.org/)
+[![Tauri: v2](https://img.shields.io/badge/Tauri-v2-blue.svg)](https://tauri.app/)
+[![Python: 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue.svg)](https://www.python.org/)
 [![Platform: Windows | Linux](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux-lightgrey.svg)](https://github.com/plynte-labs/LiveAudio)
 
 LiveAudio is a real-time automatic speech recognition (ASR) engine designed for streamers and content creators. It captures audio from your microphone or system, transcribes it locally using **Whisper** (OpenAI), and sends subtitles to **OBS Studio** via **WebSocket**.
@@ -13,15 +15,54 @@ LiveAudio is a real-time automatic speech recognition (ASR) engine designed for 
 
 ## Features
 
-- **Real-time transcription** with Whisper (`tiny`, `base`, `small`, `turbo` models).
-- **Voice activity detection (VAD)** with Silero VAD to cut silences automatically.
-- **Flexible capture:** physical microphone or system audio (WASAPI Loopback on Windows).
-- **Integrated WebSocket** to send subtitles to OBS or any HTML client.
-- **OBS backlog control:** prevents bursts of old subtitles after freezes, without losing the saved transcript.
-- **Hallucination filtering** via a customizable blacklist.
-- **Session management:** saves transcriptions as `.jsonl` and subtitles as `.vtt`.
-- **Intelligent hot-swap:** change device or model without restarting the program.
-- **Robust architecture:** isolated processes (multiprocessing), audio ring buffer, and automatic reconnection on hardware disconnects.
+- **Rust Core & Native Audio Pipeline (v1.5.0):** Ultra-low-latency audio capture via CPAL (physical mic or WASAPI Loopback on Windows) and high-speed Silero VAD powered by ONNX Runtime in native Rust.
+- **Tauri 2 Desktop:** Bilingual two-column interface with Setup, Subtitles, Advanced, and Files settings, a live subtitle preview, and accessible confirmation dialogs.
+- **Faster-Whisper Worker Supervision:** Python ASR engine isolated in a supervised child process with Win32 Job Objects (zero orphan/zombie processes) and automatic recovery.
+- **Configurable VAD Chunks up to 60s:** Extended speech buffer support with dynamic sample pre-roll and real-time streaming inference.
+- **Idempotent Real-Time State Control:** Instant UI feedback with thread-safe transition locking preventing duplicate clicks or race conditions.
+- **Unified Language Profiles & Dynamic Switching:** Automatic context switching of prompt guidelines and anti-hallucination blacklists according to active transcription language (`es` / `en`).
+- **OBS Studio Subtitle Overlay:** Multi-theme HTML browser source via local WebSocket broadcast (`default`, `karaoke`, `neon`, `minimal`, `bold`, `rgb`, `typewriter`) with backlog anti-burst protection.
+- **Complete Session Persistence:** Sanitized `.jsonl` transcript and `.vtt` subtitles saved automatically to chosen session directory.
+
+---
+
+## Performance & Migration Benchmarks (Rust Core v1.5.0 vs Python v1.2.7)
+
+LiveAudio v1.5.0 shifts performance-critical operations (audio acquisition, VAD frame evaluation, WebSocket broadcasting, and process supervision) to a native **Rust workspace with Tauri 2**, retaining Faster-Whisper inside an isolated, supervised worker.
+
+> **Detailed documentation:** [Historical Benchmark Report (WU9)](docs/migration/wu9_benchmark_comparison_report.md) · [Architecture Specification (WU1)](docs/migration/architecture_wu1.md)
+
+### 1. Cold Startup Latency
+![Cold Startup Latency](docs/migration/charts/startup_latency.svg)
+
+- **Python v1.2.7:** ~2,811.6 ms
+- **Rust Core (CLI):** 16.9 ms
+- **Rust Core (Bare):** 8.0 ms *(~166x speedup)*
+
+### 2. Resident Memory Footprint (Idle)
+![Memory Footprint](docs/migration/charts/memory_footprint.svg)
+
+- **Python v1.2.7 Multi-process:** ~958.6 MB
+- **Rust Core + Idle Worker:** ~73.0 MB *(~13.1x reduction)*
+- **Rust Core Isolated:** ~28.0 MB
+
+### 3. Voice Activity Detection (Silero VAD 32ms Frame Latency)
+![VAD Latency](docs/migration/charts/vad_latency.svg)
+
+- **Python (PyTorch VAD):** 0.358 ms
+- **Rust ONNX (Release):** 0.114 ms *(~3.1x faster frame evaluation)*
+
+### 4. Clean Shutdown & Teardown Latency
+![Shutdown Latency](docs/migration/charts/shutdown_latency.svg)
+
+- **Python v1.2.7:** 3,401.0 ms
+- **Rust Core (Win32 Job Object):** 6.6 ms *(Guaranteed clean termination, 0 zombies)*
+
+### 5. ASR Real-Time Throughput
+![ASR Throughput](docs/migration/charts/asr_throughput.svg)
+
+- **Rust CPU Fallback (int8):** 2.99x Real-Time
+- **Rust CUDA (float16):** 25.74x Real-Time (Faster-Whisper `small` on RTX 3060)
 
 ---
 
@@ -30,12 +71,12 @@ LiveAudio is a real-time automatic speech recognition (ASR) engine designed for 
 | Component | Recommended |
 |---|---|
 | **OS** | Windows 10/11 (WASAPI Loopback) or Linux x86_64 |
-| **Python** | Not required for users — the installer provisions its own Python 3.11 |
+| **Python** | Not required for end-users — bundled in portable release |
 | **GPU** | NVIDIA with CUDA (optional but recommended for larger models) |
 | **RAM** | 8 GB minimum, 16 GB recommended |
-| **Disk** | ~400 MB (CPU) / ~2.5 GB (CUDA) for the app + dependencies, plus model storage |
-| **Microphone** | Any audio input device |
-| **Internet** | Required on first run only (dependency + model download) |
+| **Disk** | ~400 MB (CPU) / ~2.5 GB (CUDA) for app + dependencies, plus model cache |
+| **Microphone** | Any audio input device or WASAPI loopback |
+| **Internet** | Required on first run only (model download from Hugging Face / GitHub) |
 
 ### Running in a Virtual Machine
 
@@ -43,64 +84,47 @@ LiveAudio works in VMs with the following considerations:
 
 | VM setup | Result |
 |---|---|
-| VM without GPU passthrough (VirtualBox, VMware default) | ✅ Works on CPU — slow but functional |
-| VM with GPU passthrough (VMware vGPU, Proxmox) | ✅ Works with CUDA |
-| Cloud VM without GPU (EC2, GCP) | ✅ CPU only — good for testing, not live streaming |
-| VM without audio device exposed to guest | ❌ `sounddevice` won't find devices — expose the audio host adapter first |
-
-For CPU-only VMs, run the launcher once with `--device cpu`.
+| VM without GPU passthrough (VirtualBox, VMware default) | ✅ Works on CPU — functional for testing |
+| VM with GPU passthrough (VMware vGPU, Proxmox) | ✅ Works with CUDA acceleration |
+| Cloud VM without GPU (EC2, GCP) | ✅ CPU only — suitable for headless testing |
+| VM without audio device exposed to guest | ❌ Expose virtual audio host adapter first |
 
 ---
 
-## Installation (Users)
+## Installation & Development
 
-1. Download the latest release from [GitHub Releases](https://github.com/plynte-labs/LiveAudio/releases):
-   - **Windows:** `LiveAudio-Setup-X.Y.Z.exe`
-   - **Linux:** `LiveAudio-X.Y.Z-linux-x64.tar.gz` (extract, then run `./liveaudio-launcher`)
-2. Run it. The **first run** downloads Python and all dependencies (**~400 MB** on CPU, **~2.5 GB** with CUDA) and **auto-detects your GPU** — no manual setup. Later runs start instantly.
+### Prerequisites
+- **Rust:** 1.80+ (2021 edition)
+- **Node.js:** 18+ (for frontend testing and Tauri tools)
+- **Python:** 3.11 with [uv](https://docs.astral.sh/uv/)
 
-> **First transcription — internet required:** LiveAudio also downloads two models on first use (unchanged from previous versions):
-> - **Silero VAD** (~2 MB) — voice activity detection, from GitHub
-> - **Whisper model** — size depends on your choice: `tiny` ~150 MB · `base` ~300 MB · `small` ~480 MB · `turbo` ~1.5 GB (from Hugging Face)
->
-> After that, the app works fully **offline**.
-
-> **Windows SmartScreen:** the installer is not code-signed (signing certificates are expensive for an open-source project), so Windows may show a SmartScreen warning. Click **More info → Run anyway**. You can verify the download against `SHA256SUMS.txt` published with each release.
-
-**Options:**
-
-- **Force a backend:** run the launcher with `--device cpu` or `--device cuda` to override GPU auto-detection. The choice is remembered for future runs.
-- **Portable mode:** create an empty file named `portable.marker` next to the launcher executable. Everything (app, dependencies, config, sessions, models) is then stored in a `data/` folder next to the launcher — nothing touches your user profile. Ideal for USB drives.
-- **Linux audio:** the PortAudio runtime is required for capture: `sudo apt install libportaudio2`.
-- **Linux desktop entry:** `./liveaudio-launcher --install-desktop-entry` adds an applications-menu entry.
-- **Updates:** the app checks GitHub Releases and offers a one-click update button; you can also run the launcher with `--update` manually. Already-downloaded PyTorch wheels are reused, so updates are small.
-
----
-
-## Installation (Developers)
-
-LiveAudio uses [uv](https://docs.astral.sh/uv/) for dependency management:
-
+### Setup & Run
 ```bash
+# Clone the repository
 git clone https://github.com/plynte-labs/LiveAudio.git
 cd LiveAudio
 
-# CPU-only (smallest, works everywhere)
-uv sync --extra cpu
+# Setup Python worker venv (CUDA 12.1 or CPU)
+uv sync --extra cu121   # or: uv sync --extra cpu
 
-# Or with NVIDIA CUDA
-uv sync --extra cu121
+# Run the Tauri Desktop App (Development)
+cargo run -p liveaudio-desktop
 
-# Run the app
-uv run liveaudio
+# Run Headless CLI Service
+cargo run -p liveaudio-cli -- --help
 
-# Run the tests
-uv run pytest
+# Run Test Suites
+cargo test --workspace
+node desktop/test_frontend.js
+.venv\Scripts\pytest tests/test_asr_worker_ipc.py
 ```
 
-Exactly one torch extra (`cpu` or `cu121`) must be selected — they route to different PyTorch package indexes. Each release also publishes `requirements-cpu.txt` / `requirements-cu121.txt` as a pip-only escape hatch.
+### Packaging for Virtual Machines & Clean Environments
+To generate a self-contained portable distribution package (`.zip`) with bundled Python runtime, CUDA/cuDNN DLLs, and binaries ready to test in a clean VM:
 
-See [docs/PACKAGING_AND_UPDATES.md](docs/PACKAGING_AND_UPDATES.md) for the full packaging and release architecture.
+```bash
+python packaging/package_tauri_release.py --package-portable --release
+```
 
 ---
 
@@ -108,28 +132,26 @@ See [docs/PACKAGING_AND_UPDATES.md](docs/PACKAGING_AND_UPDATES.md) for the full 
 
 ```
 LiveAudio/
+├── crates/
+│   ├── liveaudio-audio/      # CPAL audio capture (Mic & WASAPI Loopback)
+│   ├── liveaudio-vad/        # Silero VAD (ONNX Runtime engine)
+│   ├── liveaudio-ipc/        # Typed JSON lines IPC protocol
+│   ├── liveaudio-core/       # App state, config persistence, supervision
+│   ├── liveaudio-network/    # Tokio WebSocket broadcast server
+│   └── liveaudio-cli/        # Headless CLI service
+├── desktop/
+│   ├── src-tauri/            # Tauri 2 backend (Rust commands, event bus)
+│   └── src/                  # Vanilla frontend (HTML, CSS, JS, i18n, modals)
 ├── liveaudio/
-│   ├── app.py            # GUI (CustomTkinter) and orchestrator
-│   ├── core/
-│   │   ├── audio.py      # Audio capture, VAD, and automatic reconnection
-│   │   ├── engine.py     # ASR engine (Whisper) and session saving
-│   │   └── network.py    # WebSocket server (broadcast)
-│   ├── utils/
-│   │   └── config.py     # Persistent configuration load/save
-│   └── assets/
-│       └── subtitulos_obs.html   # Browser Source for OBS
-├── packaging/
-│   └── launcher.py       # Bootstrapper frozen into the release installers
+│   ├── service/              # Faster-Whisper Python worker runtime
+│   └── assets/               # OBS subtitle HTML overlays
 ├── docs/
-│   ├── GETTING_STARTED.md        # Detailed guide for new users
-│   ├── WEBSOCKET_OBS.md          # OBS Studio integration
-│   └── PACKAGING_AND_UPDATES.md  # Packaging / release / update architecture
-├── pyproject.toml        # Project metadata and dependencies (uv)
-├── uv.lock               # Locked dependency versions
-└── config.json.example   # Example configuration
+│   └── migration/            # Migration architecture, reports & SVG charts
+├── packaging/
+│   ├── package_tauri_release.py # Portable VM packaging script
+│   └── generate_comparison_charts.py # SVG benchmark chart generator
+└── Cargo.toml                # Rust workspace definition
 ```
-
-Launcher installs keep user data (config, sessions) under the install root's `data/` directory: `%LOCALAPPDATA%\LiveAudio\data` on Windows or `~/.local/share/liveaudio/data` on Linux. (Dev runs without the launcher default to `%APPDATA%\LiveAudio` on Windows or `~/.config/liveaudio` on Linux.) Override with the `LIVEAUDIO_HOME` environment variable.
 
 ---
 
@@ -165,6 +187,7 @@ On first run, a `config.json` file is created automatically with default values 
     "subtitle_catchup_interval_sec": 1.5,
     "silence_timeout": 0.8,
     "max_chunk_duration": 5.0,
+    "asr_decode_timeout_sec": 15,
     "audio_device": null,
     "selected_profile_id": "balanced",
     "ws_port": 8765,
@@ -193,6 +216,8 @@ On first run, a `config.json` file is created automatically with default values 
 
 ## Configuration Profiles
 
+Choose the output purpose separately from the hardware profile. Hardware presets do not change the selected purpose or phrase window. Longer transcript windows improve phrase continuity but delay final subtitle output; the combined option prioritizes the transcript rather than promising low-latency subtitles.
+
 Profiles are built-in presets to avoid manually tuning every sensitive control.
 
 | Profile | Recommended for |
@@ -214,7 +239,63 @@ LiveAudio always saves valid transcriptions to the session (`transcript.jsonl` a
 |---|---|
 | `Auto` | Sends fresh subtitles. Short backlogs are emitted with pacing. If delay exceeds `subtitle_max_live_delay_sec`, they are saved but not shown in OBS. |
 | `Live only` | Saves everything, but only shows subtitles within the configured max delay in OBS. |
-| `Send all` | Sends everything to OBS even if it arrives late. Useful if you prefer full visual fidelity over avoiding bursts. |
+| `Send all` | Sends everything to OBS even if it arrives late. Useful if you prefer full visual fidelity over avoiding bursts. After a long freeze the replay buffer is bounded (256 messages, drop-oldest) so the live edge is preserved. |
+
+---
+
+## Headless service mode (integrators)
+
+LiveAudio can run as a **headless backend with no window**, spawned by an owner process (e.g. opencohost):
+
+```bash
+liveaudio-service --parent-pid <PID> [--health-file <path>]
+```
+
+> **Supported entry point:** on an installed Windows build, `liveaudio-service` (console script) is the ONLY supported headless path. The installed `liveaudio` GUI executable has no console/stdout, so `liveaudio --service ...` only works from a source checkout in a terminal — it is a dev convenience, not the integration contract.
+
+- **Process ownership:** the service lives until the owner dies (parent-PID watchdog, Windows + POSIX, machine-local PIDs only). There is no TCP control plane. Only one service instance runs per data home (stale locks are reclaimed).
+- **Lazy ASR:** the supervisor and WebSocket start immediately; audio/ASR load only on the first WS client. Before that the service reports `asr_state: unavailable` (≈ `stt_unreachable`).
+- **Config snapshot:** the service reads the CTK-saved config read-only and never writes `config.json`. Changing settings requires restarting the service (no hot reload).
+- **Port discovery:** same `base..base+9` fallback as the GUI (10 candidates from `ws_port`); the effective port is announced via `hello.port`, the `ws_port` stdout event, and health. Never assume a fixed port.
+- **Health:** versioned JSON lines on stdout (`service_state`, `ws_port`, `asr_state`, `fatal`) plus an optional atomic health-file snapshot. No transcripts, audio, logs, or private paths are ever emitted.
+- **Backlog bound:** `send_all` replays at most the last 256 subtitles (drop-oldest) after a freeze — the live edge, not the full history.
+- **Glossary:** *base port* = configured `ws_port`; *effective port* = port actually bound; *scope* = saved `save_transcript`/`save_vtt`/`obs_enabled`/`ws_port`/backlog settings the service obeys; *dueño-por-proceso* = single owner process via watchdog.
+- **Known limitation:** parent-PID checks are TOCTOU against OS PID reuse — if the owner dies and its PID is reassigned before the next 1 s poll, the service briefly considers the parent alive. A new owner cannot adopt it anyway (instance lock rejects a second service).
+
+> **Note:** reader-side auto-discovery lives in the VoiceAI unit (`feature/liveaudio-service-client`), AFTER this LiveAudio unit. Suggested order: LiveAudio first, VoiceAI second. This track ships the LiveAudio side only.
+
+## First-use model download: states, codes, times
+
+On a clean machine the ASR pill (GUI) and `asr_state` (service) are honest about
+Whisper provisioning instead of a generic loading spinner:
+
+| State | What it means | What to do |
+|---|---|---|
+| `downloading N%` | Model downloading with real progress (0–100, monotonic per attempt) | Wait; `N%` never moves backward except on manual retry |
+| `downloading…` | Downloading but progress unparseable (indeterminate fallback) | Wait; never a frozen 0% |
+| `loading` / `transcribing` | Model loading / warming up | Wait |
+| `stalled` | 120–180 s with zero events/progress | Press **Retry** (new attempt, `%` restarts once, then monotonic) |
+| `ready` | Model loaded | Stream |
+| `failed` + code | Provisioning failed (see codes below) | Follow the one-line hint, then Retry |
+
+Failure codes (`provision-*`, one-line remediation, no tracebacks in UI):
+
+| Code | Remediation |
+|---|---|
+| `model-not-found` (real absence only) | Check the model name and retry |
+| `provision-cache-corrupt` | Retry to re-download |
+| `provision-network` | Check your network and retry |
+| `provision-auth` | Check credentials and retry |
+| `provision-disk-full` | Free disk space and retry |
+| `provision-timeout-stalled` | Download took too long — retry |
+| `provision-tls` | Secure connection failed — retry |
+| `provision-unknown` | Unexpected error while preparing the model |
+
+Expected first-download sizes (time ∝ your connection; rough guide at ~50 Mbps:
+`tiny` ~150 MB ≈ 30 s · `base` ~300 MB ≈ 1 min · `small` ~480 MB ≈ 1.5 min ·
+`turbo` ~1.5 GB ≈ 4–5 min · Silero VAD ~2 MB ≈ instant). After that the app works
+fully offline. Service integrators: `asr_state_legacy` collapses these to
+`loading/ready/failed` for OpenCohost compat; a manual retry is a new `attempt`.
 
 ---
 
@@ -255,6 +336,21 @@ Press **Export diagnostics** in the main UI to generate a local JSON report.
 
 ## Contributing
 
+## Unified first-run experience
+
+The current checkpoint is aligning installation and first model preparation
+around one ES/EN checklist: installation selection, uv, LiveAudio code,
+dependencies, opening the app, VAD, Whisper, and ready to start. The handoff
+and phase vocabulary are present, but the full unified UX is not closed: clean
+packaged runtime, review, VM, and manual evidence remain pending. The launcher
+percentage fix is recorded; indeterminate work must never use a simulated
+percentage.
+
+The candidate includes VAD `provision-network`, `provision-tls`, and
+`provision-cache-corrupt` remediation and a conservative retry boundary. Full
+VAD/supervisor integration and no-burst behavior still require supported-runtime
+and manual evidence. No OBS subtitle should be sent during provisioning recovery.
+
 Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
 
 - [Bug Report](https://github.com/plynte-labs/LiveAudio/issues/new?template=bug_report.yml)
@@ -273,7 +369,10 @@ Distributed under the MIT License. See [LICENSE](LICENSE) for details.
 
 ## Credits
 
+- [Tauri](https://tauri.app/)
 - [OpenAI Whisper](https://github.com/openai/whisper)
 - [Faster Whisper](https://github.com/SYSTRAN/faster-whisper)
 - [Silero VAD](https://github.com/snakers4/silero-vad)
+- [ONNX Runtime](https://onnxruntime.ai/)
+- [CPAL (Cross-Platform Audio Library)](https://github.com/RustAudio/cpal)
 - [CustomTkinter](https://github.com/TomSchimansky/CustomTkinter)

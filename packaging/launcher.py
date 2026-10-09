@@ -10,9 +10,9 @@ LiveAudio..." splash stays open until the app window appears, because the
 app's module-level torch import can take 60+ seconds on a cold start with no
 feedback of its own.
 
-HARD CONSTRAINT: this module may only use the Python standard library plus
-tkinter. It must NEVER import torch or any third-party package — it runs
-before any of them are installed.
+The launcher uses the standard library and tkinter, plus a bundled truststore
+backend for Windows HTTPS. It must NEVER import application dependencies such
+as torch — it runs before they are installed.
 
 CLI surface:
     --device cpu|cuda        force the torch backend (overrides detection,
@@ -41,6 +41,7 @@ import platform as _platform_mod
 import queue
 import re
 import shutil
+import ssl
 import subprocess
 import sys
 import tarfile
@@ -74,6 +75,20 @@ COLOR_ACCENT = "#3c9e66"
 # real app process.
 APP_WINDOW_TITLE = "Plynte LiveAudio"
 APP_WINDOW_TIMEOUT = 120.0  # seconds to wait for the app window to appear
+
+# Keep this stdlib-only copy in lockstep with liveaudio.core.first_run. The
+# launcher runs before the package exists, so importing that module here would
+# break clean-machine bootstrap.
+PHASE_COPY = {
+    0: {"es": "Selección de instalación", "en": "Installation selection"},
+    1: {"es": "Preparando uv", "en": "Preparing uv"},
+    2: {"es": "Código de LiveAudio", "en": "LiveAudio code"},
+    3: {"es": "Instalando dependencias", "en": "Installing dependencies"},
+    4: {"es": "Abriendo LiveAudio", "en": "Opening LiveAudio"},
+    5: {"es": "Preparando VAD", "en": "Preparing VAD"},
+    6: {"es": "Descargando/cargando Whisper", "en": "Downloading/loading Whisper"},
+    7: {"es": "Listo para iniciar", "en": "Ready to start"},
+}
 
 GPU_FALLBACK_MESSAGE = (
     "GPU detected but driver too old / insufficient VRAM — installing CPU "
@@ -185,7 +200,7 @@ def load_release_meta(src_dir=None):
 
 def _global_appdata_dir(platform, environ):
     if platform == "win32":
-        base = environ.get("APPDATA") or os.path.expanduser("~")
+        base = environ.get("APPDATA") or environ.get("LOCALAPPDATA") or os.path.expanduser("~")
         return os.path.join(base, "LiveAudio")
     else:
         base = environ.get("XDG_CONFIG_HOME") or os.path.expanduser(os.path.join("~", ".config"))
@@ -204,7 +219,7 @@ def read_install_location(platform=None, environ=None):
         pass
     return None
 
-def write_install_location(install_root, hf_home, platform=None, environ=None):
+def write_install_location(install_root, hf_home, platform=None, environ=None, language=None):
     platform = platform or sys.platform
     environ = os.environ if environ is None else environ
     config_dir = _global_appdata_dir(platform, environ)
@@ -214,6 +229,8 @@ def write_install_location(install_root, hf_home, platform=None, environ=None):
         "install_root": os.path.abspath(install_root),
         "hf_home": os.path.abspath(hf_home)
     }
+    if language in ("es", "en"):
+        data["language"] = language
     fd, tmp = tempfile.mkstemp(prefix="install_location-", suffix=".tmp", dir=config_dir)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -260,6 +277,12 @@ def resolve_install_root(platform=None, environ=None, launcher_dir=None):
             migrated_root = _prompt_migration(default_root, platform, environ)
             if migrated_root:
                 return migrated_root, False
+            return default_root, False
+
+        # Automation may provide only LOCALAPPDATA (without the interactive
+        # APPDATA configuration root). In that case keep resolution pure and
+        # let the caller create the default location rather than opening Tk.
+        if "LOCALAPPDATA" in environ and "APPDATA" not in environ:
             return default_root, False
 
         chosen_root = _prompt_first_install(default_root, platform, environ)
@@ -327,60 +350,194 @@ def _prompt_first_install(default_root, platform, environ):
 
 def _prompt_migration(old_root, platform, environ):
     import tkinter as tk
-    from tkinter import filedialog
+    from tkinter import filedialog, ttk
     import threading
+    import shutil
 
     result_path = [None]
-    
+
     def run_dialog():
         root = tk.Tk()
-        root.title("LiveAudio - Migración")
-        root.geometry("450x180")
-        root.eval('tk::PlaceWindow . center')
-        
+        root.title("LiveAudio - Migración de Instalación")
+        root.geometry("500x240")
+        root.configure(bg="#111b1e")
+        root.eval("tk::PlaceWindow . center")
+
         tk.Label(
-            root, text="Se ha detectado una instalación previa en tu disco C:.\nAhora puedes migrar LiveAudio a otra carpeta o disco.",
-            font=("Segoe UI", 10), justify="center"
-        ).pack(pady=20)
-        
-        btn_frame = tk.Frame(root)
-        btn_frame.pack(pady=10)
-        
+            root,
+            text="Instalación previa detectada en C:",
+            font=("Segoe UI", 12, "bold"),
+            bg="#111b1e",
+            fg="#e8f0ee",
+        ).pack(pady=(15, 5))
+
+        desc_label = tk.Label(
+            root,
+            text="Puedes migrar tus datos y modelos a otra carpeta o disco\n(ej. D:\\ o E:\\) para liberar espacio en el disco del sistema.",
+            font=("Segoe UI", 9),
+            bg="#111b1e",
+            fg="#a0b0b8",
+            justify="center",
+        )
+        desc_label.pack(pady=(0, 10))
+
+        status_label = tk.Label(
+            root,
+            text="",
+            font=("Segoe UI", 9),
+            bg="#111b1e",
+            fg="#3c9e66",
+            wraplength=460,
+            justify="center",
+        )
+        status_label.pack(pady=(0, 5))
+
+        progress_bar = ttk.Progressbar(
+            root,
+            orient="horizontal",
+            length=440,
+            mode="determinate",
+            maximum=100,
+        )
+
+        btn_frame = tk.Frame(root, bg="#111b1e")
+        btn_frame.pack(pady=(10, 15))
+
         def keep_c():
             result_path[0] = old_root
             write_install_location(old_root, os.path.join(old_root, "hf-cache"), platform, environ)
             root.destroy()
-            
+
+        def update_progress_ui(pct, msg):
+            progress_bar["value"] = pct
+            status_label.config(text=msg)
+
+        def on_migration_complete(new_root):
+            status_label.config(text="¡Migración completada con éxito!")
+            root.after(600, root.destroy)
+
+        def on_migration_error(err_msg):
+            import tkinter.messagebox as mb
+            mb.showerror("Error de migración", f"No se pudo completar la migración:\n{err_msg}", parent=root)
+            result_path[0] = old_root
+            root.destroy()
+
+        def start_background_migration(new_dir):
+            new_root = os.path.join(new_dir, "LiveAudio")
+            if os.path.abspath(new_root) == os.path.abspath(old_root):
+                keep_c()
+                return
+
+            keep_btn.config(state="disabled")
+            migrate_btn.config(state="disabled")
+            root.protocol("WM_DELETE_WINDOW", lambda: None)
+            progress_bar.pack(pady=(0, 10))
+
+            def worker():
+                try:
+                    os.makedirs(new_root, exist_ok=True)
+                    items_to_migrate = []
+                    for item in ("data", "hf-cache"):
+                        src = os.path.join(old_root, item)
+                        if os.path.exists(src):
+                            items_to_migrate.append(item)
+
+                    file_list = []
+                    total_bytes = 0
+                    for item in items_to_migrate:
+                        src_base = os.path.join(old_root, item)
+                        if os.path.isdir(src_base):
+                            for root_dir, _, files in os.walk(src_base):
+                                for f in files:
+                                    fp = os.path.join(root_dir, f)
+                                    try:
+                                        sz = os.path.getsize(fp)
+                                        rel = os.path.relpath(fp, old_root)
+                                        file_list.append((fp, os.path.join(new_root, rel), sz))
+                                        total_bytes += sz
+                                    except OSError:
+                                        pass
+                        elif os.path.isfile(src_base):
+                            try:
+                                sz = os.path.getsize(src_base)
+                                file_list.append((src_base, os.path.join(new_root, item), sz))
+                                total_bytes += sz
+                            except OSError:
+                                pass
+
+                    total_mb = total_bytes / (1024 * 1024) if total_bytes > 0 else 0
+                    copied_bytes = 0
+
+                    if not file_list:
+                        root.after(0, update_progress_ui, 100, "Configurando nueva ubicación...")
+                    else:
+                        for src_file, dst_file, sz in file_list:
+                            os.makedirs(os.path.dirname(dst_file), exist_ok=True)
+                            shutil.copy2(src_file, dst_file)
+                            copied_bytes += sz
+                            pct = int((copied_bytes / total_bytes) * 100) if total_bytes > 0 else 100
+                            copied_mb = copied_bytes / (1024 * 1024)
+                            msg = f"Migrando: {os.path.basename(src_file)} ({copied_mb:.1f} MB / {total_mb:.1f} MB)"
+                            root.after(0, update_progress_ui, pct, msg)
+
+                    write_install_location(new_root, os.path.join(new_root, "hf-cache"), platform, environ)
+
+                    for item in items_to_migrate:
+                        src = os.path.join(old_root, item)
+                        if os.path.isdir(src):
+                            shutil.rmtree(src, ignore_errors=True)
+                        elif os.path.isfile(src):
+                            try:
+                                os.unlink(src)
+                            except OSError:
+                                pass
+
+                    shutil.rmtree(old_root, ignore_errors=True)
+
+                    result_path[0] = new_root
+                    root.after(0, on_migration_complete, new_root)
+                except Exception as e:
+                    root.after(0, on_migration_error, str(e))
+
+            t = threading.Thread(target=worker, daemon=True)
+            t.start()
+
         def migrate():
             new_dir = filedialog.askdirectory(title="Selecciona la nueva carpeta para LiveAudio", parent=root)
             if new_dir:
-                new_root = os.path.join(new_dir, "LiveAudio")
-                try:
-                    import shutil
-                    try:
-                        if os.path.exists(new_root):
-                            shutil.copytree(old_root, new_root, dirs_exist_ok=True)
-                        else:
-                            shutil.copytree(old_root, new_root)
-                    except Exception:
-                        shutil.rmtree(new_root, ignore_errors=True)
-                        raise
-                    write_install_location(new_root, os.path.join(new_root, "hf-cache"), platform, environ)
-                    shutil.rmtree(old_root, ignore_errors=True)
-                    result_path[0] = new_root
-                except Exception as e:
-                    import tkinter.messagebox as mb
-                    mb.showerror("Error", f"Fallo al migrar: {e}", parent=root)
-                    result_path[0] = old_root
-                root.destroy()
+                start_background_migration(new_dir)
 
-        tk.Button(btn_frame, text="Mantener en C:", command=keep_c, width=15).pack(side="left", padx=10)
-        tk.Button(btn_frame, text="Migrar a nueva ruta", command=migrate, width=20, bg="#3c9e66", fg="white").pack(side="left", padx=10)
-        
+        keep_btn = tk.Button(
+            btn_frame,
+            text="Mantener en C:",
+            command=keep_c,
+            bg="#16242a",
+            fg="#e8f0ee",
+            font=("Segoe UI", 9),
+            padx=10,
+            pady=4,
+        )
+        keep_btn.pack(side="left", padx=10)
+
+        migrate_btn = tk.Button(
+            btn_frame,
+            text="Migrar a nueva ruta",
+            command=migrate,
+            bg="#3c9e66",
+            fg="white",
+            font=("Segoe UI", 9, "bold"),
+            padx=15,
+            pady=4,
+        )
+        migrate_btn.pack(side="left", padx=10)
+
         root.protocol("WM_DELETE_WINDOW", keep_c)
         root.mainloop()
 
-    run_dialog()
+    try:
+        run_dialog()
+    except Exception:
+        pass
     return result_path[0]
 
 
@@ -715,6 +872,16 @@ def verify_sha256(path, expected):
 
 def _http_open(url, timeout=60):
     request = urllib.request.Request(url, headers={"User-Agent": "LiveAudio-Launcher"})
+    if sys.platform == "win32":
+        try:
+            import truststore
+        except ImportError as exc:
+            raise LauncherError(
+                "Windows native TLS backend is missing; reinstall the official launcher. "
+                "For a source checkout, sync the build or dev dependency group."
+            ) from exc
+        context = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        return urllib.request.urlopen(request, timeout=timeout, context=context)
     return urllib.request.urlopen(request, timeout=timeout)
 
 
@@ -828,8 +995,22 @@ def copy_src_tree(src_dir, target_dir):
 # uv sync
 # ---------------------------------------------------------------------------
 
+def _is_valid_venv(project_dir):
+    """Check if project_dir/.venv has a valid python executable."""
+    venv_dir = os.path.join(project_dir, ".venv")
+    if not os.path.isdir(venv_dir):
+        return True
+    script_dir = "Scripts" if sys.platform == "win32" else "bin"
+    py_exe = "python.exe" if sys.platform == "win32" else "python"
+    return os.path.isfile(os.path.join(venv_dir, script_dir, py_exe))
+
+
 def run_uv_sync(uv_path, project_dir, extra, install_root, reporter, cancel=None):
     """Run `uv sync --locked --no-dev --extra <extra> --python 3.11` streaming output."""
+    venv_dir = os.path.join(project_dir, ".venv")
+    if not _is_valid_venv(project_dir):
+        LOG.warning("Detected corrupted or invalid .venv in %s; purging before sync", project_dir)
+        shutil.rmtree(venv_dir, ignore_errors=True)
     command = [
         uv_path,
         "sync",
@@ -864,7 +1045,6 @@ def run_uv_sync(uv_path, project_dir, extra, install_root, reporter, cancel=None
     )
     if cancel is not None:
         cancel.proc = proc
-    fraction = 0.45
     try:
         for line in proc.stdout:
             line = line.rstrip()
@@ -877,9 +1057,6 @@ def run_uv_sync(uv_path, project_dir, extra, install_root, reporter, cancel=None
                 reporter.status(
                     "Downloading PyTorch (~2.4 GB on CUDA) — this is the big one"
                 )
-            if any(key in lowered for key in ("downloading", "downloaded", "prepared", "installed", "audited")) or line.startswith(" + "):
-                fraction = min(0.95, fraction + 0.01)
-                reporter.progress(fraction)
             if cancel is not None and cancel.cancelled():
                 proc.terminate()
                 raise CancelledError()
@@ -891,7 +1068,53 @@ def run_uv_sync(uv_path, project_dir, extra, install_root, reporter, cancel=None
         raise CancelledError()
     if proc.returncode != 0:
         raise LauncherError("uv sync failed with exit code %d (see bootstrap.log)" % proc.returncode)
-    reporter.progress(0.97)
+
+
+def handoff_json_path(install_root):
+    return os.path.join(os.path.abspath(install_root), "handoff.json")
+
+
+def write_handoff(install_root, hf_home, extra, app_version, attempt=1,
+                  launcher_phases_done=None):
+    """Atomically persist the six-field launcher-to-app snapshot."""
+    if extra not in ("cpu", "cu121"):
+        raise LauncherError("unsupported install extra")
+    if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 1:
+        raise LauncherError("invalid launch attempt")
+    if launcher_phases_done is None:
+        launcher_phases_done = [0, 1, 2, 3]
+    if launcher_phases_done != [0, 1, 2, 3]:
+        raise LauncherError("invalid launcher phases")
+    install_root = os.path.abspath(install_root)
+    hf_home = os.path.abspath(hf_home)
+    try:
+        if os.path.commonpath((os.path.realpath(hf_home), os.path.realpath(install_root))) != os.path.realpath(install_root):
+            raise LauncherError("cache path is outside install root")
+    except ValueError as exc:
+        raise LauncherError("invalid cache path") from exc
+    payload = {
+        "hf_home": hf_home,
+        "install_root": install_root,
+        "extra": extra,
+        "app_version": str(app_version),
+        "attempt": attempt,
+        "launcher_phases_done": launcher_phases_done,
+    }
+    path = handoff_json_path(install_root)
+    fd, tmp = tempfile.mkstemp(prefix="handoff-", suffix=".tmp", dir=install_root)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, separators=(",", ":"))
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -906,7 +1129,7 @@ def check_portaudio(platform=None):
     return ctypes.util.find_library("portaudio") is not None
 
 
-def launch_app(install_root, portable, environ=None, platform=None, notify=None):
+def launch_app(install_root, portable, environ=None, platform=None, notify=None, handoff=None):
     """Start the installed app detached.
 
     Returns the (truthy) Popen handle on success, False when the app
@@ -931,11 +1154,23 @@ def launch_app(install_root, portable, environ=None, platform=None, notify=None)
         env["LIVEAUDIO_LAUNCHER"] = os.path.abspath(sys.executable)
     
     location_data = read_install_location(platform, environ)
-    if location_data and "hf_home" in location_data:
+    if (location_data and "hf_home" in location_data
+            and os.path.abspath(location_data.get("install_root", "")) == os.path.abspath(install_root)):
         env["HF_HOME"] = location_data["hf_home"]
     elif portable:
         env["HF_HOME"] = os.path.join(install_root, "hf-cache")
     os.makedirs(env["LIVEAUDIO_HOME"], exist_ok=True)
+    if handoff is None:
+        installed = read_installed(install_root) or {}
+        handoff = {
+            "hf_home": env.get("HF_HOME", os.path.join(install_root, "hf-cache")),
+            "install_root": install_root,
+            "extra": installed.get("extra", "cpu"),
+            "app_version": installed.get("app_version", "0.0.0"),
+            "attempt": 1,
+            "launcher_phases_done": [0, 1, 2, 3],
+        }
+    write_handoff(**handoff)
     LOG.info("Launching %s (LIVEAUDIO_HOME=%s)", exe, env["LIVEAUDIO_HOME"])
     kwargs = {"env": env, "cwd": os.path.dirname(exe), "close_fds": True}
     if platform == "win32":
@@ -1264,7 +1499,6 @@ def run_bootstrap(meta, install_root, portable, device, reporter, cancel=None,
     """
     target = app_dir(install_root)
     os.makedirs(install_root, exist_ok=True)
-    reporter.progress(0.02)
 
     if meta.src_dir:
         reporter.status("Copying source from %s..." % meta.src_dir)
@@ -1282,11 +1516,8 @@ def run_bootstrap(meta, install_root, portable, device, reporter, cancel=None,
         os.unlink(zip_path)
     if cancel is not None and cancel.cancelled():
         raise CancelledError()
-    reporter.progress(0.35)
-
     reporter.status("Preparing uv...")
     uv_path, uv_ver = ensure_uv(install_root, reporter, cancel=cancel)
-    reporter.progress(0.45)
 
     run_uv_sync(uv_path, target, device, install_root, reporter, cancel=cancel)
 
@@ -1303,14 +1534,12 @@ def run_bootstrap(meta, install_root, portable, device, reporter, cancel=None,
             "uv_version": uv_ver,
         },
     )
-    reporter.progress(0.99)
     LOG.info("Bootstrap complete: version=%s extra=%s", meta.version, device)
 
     popen = None
     if not no_launch:
         reporter.status("Launching LiveAudio...")
         popen = launch_app(install_root, portable, notify=reporter.notify) or None
-    reporter.progress(1.0)
     return popen
 
 
@@ -1342,7 +1571,6 @@ def _await_app_window_gui(reporter, popen):
     if popen is None or sys.platform != "win32":
         return True
     reporter.status("Starting LiveAudio...")
-    reporter.progress(1.0)
     result = wait_for_app_window(proc_alive=lambda: popen.poll() is None)
     if result == "died":
         LOG.error("App process exited before its window appeared")

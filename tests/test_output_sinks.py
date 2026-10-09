@@ -120,12 +120,53 @@ class TestSessionWriterIndependentSinks(unittest.TestCase):
         self.assertIn("#cue:1", vtt_content)
         self.assertIn("#cue:2", vtt_content)
 
+    def test_one_sink_failure_does_not_misreport_other_sink(self):
+        missing_dir = os.path.join(self.temp_dir.name, "missing")
+        writer = SessionWriter(os.path.join(missing_dir, "transcript.jsonl"), self.vtt_path)
+        try:
+            self.assertTrue(writer.write_record(
+                {"id": "one", "text": "one"}, "00:00:00.000", "00:00:01.000", "one", 1,
+                write_transcript=True, write_vtt=True,
+            ))
+            self.assertFalse(writer.flush(timeout_sec=1))
+            outcomes = writer.outcomes()
+            self.assertEqual(outcomes["jsonl"], {"pending": 0, "saved": 0, "rejected": 0, "failed": 1})
+            self.assertEqual(outcomes["vtt"], {"pending": 0, "saved": 1, "rejected": 0, "failed": 0})
+        finally:
+            try:
+                writer.stop(timeout_sec=1)
+            except TypeError:
+                writer.stop()
+
     def test_defaults_write_both_artifacts(self):
         """Callers that pass no flags keep the pre-existing behavior."""
         self._write("legacy", 1)
         self.writer.flush()
         self.assertEqual(len(_read_lines(self.jsonl_path)), 1)
         self.assertIn("legacy", "\n".join(_read_lines(self.vtt_path)))
+
+    def test_successful_sink_writes_record_fixed_stage_metrics(self):
+        import time
+        from liveaudio.core.diagnostics import DiagnosticsStore
+
+        diagnostics = DiagnosticsStore(level="deep")
+        writer = SessionWriter(
+            self.jsonl_path, self.vtt_path, diagnostics_store=diagnostics,
+        )
+        try:
+            writer.write_record(
+                {"id": "safe-id", "text": "safe"}, "00:00:00.000", "00:00:01.000",
+                "safe", 1, write_transcript=True, write_vtt=False,
+                telemetry={"capture_started_monotonic": time.monotonic() - 0.1},
+            )
+            self.assertTrue(writer.flush(timeout_sec=1))
+            snapshot = diagnostics.snapshot_runtime_health()
+        finally:
+            writer.stop(timeout_sec=1)
+
+        self.assertEqual(snapshot["counters"]["asr.jsonl_saved"], 1)
+        self.assertIn("asr.jsonl_write_sec", snapshot["durations"])
+        self.assertIn("asr.jsonl_capture_to_write_sec", snapshot["durations"])
 
 
 class TestSinkConfigDefaults(unittest.TestCase):
@@ -230,6 +271,9 @@ class TestSinkI18nKeys(unittest.TestCase):
             "ws_port_changed_msg",
             "log_ws_port_changed",
             "obs_guide_port_changed",
+            "status_asr_storage_failed",
+            "storage_failure_title",
+            "storage_failure_msg",
         ]
         for key in required:
             for lang in ("es", "en"):
