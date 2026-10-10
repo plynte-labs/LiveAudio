@@ -8,8 +8,12 @@
 
 LiveAudio is a real-time automatic speech recognition (ASR) engine designed for streamers and content creators. It captures audio from your microphone or system, transcribes it locally using **Whisper** (OpenAI), and sends subtitles to **OBS Studio** via **WebSocket**.
 
-**100% local processing — nothing is sent to the cloud.**
+**100% local processing — nothing is sent to the cloud. Python old v1.2.7**
 <img width="1918" height="987" alt="LiveAudio" src="https://github.com/user-attachments/assets/99d629a1-57ba-4fb5-b3a8-44c1b653e9dd" />
+
+***Rust Migration Tauri UI v1.5.0***
+<img width="1917" height="1020" alt="image" src="https://github.com/user-attachments/assets/7b4c167c-9473-4009-836a-c5cb3592b29f" />
+
 
 ---
 
