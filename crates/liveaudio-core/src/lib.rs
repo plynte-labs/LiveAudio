@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 
+pub mod acoustic_events;
 pub mod asr;
 pub mod config;
 pub mod event;

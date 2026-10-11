@@ -11,10 +11,49 @@ use crate::device::enumerate_cpal_devices;
 use crate::error::AudioError;
 use crate::resampler::{mix_multichannel_to_mono, AudioResampler};
 use crate::ring_buffer::create_audio_ring_buffer;
+use crate::rnnoise::RnnoiseProcessor;
 use crate::traits::{AudioBoxFuture, AudioChunkReceiver, AudioSource};
-use crate::types::{AudioDeviceInfo, AudioSourceStatus, AudioStreamConfig};
+use crate::types::{AudioChunk, AudioDeviceInfo, AudioSourceStatus, AudioStreamConfig};
 
 const QUEUE_FULL_WARNING: &str = "Downstream audio queue saturated. Dropped incoming chunk.";
+
+fn handle_stream_error(is_xrun: bool, capture_failed: &AtomicBool) {
+    if !is_xrun {
+        capture_failed.store(true, Ordering::SeqCst);
+    }
+}
+
+fn audio_worker_should_stop(stop: &AtomicBool, capture_failed: &AtomicBool) -> bool {
+    stop.load(Ordering::Relaxed) || capture_failed.load(Ordering::SeqCst)
+}
+
+fn process_captured_chunk(
+    chunk: AudioChunk,
+    processor: &mut Option<RnnoiseProcessor>,
+    capture_failed: &AtomicBool,
+) -> Result<Vec<AudioChunk>, AudioError> {
+    let result = match processor {
+        Some(processor) => processor.process(chunk),
+        None => Ok(vec![chunk]),
+    };
+    if result.is_err() {
+        capture_failed.store(true, Ordering::SeqCst);
+    }
+    result
+}
+
+fn flush_capture_processor(
+    processor: &mut Option<RnnoiseProcessor>,
+) -> Result<Vec<AudioChunk>, AudioError> {
+    match processor {
+        Some(processor) => processor.flush(),
+        None => Ok(Vec::new()),
+    }
+}
+
+fn create_capture_processor(enabled: bool) -> Result<Option<RnnoiseProcessor>, AudioError> {
+    enabled.then(RnnoiseProcessor::new).transpose()
+}
 
 fn play_stream_or_stop_worker<E>(
     play: impl FnOnce() -> Result<(), E>,
@@ -37,6 +76,7 @@ fn play_stream_or_stop_worker<E>(
 /// lock-free SPSC buffer isolation and automatic resampling to 16kHz mono.
 pub struct CpalAudioSource {
     status: AudioSourceStatus,
+    rnnoise_enabled: bool,
     active_stream: Option<cpal::Stream>,
     worker_handle: Option<JoinHandle<()>>,
     stop_signal: Option<Arc<AtomicBool>>,
@@ -52,10 +92,17 @@ impl CpalAudioSource {
     pub fn new() -> Self {
         Self {
             status: AudioSourceStatus::Stopped,
+            rnnoise_enabled: false,
             active_stream: None,
             worker_handle: None,
             stop_signal: None,
         }
+    }
+
+    /// Configure the shared capture worker to apply local RNNoise before VAD.
+    pub fn with_rnnoise_enabled(mut self, enabled: bool) -> Self {
+        self.rnnoise_enabled = enabled;
+        self
     }
 
     /// Locate a CPAL device by ID, distinguishing input vs loopback.
@@ -129,6 +176,7 @@ impl AudioSource for CpalAudioSource {
                 return Err(AudioError::AlreadyRunning);
             }
 
+            let mut rnnoise_processor = create_capture_processor(self.rnnoise_enabled)?;
             self.status = AudioSourceStatus::Initializing;
             let host = cpal::default_host();
 
@@ -169,10 +217,14 @@ impl AudioSource for CpalAudioSource {
             let (mut ring_producer, mut ring_consumer) =
                 create_audio_ring_buffer(capacity_samples, config.chunk_size);
 
+            let capture_failed = Arc::new(AtomicBool::new(false));
+            let callback_capture_failed = Arc::clone(&capture_failed);
             let err_fn = move |err: cpal::Error| {
                 if err.kind() == cpal::ErrorKind::Xrun {
+                    handle_stream_error(true, &callback_capture_failed);
                     debug!("CPAL audio stream buffer glitch (Xrun): {}", err);
                 } else {
+                    handle_stream_error(false, &callback_capture_failed);
                     error!("CPAL audio stream hardware error: {}", err);
                 }
             };
@@ -232,6 +284,7 @@ impl AudioSource for CpalAudioSource {
             let (tx, rx) = mpsc::channel(config.ring_buffer_capacity);
             let stop_flag = Arc::new(AtomicBool::new(false));
             let stop_flag_clone = Arc::clone(&stop_flag);
+            let worker_capture_failed = Arc::clone(&capture_failed);
 
             let chunk_size = config.chunk_size;
             let target_sample_rate = config.sample_rate;
@@ -243,8 +296,9 @@ impl AudioSource for CpalAudioSource {
                         AudioResampler::new(hw_sample_rate, target_sample_rate, chunk_size);
                     let mut read_buf = vec![0.0f32; 4096 * (hw_channels as usize)];
                     let mut mono_buf = Vec::with_capacity(4096);
+                    let mut processing_failed = false;
 
-                    while !stop_flag_clone.load(Ordering::Relaxed) {
+                    while !audio_worker_should_stop(&stop_flag_clone, &worker_capture_failed) {
                         let available = ring_consumer.available_samples();
                         if available == 0 {
                             std::thread::sleep(std::time::Duration::from_millis(5));
@@ -265,16 +319,69 @@ impl AudioSource for CpalAudioSource {
 
                         let chunks = resampler.process_mono_samples(&mono_buf);
                         for chunk in chunks {
-                            // Non-blocking try_send: drop the incoming chunk on saturation
-                            if let Err(mpsc::error::TrySendError::Full(_)) = tx.try_send(chunk) {
-                                warn!("{}", QUEUE_FULL_WARNING);
+                            let processed = match process_captured_chunk(
+                                chunk,
+                                &mut rnnoise_processor,
+                                &worker_capture_failed,
+                            ) {
+                                Ok(processed) => processed,
+                                Err(error) => {
+                                    error!("RNNoise audio processing failed: {}", error);
+                                    processing_failed = true;
+                                    break;
+                                }
+                            };
+                            for output in processed {
+                                // Non-blocking try_send: drop the incoming chunk on saturation.
+                                if let Err(mpsc::error::TrySendError::Full(_)) = tx.try_send(output)
+                                {
+                                    warn!("{}", QUEUE_FULL_WARNING);
+                                }
                             }
                         }
                     }
 
-                    // Flush remaining samples on stop
-                    if let Some(final_chunk) = resampler.flush() {
-                        let _ = tx.try_send(final_chunk);
+                    if !processing_failed {
+                        // Flush the source resampler before draining RNNoise's delayed tail.
+                        if let Some(final_chunk) = resampler.flush() {
+                            match process_captured_chunk(
+                                final_chunk,
+                                &mut rnnoise_processor,
+                                &worker_capture_failed,
+                            ) {
+                                Ok(processed) => {
+                                    for output in processed {
+                                        if let Err(mpsc::error::TrySendError::Full(_)) =
+                                            tx.try_send(output)
+                                        {
+                                            warn!("{}", QUEUE_FULL_WARNING);
+                                        }
+                                    }
+                                }
+                                Err(error) => {
+                                    error!("RNNoise final audio processing failed: {}", error);
+                                    processing_failed = true;
+                                }
+                            }
+                        }
+                    }
+
+                    if !processing_failed {
+                        match flush_capture_processor(&mut rnnoise_processor) {
+                            Ok(processed) => {
+                                for output in processed {
+                                    if let Err(mpsc::error::TrySendError::Full(_)) =
+                                        tx.try_send(output)
+                                    {
+                                        warn!("{}", QUEUE_FULL_WARNING);
+                                    }
+                                }
+                            }
+                            Err(error) => {
+                                error!("RNNoise tail drain failed: {}", error);
+                                worker_capture_failed.store(true, Ordering::SeqCst);
+                            }
+                        }
                     }
                 })
                 .map_err(|e| {
@@ -303,7 +410,7 @@ impl AudioSource for CpalAudioSource {
             self.stop_signal = Some(stop_flag);
             self.status = AudioSourceStatus::Capturing;
 
-            Ok(AudioChunkReceiver::new(rx))
+            Ok(AudioChunkReceiver::with_capture_error(rx, capture_failed))
         })
     }
 
@@ -345,6 +452,129 @@ mod tests {
     #[test]
     fn queue_full_diagnostic_identifies_the_incoming_chunk_as_dropped() {
         assert!(QUEUE_FULL_WARNING.contains("Dropped incoming chunk"));
+    }
+
+    #[test]
+    fn disabled_capture_processing_preserves_the_original_16khz_chunk() {
+        let chunk = AudioChunk {
+            samples: (0..512).map(|sample| sample as f32 / 512.0).collect(),
+            sample_rate: 16_000,
+            channels: 1,
+            timestamp_ns: 123_000,
+            sequence_id: 9,
+        };
+
+        let source = CpalAudioSource::new();
+        let mut processor = create_capture_processor(source.rnnoise_enabled)
+            .expect("disabled capture needs no processor");
+        let capture_failed = AtomicBool::new(false);
+        let output = process_captured_chunk(chunk.clone(), &mut processor, &capture_failed)
+            .expect("disabled processing must pass through");
+
+        assert_eq!(output, vec![chunk]);
+        assert!(!capture_failed.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn enabled_capture_processing_uses_the_shared_processor_and_drains_real_tail() {
+        let source = CpalAudioSource::new().with_rnnoise_enabled(true);
+        let processor = create_capture_processor(source.rnnoise_enabled)
+            .expect("enabled capture processor initializes")
+            .expect("enabled capture owns one processor");
+        let mut processor = Some(processor);
+        let capture_failed = AtomicBool::new(false);
+        let mut output = Vec::new();
+
+        for sequence_id in 0..5 {
+            let chunk = AudioChunk {
+                samples: (0..512)
+                    .map(|sample| {
+                        let index = sequence_id as usize * 512 + sample;
+                        (std::f32::consts::TAU * 440.0 * index as f32 / 16_000.0).sin() * 0.5
+                    })
+                    .collect(),
+                sample_rate: 16_000,
+                channels: 1,
+                timestamp_ns: 1_000_000_000 + sequence_id * 32_000_000,
+                sequence_id,
+            };
+            output.extend(
+                process_captured_chunk(chunk, &mut processor, &capture_failed)
+                    .expect("enabled processor must process captured chunks"),
+            );
+        }
+        output
+            .extend(flush_capture_processor(&mut processor).expect("clean stop drains valid tail"));
+
+        assert_eq!(
+            output
+                .iter()
+                .map(|chunk| chunk.samples.len())
+                .sum::<usize>(),
+            5 * 512
+        );
+        assert!(output.iter().all(|chunk| {
+            chunk.sample_rate == 16_000
+                && chunk.channels == 1
+                && chunk.samples.iter().all(|sample| sample.is_finite())
+        }));
+        assert_eq!(output.first().unwrap().timestamp_ns, 1_000_000_000);
+        assert_eq!(output.last().unwrap().timestamp_ns, 1_128_000_000);
+        assert_eq!(output.first().unwrap().sequence_id, 0);
+        assert_eq!(output.last().unwrap().sequence_id, 4);
+    }
+
+    #[test]
+    fn invalid_enabled_audio_fails_instead_of_falling_back_to_raw_samples() {
+        let mut processor = Some(RnnoiseProcessor::new().expect("built-in model initializes"));
+        let capture_failed = AtomicBool::new(false);
+        let invalid = AudioChunk {
+            samples: vec![f32::NAN; 512],
+            sample_rate: 16_000,
+            channels: 1,
+            timestamp_ns: 1,
+            sequence_id: 0,
+        };
+
+        assert!(process_captured_chunk(invalid, &mut processor, &capture_failed).is_err());
+        assert!(capture_failed.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn fatal_stream_error_terminates_receiver_and_is_not_normal_stop() {
+        let capture_failed = Arc::new(AtomicBool::new(false));
+        let worker_capture_failed = capture_failed.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = stop.clone();
+        let (tx, rx) = mpsc::channel(1);
+        let worker = std::thread::spawn(move || {
+            while !audio_worker_should_stop(&worker_stop, &worker_capture_failed) {
+                std::thread::yield_now();
+            }
+            drop(tx);
+        });
+        let mut receiver = AudioChunkReceiver::with_capture_error(rx, capture_failed.clone());
+
+        handle_stream_error(false, &capture_failed);
+        worker.join().expect("DSP worker exits after stream error");
+
+        assert!(receiver.recv().await.is_none());
+        assert!(receiver.capture_failed());
+    }
+
+    #[test]
+    fn xrun_does_not_mark_capture_as_fatal() {
+        let capture_failed = AtomicBool::new(false);
+        handle_stream_error(true, &capture_failed);
+        assert!(!capture_failed.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn normal_worker_stop_does_not_look_like_capture_failure() {
+        let stop = AtomicBool::new(true);
+        let capture_failed = AtomicBool::new(false);
+        assert!(audio_worker_should_stop(&stop, &capture_failed));
+        assert!(!capture_failed.load(Ordering::SeqCst));
     }
 
     #[test]

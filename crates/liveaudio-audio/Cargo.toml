@@ -15,4 +15,5 @@ tracing.workspace = true
 cpal = "0.18"
 ringbuf = "0.5"
 rubato = "5.0"
+nnnoiseless = { version = "=0.5.2", default-features = false }
 

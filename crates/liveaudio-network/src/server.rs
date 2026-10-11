@@ -18,6 +18,7 @@ use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_util::sync::CancellationToken;
 
+use liveaudio_core::acoustic_events::AcousticSpeechEvent;
 use liveaudio_core::TranscriptionCue;
 
 use crate::error::NetworkError;
@@ -205,6 +206,32 @@ impl WsServer {
         let msg = ThemeWireMessage::new(tokens);
         let json = serde_json::to_string(&msg)?;
         self.broadcast_raw(&json)
+    }
+
+    /// Publish one transient acoustic event to clients connected at this boundary.
+    /// Unlike subtitles, events are never replayed or retried for later clients.
+    pub fn broadcast_acoustic_event(
+        &self,
+        event: &AcousticSpeechEvent,
+    ) -> Result<(), NetworkError> {
+        let payload = serde_json::to_string(event)?;
+        let clients = self.inner.clients.read().unwrap();
+        for tx in clients.values() {
+            if matches!(
+                tx.try_send(payload.clone()),
+                Err(mpsc::error::TrySendError::Full(_))
+            ) {
+                self.inner
+                    .metrics
+                    .backpressure_events
+                    .fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        self.inner
+            .metrics
+            .broadcast_messages_total
+            .fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
 
     /// Broadcast raw JSON text to all connected clients, applying retry buffering on backpressure.
@@ -650,4 +677,58 @@ async fn handle_connection(
             .snapshot(Some(effective_port), inner.start_instant);
         let _ = w.write_atomic(&rep);
     });
+}
+
+#[cfg(test)]
+mod acoustic_event_tests {
+    use super::*;
+
+    #[test]
+    fn a_full_client_queue_drops_acoustic_events_without_retry_or_replay() {
+        let server = WsServer::default();
+        let (tx, mut rx) = mpsc::channel(1);
+        tx.try_send("already queued".to_string()).unwrap();
+        server.inner.clients.write().unwrap().insert(1, tx);
+        let event = AcousticSpeechEvent::SpeechActivityStart {
+            event_version: 1,
+            run_id: "run".into(),
+            attempt_id: 1,
+            utterance_id: "utterance".into(),
+            seq: 2,
+            monotonic_ms: 0,
+        };
+
+        server.broadcast_acoustic_event(&event).unwrap();
+        assert_eq!(rx.try_recv().unwrap(), "already queued");
+
+        let next_event = AcousticSpeechEvent::SpeechActivityStart {
+            event_version: 1,
+            run_id: "run".into(),
+            attempt_id: 1,
+            utterance_id: "utterance".into(),
+            seq: 3,
+            monotonic_ms: 0,
+        };
+        server.broadcast_acoustic_event(&next_event).unwrap();
+        let delivered: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
+        assert_eq!(delivered["seq"], 3);
+
+        assert_eq!(
+            server
+                .inner
+                .metrics
+                .backpressure_events
+                .load(Ordering::SeqCst),
+            1
+        );
+        assert_eq!(
+            server
+                .inner
+                .metrics
+                .retry_buffer_size
+                .load(Ordering::SeqCst),
+            0
+        );
+        assert_eq!(server.pending_replay_len(), 0);
+    }
 }

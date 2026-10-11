@@ -6,6 +6,7 @@ pub mod error;
 pub mod mock;
 pub mod resampler;
 pub mod ring_buffer;
+pub mod rnnoise;
 pub mod traits;
 pub mod types;
 
@@ -20,6 +21,7 @@ pub use ring_buffer::{
     create_audio_ring_buffer, AudioRingConsumer, AudioRingProducer, RingBufferMetrics,
     RingBufferStats,
 };
+pub use rnnoise::RnnoiseProcessor;
 pub use traits::{AudioBoxFuture, AudioChunkReceiver, AudioSource};
 pub use types::{
     AudioChunk, AudioDeviceInfo, AudioSourceStatus, AudioStreamConfig, DEFAULT_CHUNK_SIZE,

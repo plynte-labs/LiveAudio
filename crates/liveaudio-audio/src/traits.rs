@@ -2,6 +2,8 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use crate::error::AudioError;
@@ -12,11 +14,28 @@ pub type AudioBoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// Asynchronous receiver for audio chunks arriving from the real-time capture layer.
 pub struct AudioChunkReceiver {
     receiver: mpsc::Receiver<AudioChunk>,
+    capture_error: Arc<AtomicBool>,
 }
 
 impl AudioChunkReceiver {
     pub fn new(receiver: mpsc::Receiver<AudioChunk>) -> Self {
-        Self { receiver }
+        Self::with_capture_error(receiver, Arc::new(AtomicBool::new(false)))
+    }
+
+    /// Attach the real-time source's fatal-capture signal to the receiver.
+    pub fn with_capture_error(
+        receiver: mpsc::Receiver<AudioChunk>,
+        capture_error: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            receiver,
+            capture_error,
+        }
+    }
+
+    /// Whether stream termination was caused by a fatal capture callback.
+    pub fn capture_failed(&self) -> bool {
+        self.capture_error.load(Ordering::SeqCst)
     }
 
     /// Asynchronously await the next audio chunk from the capture stream.
