@@ -1,10 +1,15 @@
 // SPDX-License-Identifier: MIT
 
-use liveaudio_vad::{SileroVad, VadConfig, VadEngine};
+use liveaudio_vad::{
+    cpu_runtime_library_path, initialize_onnx_runtime, SileroVad, VadConfig, VadEngine,
+};
 use std::time::Instant;
 
 #[test]
 fn bench_silero_vad_onnx_latency() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packaging");
+    let library = cpu_runtime_library_path(root).expect("supported benchmark platform");
+    initialize_onnx_runtime(library).expect("initialize bundled CPU ONNX Runtime");
     let config = VadConfig::default();
     let mut vad = SileroVad::new(config).expect("failed to initialize SileroVad ONNX");
 

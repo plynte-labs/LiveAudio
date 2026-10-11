@@ -44,10 +44,6 @@ pub fn enumerate_cpal_devices() -> Result<Vec<AudioDeviceInfo>, AudioError> {
     let default_input_name = host
         .default_input_device()
         .and_then(|d| d.description().ok().map(|desc| desc.name().to_string()));
-    let default_output_name = host
-        .default_output_device()
-        .and_then(|d| d.description().ok().map(|desc| desc.name().to_string()));
-
     // 1. Enumerate standard input devices (microphones)
     if let Ok(devices) = host.input_devices() {
         for device in devices {
@@ -95,6 +91,10 @@ pub fn enumerate_cpal_devices() -> Result<Vec<AudioDeviceInfo>, AudioError> {
     // On Windows, output devices can be captured via WASAPI Loopback.
     #[cfg(target_os = "windows")]
     {
+        let default_output_name = host
+            .default_output_device()
+            .and_then(|d| d.description().ok().map(|desc| desc.name().to_string()));
+
         if let Ok(devices) = host.output_devices() {
             for device in devices {
                 let name = match device.description() {
@@ -109,7 +109,7 @@ pub fn enumerate_cpal_devices() -> Result<Vec<AudioDeviceInfo>, AudioError> {
                 }
                 seen_keys.insert(dedup_key);
 
-                let is_default = default_output_name.as_deref() == Some(&name);
+                let is_default = loopback_is_default(default_output_name.as_deref(), &name);
                 let mut channels = 2u16;
                 let mut sample_rates = Vec::new();
 
@@ -141,6 +141,11 @@ pub fn enumerate_cpal_devices() -> Result<Vec<AudioDeviceInfo>, AudioError> {
     Ok(result)
 }
 
+#[cfg(any(target_os = "windows", test))]
+fn loopback_is_default(default_output_name: Option<&str>, candidate: &str) -> bool {
+    default_output_name == Some(candidate)
+}
+
 /// Fast query to count available input microphones without initializing full streams.
 pub fn get_input_device_count() -> usize {
     let host = cpal::default_host();
@@ -160,6 +165,13 @@ mod tests {
         let name2 = "Microphone (Realtek Audio)";
         assert_eq!(normalize_device_name(name1), "microphone");
         assert_eq!(normalize_device_name(name2), "microphone");
+    }
+
+    #[test]
+    fn loopback_default_matching_requires_the_os_default_name() {
+        assert!(loopback_is_default(Some("Speakers"), "Speakers"));
+        assert!(!loopback_is_default(Some("Speakers"), "Headphones"));
+        assert!(!loopback_is_default(None, "Speakers"));
     }
 
     #[test]

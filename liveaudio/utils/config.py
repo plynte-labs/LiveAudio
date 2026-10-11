@@ -105,7 +105,7 @@ ASR_DECODE_TIMEOUT_DEFAULT_SEC = 15
 
 DEFAULT_CONFIG = {
     "output_dir": os.path.join(get_data_home(), "sessions"),  # Default sessions dir under the data home
-    "device": "cuda",
+    "device": "cpu",
     "cpu_threads": max(1, mp.cpu_count() // 2),
     "model_size": "small (Balance CPU)",  # Nombres descriptivos por defecto
     "blacklist": "amara.org, subtítulos por, suscríbete, dale like, gracias por ver, memos, gracias, activar la campanita",
@@ -527,18 +527,6 @@ def migrate_install_root(src_root, dst_root):
         except Exception:
             pass
 
-def _apply_cuda_fallback_in_memory(config):
-    """Force device to CPU when CUDA is unavailable. In-memory only, no disk writes."""
-    try:
-        from liveaudio.utils.cuda import cuda_is_available
-        if config.get("device") == "cuda" and not cuda_is_available():
-            config["device"] = "cpu"
-            return True
-    except Exception:
-        pass
-    return False
-
-
 def load_config_readonly():
     """Load config as an in-memory snapshot. NEVER writes to disk.
 
@@ -560,7 +548,6 @@ def load_config_readonly():
     except (OSError, ValueError):
         raw, source, error_code = {}, "defaults-corrupt-file", "config-corrupt-defaults"
     config, _updated = _normalize_config(dict(raw))
-    _apply_cuda_fallback_in_memory(config)
     return config, {"source": source, "error_code": error_code}
 
 def load_config():
@@ -568,7 +555,7 @@ def load_config():
     Carga la configuracion desde config.json.
     Si faltan keys nuevas, las rellena con los defaults (migracion automatica).
     Valida que output_dir sea una ruta normalizada.
-    Auto-detecta GPU: si CUDA no esta disponible, fuerza device a "cpu".
+    Uses CPU for new or missing device choices; saved explicit selections are preserved.
     """
     _migrate_legacy_config()
     locked = _acquire_lock()
@@ -581,9 +568,6 @@ def load_config():
                 config = json.load(f)
 
         config, updated = _normalize_config(config)
-
-        if _apply_cuda_fallback_in_memory(config):
-            updated = True
 
         if updated:
             # La migracion/normalizacion tambien debe persistirse o avisar:

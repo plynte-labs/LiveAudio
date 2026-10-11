@@ -6,6 +6,7 @@ use std::path::Path;
 
 use crate::error::VadError;
 use crate::pre_buffer::PreBuffer;
+use crate::runtime::ensure_onnx_runtime_initialized;
 use crate::traits::VadEngine;
 use crate::types::{SpeechEndReason, VadConfig, VadFrameDecision, VadTransition};
 
@@ -13,7 +14,8 @@ use crate::types::{SpeechEndReason, VadConfig, VadFrameDecision, VadTransition};
 pub const BUNDLED_SILERO_VAD_V6: &[u8] = include_bytes!("../models/silero_vad_v6.onnx");
 
 const CONTEXT_SIZE: usize = 64;
-const LSTM_STATE_SIZE: usize = 128;
+const STATE_SIZE: usize = 2 * 128;
+const SAMPLE_RATE: i64 = 16_000;
 
 /// Concrete Voice Activity Detection engine executing Silero VAD via ONNX Runtime.
 ///
@@ -22,8 +24,7 @@ const LSTM_STATE_SIZE: usize = 128;
 pub struct SileroVad {
     session: Session,
     config: VadConfig,
-    h: Vec<f32>,
-    c: Vec<f32>,
+    state: Vec<f32>,
     context: Vec<f32>,
     is_speaking: bool,
     silence_counter: usize,
@@ -41,6 +42,7 @@ impl SileroVad {
 
     /// Initialize Silero VAD from in-memory ONNX model bytes.
     pub fn from_bytes(model_bytes: &[u8], config: VadConfig) -> Result<Self, VadError> {
+        ensure_onnx_runtime_initialized()?;
         let session = Session::builder()
             .map_err(|e| VadError::InferenceError(format!("Session builder failed: {}", e)))?
             .commit_from_memory(model_bytes)
@@ -53,8 +55,7 @@ impl SileroVad {
         Ok(Self {
             session,
             config,
-            h: vec![0.0f32; LSTM_STATE_SIZE],
-            c: vec![0.0f32; LSTM_STATE_SIZE],
+            state: vec![0.0f32; STATE_SIZE],
             context: vec![0.0f32; CONTEXT_SIZE],
             is_speaking: false,
             silence_counter: 0,
@@ -82,40 +83,34 @@ impl SileroVad {
         let input_tensor = Tensor::from_array(([1, input_vec.len()], input_vec.into_boxed_slice()))
             .map_err(|e| VadError::InferenceError(format!("Input tensor creation error: {}", e)))?;
 
-        let h_tensor =
-            Tensor::from_array(([1, 1, LSTM_STATE_SIZE], self.h.clone().into_boxed_slice()))
-                .map_err(|e| VadError::InferenceError(format!("h tensor creation error: {}", e)))?;
-
-        let c_tensor =
-            Tensor::from_array(([1, 1, LSTM_STATE_SIZE], self.c.clone().into_boxed_slice()))
-                .map_err(|e| VadError::InferenceError(format!("c tensor creation error: {}", e)))?;
+        let state_tensor = Tensor::from_array(([2, 1, 128], self.state.clone().into_boxed_slice()))
+            .map_err(|e| VadError::InferenceError(format!("state tensor creation error: {}", e)))?;
+        let sample_rate_tensor = Tensor::from_array(([1], vec![SAMPLE_RATE].into_boxed_slice()))
+            .map_err(|e| {
+                VadError::InferenceError(format!("sample rate tensor creation error: {}", e))
+            })?;
 
         let outputs = self
             .session
             .run(ort::inputs![
                 "input" => input_tensor,
-                "h" => h_tensor,
-                "c" => c_tensor,
+                "state" => state_tensor,
+                "sr" => sample_rate_tensor,
             ])
             .map_err(|e| VadError::InferenceError(format!("ONNX inference run failed: {}", e)))?;
 
-        let prob_tensor = outputs["speech_probs"]
-            .try_extract_tensor::<f32>()
-            .map_err(|e| {
-                VadError::InferenceError(format!("Failed to extract speech_probs: {}", e))
-            })?;
+        let prob_tensor = outputs[0].try_extract_tensor::<f32>().map_err(|e| {
+            VadError::InferenceError(format!("Failed to extract speech probability: {}", e))
+        })?;
         let speech_prob = prob_tensor.1[0];
 
-        // Update recurrent states
-        let hn_tensor = outputs["hn"]
-            .try_extract_tensor::<f32>()
-            .map_err(|e| VadError::InferenceError(format!("Failed to extract hn: {}", e)))?;
-        let cn_tensor = outputs["cn"]
-            .try_extract_tensor::<f32>()
-            .map_err(|e| VadError::InferenceError(format!("Failed to extract cn: {}", e)))?;
+        // Silero's pinned 16 kHz op15 wrapper returns probability first and the
+        // combined recurrent state second (state shape [2, 1, 128]).
+        let state_output = outputs[1].try_extract_tensor::<f32>().map_err(|e| {
+            VadError::InferenceError(format!("Failed to extract recurrent state: {}", e))
+        })?;
 
-        self.h.copy_from_slice(hn_tensor.1);
-        self.c.copy_from_slice(cn_tensor.1);
+        self.state.copy_from_slice(state_output.1);
 
         // Update context to trailing CONTEXT_SIZE samples of current chunk
         if chunk.len() >= CONTEXT_SIZE {
@@ -208,8 +203,7 @@ impl VadEngine for SileroVad {
     }
 
     fn reset(&mut self) {
-        self.h.fill(0.0);
-        self.c.fill(0.0);
+        self.state.fill(0.0);
         self.context.fill(0.0);
         self.is_speaking = false;
         self.silence_counter = 0;

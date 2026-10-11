@@ -71,6 +71,8 @@ checkpoints/
 *.bin
 *.safetensors
 *.onnx
+!/crates/liveaudio-vad/models/
+!/crates/liveaudio-vad/models/silero_vad_v6.onnx
 
 # Cache de descargas de torch/huggingface dentro del proyecto
 .cache/

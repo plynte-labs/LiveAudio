@@ -3,6 +3,7 @@
 pub mod error;
 pub mod mock;
 pub mod pre_buffer;
+pub mod runtime;
 pub mod silero;
 pub mod traits;
 pub mod types;
@@ -10,6 +11,7 @@ pub mod types;
 pub use error::VadError;
 pub use mock::MockVadEngine;
 pub use pre_buffer::PreBuffer;
+pub use runtime::{cpu_runtime_library_path, initialize_onnx_runtime};
 pub use silero::{SileroVad, BUNDLED_SILERO_VAD_V6};
 pub use traits::VadEngine;
 pub use types::{SpeechEndReason, VadConfig, VadFrameDecision, VadTransition};
@@ -42,5 +44,14 @@ mod tests {
         assert_eq!(drained[1][0], 0.3);
         assert_eq!(drained[2][0], 0.4);
         assert!(pre_buf.is_empty());
+    }
+
+    #[test]
+    fn silero_creation_without_explicit_runtime_returns_an_error_not_a_panic() {
+        let result = SileroVad::new(VadConfig::default());
+        assert!(
+            matches!(result, Err(VadError::RuntimeUnavailable(_))),
+            "VAD construction without app-owned runtime initialization must fail actionably"
+        );
     }
 }

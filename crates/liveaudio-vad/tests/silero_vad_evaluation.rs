@@ -1,12 +1,19 @@
 // SPDX-License-Identifier: MIT
 
 use liveaudio_vad::{
-    MockVadEngine, PreBuffer, SileroVad, SpeechEndReason, VadConfig, VadEngine, VadTransition,
-    BUNDLED_SILERO_VAD_V6,
+    cpu_runtime_library_path, initialize_onnx_runtime, MockVadEngine, PreBuffer, SileroVad,
+    SpeechEndReason, VadConfig, VadEngine, VadTransition, BUNDLED_SILERO_VAD_V6,
 };
+
+fn initialize_test_runtime() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packaging");
+    let library = cpu_runtime_library_path(root).expect("supported test platform");
+    initialize_onnx_runtime(library).expect("initialize bundled CPU ONNX Runtime");
+}
 
 #[test]
 fn test_silero_vad_bundled_model_load_and_silence_inference() {
+    initialize_test_runtime();
     let config = VadConfig::default();
     let mut vad = SileroVad::new(config).expect("load SileroVad");
 
@@ -21,6 +28,7 @@ fn test_silero_vad_bundled_model_load_and_silence_inference() {
 
 #[test]
 fn test_silero_vad_python_parity_inference() {
+    initialize_test_runtime();
     // Python Silero VAD v6 on 512 zeros with 64 zero context outputs exactly 0.02382863
     let config = VadConfig::default();
     let mut vad = SileroVad::from_bytes(BUNDLED_SILERO_VAD_V6, config).expect("load from bytes");
@@ -41,6 +49,7 @@ fn test_silero_vad_python_parity_inference() {
 
 #[test]
 fn test_silero_vad_recurrent_state_preservation_and_reset() {
+    initialize_test_runtime();
     let config = VadConfig::default();
     let mut vad = SileroVad::new(config).expect("load SileroVad");
 
@@ -175,6 +184,7 @@ fn test_max_chunk_duration_guillotine_cap_157_chunks() {
 
 #[test]
 fn test_dynamic_vad_config_update() {
+    initialize_test_runtime();
     let mut vad = SileroVad::new(VadConfig::default()).expect("load vad");
     assert_eq!(vad.config().silence_timeout_ms, 700);
 

@@ -27,11 +27,21 @@ pub fn is_parent_alive(parent_pid: u32) -> bool {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(unix)]
 pub fn is_parent_alive(parent_pid: u32) -> bool {
     if parent_pid == 0 {
         return false;
     }
     // Sending signal 0 checks for process existence without affecting it
     unsafe { libc::kill(parent_pid as i32, 0) == 0 }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::is_parent_alive;
+
+    #[test]
+    fn zero_parent_pid_is_not_alive() {
+        assert!(!is_parent_alive(0));
+    }
 }

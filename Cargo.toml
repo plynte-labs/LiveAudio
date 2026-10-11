@@ -26,6 +26,7 @@ tracing = "0.1"
 tokio = { version = "1", features = ["sync", "time", "macros", "rt-multi-thread", "signal", "process", "io-util", "fs"] }
 tokio-util = "0.7"
 crossbeam-channel = "0.5"
+libc = "0.2"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",

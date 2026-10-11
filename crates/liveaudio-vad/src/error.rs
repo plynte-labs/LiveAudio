@@ -18,4 +18,7 @@ pub enum VadError {
 
     #[error("VAD engine internal state error: {0}")]
     StateError(String),
+
+    #[error("ONNX Runtime CPU library unavailable: {0}")]
+    RuntimeUnavailable(String),
 }
