@@ -3,21 +3,287 @@
 //! Unit tests for LiveAudio Tauri Desktop backend.
 
 use crate::commands::{
+    admit_worker_event_generation, asr_progress_from_worker_event,
+    asr_progress_update_for_worker_event, desktop_runtime_preflight_error,
     get_service_status_internal, persist_config_and_apply, profile_presets, stop_active_websocket,
+    worker_attempt_is_current,
 };
 use crate::dto::*;
 use crate::state::AppState;
+use liveaudio_audio::{AudioChunk, AudioChunkReceiver};
+use liveaudio_core::acoustic_events::{AcousticEventLifecycle, AcousticSpeechEndReason};
 use liveaudio_core::config::LiveAudioConfig;
+use liveaudio_core::runtime::RuntimeError;
 use liveaudio_core::sink::{SinkError, SinkStats, TranscriptionCue, TranscriptionSink};
 use liveaudio_core::supervisor::traits::ServiceSupervisor;
 use liveaudio_core::supervisor::{is_parent_alive, ProcessSupervisor, WorkerProcessConfig};
 use liveaudio_core::AsrTranscriptionResponse;
 use liveaudio_network::{NetworkServer, WsServer, WsServerConfig};
+use liveaudio_vad::VadTransition;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+#[test]
+fn worker_download_progress_keeps_unknown_totals_indeterminate() {
+    let event = serde_json::json!({
+        "event": "download_progress",
+        "payload": {
+            "phase": "downloading",
+            "bytes_downloaded": 1024,
+            "text": "Preparing model",
+            "attempt": 4,
+            "percent": 50.0,
+            "bytes_total": null
+        }
+    });
+    let progress = asr_progress_from_worker_event(&event).expect("progress event");
+    assert_eq!(progress.phase, "downloading");
+    assert_eq!(progress.bytes_downloaded, Some(1024));
+    assert_eq!(progress.bytes_total, None);
+    assert_eq!(progress.percent, None);
+    assert_eq!(progress.attempt, Some(4));
+}
+
+#[test]
+fn worker_download_progress_preserves_observed_percentage_only() {
+    let event = serde_json::json!({
+        "event": "download_progress",
+        "payload": {
+            "phase": "downloading",
+            "bytes_downloaded": 1024,
+            "bytes_total": 4096,
+            "percent": 25.0,
+            "text": "Preparing model",
+            "attempt": 2
+        }
+    });
+    let progress = asr_progress_from_worker_event(&event).expect("progress event");
+    assert_eq!(progress.percent, Some(25.0));
+    assert_eq!(progress.bytes_total, Some(4096));
+}
+
+#[test]
+fn stale_worker_attempt_progress_is_rejected() {
+    assert!(!worker_attempt_is_current(Some(2), Some(3)));
+    assert!(worker_attempt_is_current(Some(3), Some(3)));
+    assert!(worker_attempt_is_current(Some(4), Some(3)));
+    assert!(!worker_attempt_is_current(None, Some(3)));
+}
+
+#[test]
+fn respawn_generation_rejects_late_ready_and_progress_from_previous_worker() {
+    let mut latest = None;
+    let first_started = serde_json::json!({"event":"worker_attempt_started", "attempt_id":11});
+    assert!(!admit_worker_event_generation(&first_started, &mut latest));
+    let first_progress = serde_json::json!({"event":"download_progress", "attempt_id":11});
+    assert!(admit_worker_event_generation(&first_progress, &mut latest));
+
+    let respawn_started = serde_json::json!({"event":"worker_attempt_started", "attempt_id":12});
+    assert!(!admit_worker_event_generation(
+        &respawn_started,
+        &mut latest
+    ));
+    let late_old_ready = serde_json::json!({"event":"ready", "attempt_id":11});
+    let late_old_progress = serde_json::json!({"event":"download_progress", "attempt_id":11});
+    assert!(!admit_worker_event_generation(&late_old_ready, &mut latest));
+    assert!(!admit_worker_event_generation(
+        &late_old_progress,
+        &mut latest
+    ));
+    let current_ready = serde_json::json!({"event":"ready", "attempt_id":12});
+    assert!(admit_worker_event_generation(&current_ready, &mut latest));
+}
+
+#[test]
+fn desktop_managed_runtime_preflight_error_routes_to_repair_ui_not_cli() {
+    let error = RuntimeError::DependenciesUnavailable {
+        details: "No module named faster_whisper".to_string(),
+    };
+    let desktop_message = desktop_runtime_preflight_error(&error);
+
+    assert!(desktop_message.contains("Repair ASR Runtime in Settings"));
+    assert!(!desktop_message.contains("setup-runtime"));
+    assert!(!desktop_message.contains("Run `liveaudio"));
+    assert!(error
+        .to_string()
+        .contains("liveaudio setup-runtime --backend cpu"));
+}
+
+#[test]
+fn worker_ready_event_clears_download_progress() {
+    let event = serde_json::json!({ "event": "ready", "payload": {} });
+    assert_eq!(asr_progress_update_for_worker_event(&event), Some(None));
+}
+
+#[test]
+fn desktop_acoustic_event_adapter_obeys_opt_in_flag_without_audio_hardware() {
+    let server = WsServer::default();
+    let mut lifecycle = AcousticEventLifecycle::new();
+
+    crate::commands::observe_and_publish_acoustic_transition(
+        &mut lifecycle,
+        &server,
+        false,
+        VadTransition::SpeechStart,
+    );
+    assert_eq!(
+        server
+            .metrics()
+            .broadcast_messages_total
+            .load(Ordering::SeqCst),
+        0
+    );
+
+    crate::commands::observe_and_publish_acoustic_transition(
+        &mut lifecycle,
+        &server,
+        true,
+        VadTransition::SpeechStart,
+    );
+    assert_eq!(
+        server
+            .metrics()
+            .broadcast_messages_total
+            .load(Ordering::SeqCst),
+        1
+    );
+
+    crate::commands::close_and_publish_acoustic_attempt(
+        &mut lifecycle,
+        &server,
+        true,
+        AcousticSpeechEndReason::ServiceStopped,
+    );
+    assert_eq!(
+        server
+            .metrics()
+            .broadcast_messages_total
+            .load(Ordering::SeqCst),
+        2
+    );
+    crate::commands::close_and_publish_acoustic_attempt(
+        &mut lifecycle,
+        &server,
+        true,
+        AcousticSpeechEndReason::ServiceStopped,
+    );
+    assert_eq!(
+        server
+            .metrics()
+            .broadcast_messages_total
+            .load(Ordering::SeqCst),
+        2
+    );
+}
+
+#[tokio::test]
+async fn desktop_capture_error_closes_active_acoustic_event_once() {
+    let (tx, rx) = tokio::sync::mpsc::channel(1);
+    drop(tx);
+    let failed = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let mut receiver = AudioChunkReceiver::with_capture_error(rx, failed.clone());
+    assert!(receiver.recv().await.is_none());
+
+    let server = WsServer::default();
+    let mut lifecycle = AcousticEventLifecycle::new();
+    crate::commands::observe_and_publish_acoustic_transition(
+        &mut lifecycle,
+        &server,
+        true,
+        VadTransition::SpeechStart,
+    );
+    crate::commands::close_and_publish_acoustic_attempt(
+        &mut lifecycle,
+        &server,
+        true,
+        crate::commands::audio_receiver_close_reason(&receiver),
+    );
+    crate::commands::close_and_publish_acoustic_attempt(
+        &mut lifecycle,
+        &server,
+        true,
+        crate::commands::audio_receiver_close_reason(&receiver),
+    );
+
+    assert_eq!(
+        server
+            .metrics()
+            .broadcast_messages_total
+            .load(Ordering::SeqCst),
+        2,
+        "capture failure must emit one end after the start"
+    );
+}
+
+#[tokio::test]
+async fn desktop_fatal_capture_discards_queued_would_start_chunk_and_closes_active_once() {
+    let (tx, rx) = tokio::sync::mpsc::channel(2);
+    tx.send(AudioChunk::new(vec![0.5; 512], 16_000, 1, 1))
+        .await
+        .unwrap();
+    tx.send(AudioChunk::new(vec![0.5; 512], 16_000, 1, 2))
+        .await
+        .unwrap();
+    let failed = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let mut receiver = AudioChunkReceiver::with_capture_error(rx, failed);
+    let queued_chunk = receiver.recv().await.expect("queued capture chunk");
+
+    let server = WsServer::default();
+    let mut lifecycle = AcousticEventLifecycle::new();
+    crate::commands::observe_and_publish_acoustic_transition(
+        &mut lifecycle,
+        &server,
+        true,
+        VadTransition::SpeechStart,
+    );
+    let mut close_reason = AcousticSpeechEndReason::ServiceStopped;
+    let mut vad_evaluations = 0;
+    let mut asr_submissions = 0;
+    if crate::commands::capture_error_preempts_audio(&receiver) {
+        close_reason = crate::commands::audio_receiver_close_reason(&receiver);
+    } else {
+        for _frame in queued_chunk.samples.chunks_exact(512) {
+            vad_evaluations += 1;
+            asr_submissions += 1;
+        }
+    }
+    crate::commands::close_and_publish_acoustic_attempt(
+        &mut lifecycle,
+        &server,
+        true,
+        close_reason,
+    );
+    crate::commands::close_and_publish_acoustic_attempt(
+        &mut lifecycle,
+        &server,
+        true,
+        close_reason,
+    );
+
+    assert_eq!(
+        vad_evaluations, 0,
+        "fatal capture must not mutate VAD state"
+    );
+    assert_eq!(
+        asr_submissions, 0,
+        "fatal capture must not submit queued audio"
+    );
+    assert_eq!(
+        server
+            .metrics()
+            .broadcast_messages_total
+            .load(Ordering::SeqCst),
+        2,
+        "active speech gets exactly one end after the start"
+    );
+    assert_eq!(
+        crate::commands::audio_receiver_close_reason(&receiver),
+        AcousticSpeechEndReason::CaptureError
+    );
+}
 
 #[test]
 fn author_profile_opener_uses_the_fixed_github_destination() {
@@ -585,6 +851,8 @@ fn profile_presets_match_python_runtime_values() {
 async fn config_persistence_failure_leaves_runtime_state_unchanged() {
     let mut old_config = LiveAudioConfig::default();
     old_config.subtitle_style = "neon".to_string();
+    old_config.rnnoise_enabled = true;
+    old_config.acoustic_events_enabled = true;
     let state = AppState::new(old_config.clone());
     let reset_config = LiveAudioConfig::default();
 
@@ -596,6 +864,34 @@ async fn config_persistence_failure_leaves_runtime_state_unchanged() {
         "a failed persistence result must not report success"
     );
     assert_eq!(*state.config.read().await, old_config);
+}
+
+#[tokio::test]
+async fn optional_audio_flags_are_persisted_before_runtime_config_update() {
+    let state = AppState::default();
+    let mut config = LiveAudioConfig::default();
+    config.rnnoise_enabled = true;
+    config.acoustic_events_enabled = true;
+    let persisted = Arc::new(Mutex::new(None));
+    let persisted_copy = Arc::clone(&persisted);
+
+    persist_config_and_apply(&state, config.clone(), move |saved| {
+        *persisted_copy.lock().unwrap() = Some(saved.clone());
+        Ok(true)
+    })
+    .await
+    .expect("persist and apply config");
+
+    assert!(persisted.lock().unwrap().as_ref().unwrap().rnnoise_enabled);
+    assert!(
+        persisted
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .acoustic_events_enabled
+    );
+    assert_eq!(*state.config.read().await, config);
 }
 
 #[tokio::test]

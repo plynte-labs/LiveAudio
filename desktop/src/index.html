@@ -81,6 +81,9 @@
             <span id="btn-toggle-service-text" data-i18n="btn_start">Iniciar Transcripción</span>
           </button>
 
+          <button id="btn-runtime-repair" class="btn-secondary" type="button" data-i18n="btn_runtime_repair">Repair ASR Runtime</button>
+          <button id="btn-runtime-cancel" class="btn-secondary" type="button" data-i18n="btn_runtime_cancel" hidden>Cancel setup</button>
+
           <button id="btn-save-config" class="btn-secondary" title="Guardar Cambios" data-i18n-title="title_save_btn">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
@@ -106,6 +109,10 @@
             </svg>
             <span data-i18n="btn_diag">Diagnóstico</span>
           </button>
+        </div>
+        <div id="runtime-setup-progress" class="form-hint" role="progressbar" aria-valuetext="Idle" hidden>
+          <span id="runtime-setup-text"></span>
+          <progress id="runtime-setup-meter" max="100" hidden></progress>
         </div>
 
         <!-- Settings Tabs -->
@@ -204,8 +211,8 @@
                 <div class="form-group">
                   <label for="select-compute-device" data-i18n="lbl_compute_device">Dispositivo de cómputo</label>
                   <select id="select-compute-device" class="form-control">
-                    <option value="cuda" id="device-cuda" data-i18n="opt_cuda" selected>CUDA (GPU Nvidia - Recomendado)</option>
-                    <option value="cpu" id="device-cpu" data-i18n="opt_cpu">CPU (Sin GPU dedicada)</option>
+                    <option value="cuda" id="device-cuda" data-i18n="opt_cuda">CUDA (GPU Nvidia - Recomendado)</option>
+                    <option value="cpu" id="device-cpu" data-i18n="opt_cpu" selected>CPU (Sin GPU dedicada)</option>
                   </select>
                   <span class="form-hint" data-i18n="hint_compute_device">CUDA usa la GPU compatible; CPU es una alternativa si no hay GPU disponible.</span>
                 </div>
@@ -241,6 +248,20 @@
                   <div class="slider-container"><input type="range" id="slider-vad-threshold" min="0.1" max="0.9" step="0.05" value="0.5"><span id="val-vad-threshold" class="slider-value">0.5</span></div>
                   <span class="form-hint" data-i18n="hint_vad_threshold">Un valor mayor requiere una voz más fuerte para activarse.</span>
                 </div>
+              </div>
+              <div class="form-group">
+                <label class="switch-label">
+                  <span class="switch-track"><input type="checkbox" id="check-rnnoise-enabled" class="switch-input" aria-describedby="hint-rnnoise-enabled"><span class="switch-slider"></span></span>
+                  <span data-i18n="lbl_rnnoise_enabled">Local RNNoise noise suppression</span>
+                </label>
+                <span id="hint-rnnoise-enabled" class="form-hint" data-i18n="hint_rnnoise_enabled">When enabled, local RNNoise runs before VAD after the service restarts.</span>
+              </div>
+              <div class="form-group">
+                <label class="switch-label">
+                  <span class="switch-track"><input type="checkbox" id="check-acoustic-events-enabled" class="switch-input" aria-describedby="hint-acoustic-events-enabled"><span class="switch-slider"></span></span>
+                  <span data-i18n="lbl_acoustic_events_enabled">Acoustic speech metadata events</span>
+                </label>
+                <span id="hint-acoustic-events-enabled" class="form-hint" data-i18n="hint_acoustic_events_enabled">VAD start/end events containing metadata only are sent to connected WebSocket clients after restart.</span>
               </div>
               <div class="form-group">
                 <label for="select-backlog-policy" data-i18n="lbl_backlog_policy">Entrega de subtítulos atrasados</label>

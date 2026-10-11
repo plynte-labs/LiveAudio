@@ -8,6 +8,7 @@ use std::time::Instant;
 use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 
+use crate::dto::AsrProgressDto;
 use liveaudio_core::config::LiveAudioConfig;
 use liveaudio_core::sink::CompositeSink;
 use liveaudio_core::supervisor::ProcessSupervisor;
@@ -19,6 +20,7 @@ pub struct AppState {
     pub active_config: Arc<RwLock<Option<LiveAudioConfig>>>,
     pub is_running: Arc<AtomicBool>,
     pub asr_state: Arc<RwLock<String>>,
+    pub asr_progress: Arc<RwLock<Option<AsrProgressDto>>>,
     pub vad_onset: Arc<AtomicBool>,
     pub ws_clients_count: Arc<AtomicUsize>,
     pub active_port: Arc<AtomicU16>,
@@ -31,6 +33,8 @@ pub struct AppState {
     pub session_path: Arc<RwLock<Option<std::path::PathBuf>>>,
     pub session_error: Arc<RwLock<Option<String>>>,
     pub transition_lock: Arc<Mutex<()>>,
+    pub runtime_setup_token: Arc<Mutex<Option<CancellationToken>>>,
+    pub startup_cancel_token: Arc<Mutex<Option<CancellationToken>>>,
 }
 
 impl Default for AppState {
@@ -47,6 +51,7 @@ impl AppState {
             active_config: Arc::new(RwLock::new(None)),
             is_running: Arc::new(AtomicBool::new(false)),
             asr_state: Arc::new(RwLock::new("stopped".to_string())),
+            asr_progress: Arc::new(RwLock::new(None)),
             vad_onset: Arc::new(AtomicBool::new(false)),
             ws_clients_count: Arc::new(AtomicUsize::new(0)),
             active_port: Arc::new(AtomicU16::new(port)),
@@ -59,6 +64,8 @@ impl AppState {
             session_path: Arc::new(RwLock::new(None)),
             session_error: Arc::new(RwLock::new(None)),
             transition_lock: Arc::new(Mutex::new(())),
+            runtime_setup_token: Arc::new(Mutex::new(None)),
+            startup_cancel_token: Arc::new(Mutex::new(None)),
         }
     }
 

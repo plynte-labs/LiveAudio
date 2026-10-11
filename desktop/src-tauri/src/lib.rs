@@ -31,6 +31,8 @@ pub fn run() {
             commands::start_service,
             commands::stop_service,
             commands::restart_service,
+            commands::prepare_asr_runtime,
+            commands::cancel_runtime_setup,
             commands::get_obs_overlay_info,
             commands::export_diagnostics,
             commands::send_test_subtitle,

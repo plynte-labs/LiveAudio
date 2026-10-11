@@ -2,6 +2,13 @@
 
 Este documento detalla todas las modificaciones realizadas durante la auditoría técnica y de seguridad del proyecto LiveAudio, así como la justificación técnica de cada decisión.
 
+## 2026-10-11. Preparación y reparación del runtime ASR en escritorio
+
+* **Cambio:** La aplicación de escritorio puede preparar o reparar el runtime ASR desde Ajustes. La primera preparación usa Python 3.11 y las dependencias bloqueadas, requiere conexión a internet y muestra progreso con opción de cancelación y reintento.
+* **Runtime nativo:** ONNX Runtime CPU y Silero VAD se distribuyen como recursos de la aplicación para Windows/Linux. No se descargan en el inicio; si faltan o no se cargan, repara o reinstala la aplicación, no el runtime Python de ASR.
+* **Dispositivo:** Las configuraciones nuevas usan CPU por defecto y las configuraciones existentes conservan su dispositivo guardado. No se selecciona CUDA automáticamente ni se infiere su disponibilidad a partir del adaptador de video.
+* **Validación:** La compilación y las pruebas locales no demuestran por sí solas una instalación en una máquina virtual limpia, preparación en línea/cancelación en un equipo instalado, ejecución de escritorio Linux o compatibilidad con hardware CUDA; esos flujos siguen pendientes de validación manual.
+
 ## 2026-10-09. Organización de ajustes en el escritorio Tauri
 
 * **Cambio:** La configuración ahora se organiza en Inicio, Subtítulos, Avanzado y Archivos. El encabezado muestra un estado principal y mantiene los indicadores técnicos disponibles en Detalles.

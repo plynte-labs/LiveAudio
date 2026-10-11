@@ -3,14 +3,20 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use liveaudio_audio::traits::AudioSource;
-use liveaudio_audio::{AudioStreamConfig, CpalAudioSource};
+use liveaudio_audio::{AudioChunkReceiver, AudioStreamConfig, CpalAudioSource};
+use liveaudio_core::acoustic_events::{
+    AcousticEventLifecycle, AcousticSpeechEndReason, AcousticSpeechEvent,
+};
 use liveaudio_core::asr::AsrTranscriptionResponse;
 use liveaudio_core::config::{get_data_home, save_config as save_config_core, LiveAudioConfig};
 use liveaudio_core::job_object::JobObject;
-use liveaudio_core::runtime::preflight_asr_runtime;
+use liveaudio_core::runtime::{
+    discover_managed_python, managed_runtime_root, preflight_asr_runtime,
+    provision_runtime_with_uv_cancellable, AsrBackend, RuntimeError, RuntimeSetupProgress,
+};
 use liveaudio_core::sink::{
     CompositeSink, JsonlSink, SinkError, SinkStats, TranscriptionCue, TranscriptionSink, WebVttSink,
 };
@@ -19,11 +25,237 @@ use liveaudio_network::{
     candidate_ports, subtitle_from_worker_result, BacklogPolicy, NetworkServer,
     PendingUtteranceTracker, WsServer, WsServerConfig,
 };
-use liveaudio_vad::{SileroVad, VadConfig, VadEngine, VadTransition};
+use liveaudio_vad::{
+    cpu_runtime_library_path, initialize_onnx_runtime, SileroVad, VadConfig, VadEngine,
+    VadTransition,
+};
+
+fn initialize_bundled_cpu_runtime(app: &AppHandle) -> Result<(), String> {
+    let resource_root = app.path().resource_dir().map_err(|_| {
+        "LiveAudio resource files are unavailable. Repair or reinstall the application.".to_string()
+    })?;
+    let runtime_path = cpu_runtime_library_path(resource_root)
+        .map_err(|_| "LiveAudio's bundled CPU audio runtime is unavailable. Repair or reinstall the application.".to_string())?;
+    initialize_onnx_runtime(runtime_path)
+        .map_err(|_| "LiveAudio's bundled CPU audio runtime could not be loaded. Repair or reinstall the application.".to_string())
+}
+
+pub(crate) fn observe_and_publish_acoustic_transition(
+    lifecycle: &mut AcousticEventLifecycle,
+    server: &WsServer,
+    enabled: bool,
+    transition: VadTransition,
+) {
+    if enabled {
+        if let Some(event) = lifecycle.observe_vad_transition(transition, Instant::now()) {
+            publish_acoustic_event(server, &event);
+        }
+    }
+}
+
+fn publish_acoustic_event(server: &WsServer, event: &AcousticSpeechEvent) {
+    if let Err(error) = server.broadcast_acoustic_event(event) {
+        tracing::warn!("Failed to publish acoustic event: {}", error);
+    }
+}
+
+pub(crate) fn close_and_publish_acoustic_attempt(
+    lifecycle: &mut AcousticEventLifecycle,
+    server: &WsServer,
+    enabled: bool,
+    reason: AcousticSpeechEndReason,
+) {
+    if enabled {
+        if let Some(event) = lifecycle.close_attempt(reason, Instant::now()) {
+            publish_acoustic_event(server, &event);
+        }
+    }
+}
+
+pub(crate) fn audio_receiver_close_reason(
+    receiver: &AudioChunkReceiver,
+) -> AcousticSpeechEndReason {
+    if receiver.capture_failed() {
+        AcousticSpeechEndReason::CaptureError
+    } else {
+        AcousticSpeechEndReason::ServiceStopped
+    }
+}
+
+pub(crate) fn capture_error_preempts_audio(receiver: &AudioChunkReceiver) -> bool {
+    receiver.capture_failed()
+}
+
+pub(crate) fn asr_progress_from_worker_event(value: &serde_json::Value) -> Option<AsrProgressDto> {
+    if value.get("event")?.as_str()? != "download_progress" {
+        return None;
+    }
+    let payload = value.get("payload")?;
+    let bytes_total = payload
+        .get("bytes_total")
+        .and_then(serde_json::Value::as_u64)
+        .filter(|total| *total > 0);
+    let percent = payload
+        .get("percent")
+        .and_then(serde_json::Value::as_f64)
+        .filter(|percent| {
+            bytes_total.is_some() && percent.is_finite() && (0.0..=100.0).contains(percent)
+        });
+    Some(AsrProgressDto {
+        phase: payload
+            .get("phase")
+            .and_then(|v| v.as_str())
+            .unwrap_or("downloading")
+            .to_string(),
+        text: payload
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Preparing the ASR model…")
+            .to_string(),
+        percent,
+        bytes_downloaded: payload
+            .get("bytes_downloaded")
+            .and_then(serde_json::Value::as_u64),
+        bytes_total,
+        speed_bps: payload.get("speed_bps").and_then(serde_json::Value::as_u64),
+        eta_sec: payload
+            .get("eta_sec")
+            .and_then(serde_json::Value::as_f64)
+            .filter(|eta| eta.is_finite() && *eta >= 0.0),
+        attempt: payload
+            .get("attempt")
+            .and_then(serde_json::Value::as_u64)
+            .or_else(|| value.get("attempt_id").and_then(serde_json::Value::as_u64)),
+    })
+}
+
+pub(crate) fn worker_attempt_is_current(incoming: Option<u64>, latest: Option<u64>) -> bool {
+    match (incoming, latest) {
+        (_, None) => true,
+        (Some(incoming), Some(latest)) => incoming >= latest,
+        (None, Some(_)) => false,
+    }
+}
+
+pub(crate) fn admit_worker_event_generation(
+    value: &serde_json::Value,
+    latest_attempt: &mut Option<u64>,
+) -> bool {
+    let event = value.get("event").and_then(serde_json::Value::as_str);
+    let attempt = value
+        .get("payload")
+        .and_then(|payload| payload.get("attempt"))
+        .and_then(serde_json::Value::as_u64)
+        .or_else(|| value.get("attempt_id").and_then(serde_json::Value::as_u64));
+    if event == Some("worker_attempt_started") {
+        if let Some(attempt) = attempt {
+            *latest_attempt = Some(latest_attempt.unwrap_or_default().max(attempt));
+        }
+        return false;
+    }
+    if !worker_attempt_is_current(attempt, *latest_attempt) {
+        return false;
+    }
+    if let Some(attempt) = attempt {
+        *latest_attempt = Some(latest_attempt.unwrap_or_default().max(attempt));
+    }
+    true
+}
+
+pub(crate) fn desktop_runtime_preflight_error(error: &RuntimeError) -> String {
+    match error {
+        RuntimeError::DependenciesUnavailable { .. } => {
+            "The managed ASR Python environment is incomplete or invalid. Use Repair ASR Runtime in Settings to prepare it.".to_string()
+        }
+        _ => format!("ASR runtime check failed. Use Repair ASR Runtime in Settings. Details: {error}"),
+    }
+}
+
+pub(crate) fn asr_progress_update_for_worker_event(
+    value: &serde_json::Value,
+) -> Option<Option<AsrProgressDto>> {
+    match value.get("event")?.as_str()? {
+        "download_progress" => asr_progress_from_worker_event(value).map(Some),
+        "ready" | "error" => Some(None),
+        _ => None,
+    }
+}
+
+async fn forward_startup_worker_event(
+    app: &AppHandle,
+    state: &AppState,
+    value: &serde_json::Value,
+    latest_attempt: &mut Option<u64>,
+) {
+    if !admit_worker_event_generation(value, latest_attempt) {
+        return;
+    }
+    let event_type = value.get("event").and_then(|v| v.as_str()).unwrap_or("");
+    let payload = value.get("payload");
+    let attempt = payload
+        .and_then(|payload| payload.get("attempt"))
+        .and_then(serde_json::Value::as_u64)
+        .or_else(|| value.get("attempt_id").and_then(serde_json::Value::as_u64));
+    if let Some(progress) = asr_progress_update_for_worker_event(value) {
+        *state.asr_progress.write().await = progress;
+    }
+
+    match event_type {
+        "download_progress" => {
+            if let Some(progress) = asr_progress_from_worker_event(value) {
+                *state.asr_state.write().await = progress.phase.clone();
+                *state.asr_progress.write().await = Some(progress);
+            }
+        }
+        "status" => {
+            if let Some(payload) = payload {
+                if let Some(worker_state) = payload.get("state").and_then(|v| v.as_str()) {
+                    *state.asr_state.write().await = worker_state.to_string();
+                    if worker_state == "downloading" {
+                        *state.asr_progress.write().await = Some(AsrProgressDto {
+                            phase: payload
+                                .get("phase")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("downloading")
+                                .to_string(),
+                            text: payload
+                                .get("text")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("Preparing the ASR model…")
+                                .to_string(),
+                            percent: None,
+                            bytes_downloaded: None,
+                            bytes_total: None,
+                            speed_bps: None,
+                            eta_sec: None,
+                            attempt,
+                        });
+                    }
+                }
+            }
+        }
+        "ready" => {
+            *state.asr_state.write().await = "ready".to_string();
+            *state.asr_progress.write().await = None;
+        }
+        "error" => {
+            let code = payload
+                .and_then(|payload| payload.get("code"))
+                .and_then(|value| value.as_str())
+                .unwrap_or("unknown");
+            *state.asr_state.write().await = format!("error: {code}");
+            *state.asr_progress.write().await = None;
+        }
+        _ => return,
+    }
+    if let Ok(status) = get_service_status_internal(state).await {
+        let _ = app.emit("service_status_changed", &status);
+    }
+}
 
 use crate::dto::{
-    AudioDeviceDto, DiagnosticsExportDto, ObsOverlayDto, ProfilePresetDto, ServiceStatusDto,
-    SubtitleCueDto,
+    AsrProgressDto, AudioDeviceDto, DiagnosticsExportDto, ObsOverlayDto, ProfilePresetDto,
+    ServiceStatusDto, SubtitleCueDto,
 };
 use crate::state::AppState;
 
@@ -210,6 +442,7 @@ pub(crate) async fn rollback_failed_audio_start(
     state.is_running.store(false, Ordering::SeqCst);
     state.vad_onset.store(false, Ordering::SeqCst);
     *state.asr_state.write().await = "stopped".to_string();
+    *state.asr_progress.write().await = None;
     *state.start_time.write().await = None;
     state.active_port.store(0, Ordering::SeqCst);
 
@@ -235,6 +468,7 @@ async fn rollback_failed_start_before_audio(
     *state.active_config.write().await = None;
     state.is_running.store(false, Ordering::SeqCst);
     *state.asr_state.write().await = "stopped".to_string();
+    *state.asr_progress.write().await = None;
     error
 }
 
@@ -490,6 +724,7 @@ pub async fn get_service_status_internal(state: &AppState) -> Result<ServiceStat
             }
         },
         session_error,
+        asr_progress: state.asr_progress.read().await.clone(),
     })
 }
 
@@ -506,19 +741,27 @@ pub async fn start_service(
     state: State<'_, AppState>,
 ) -> Result<ServiceStatusDto, String> {
     let _transition_guard = state.transition_lock.lock().await;
-    start_service_locked(&app, state.inner(), false).await
+    let startup_token = tokio_util::sync::CancellationToken::new();
+    *state.startup_cancel_token.lock().await = Some(startup_token.clone());
+    let result = start_service_locked(&app, state.inner(), false, startup_token).await;
+    *state.startup_cancel_token.lock().await = None;
+    result
 }
 
 async fn start_service_locked(
     app: &AppHandle,
     state: &AppState,
     is_restart: bool,
+    startup_token: tokio_util::sync::CancellationToken,
 ) -> Result<ServiceStatusDto, String> {
     if state.is_running.load(Ordering::SeqCst) {
         return get_service_status_internal(state).await;
     }
 
+    initialize_bundled_cpu_runtime(app)?;
+
     *state.asr_state.write().await = "starting".to_string();
+    *state.asr_progress.write().await = None;
     if let Ok(starting_status) = get_service_status_internal(state).await {
         let _ = app.emit("service_status_changed", &starting_status);
     }
@@ -549,6 +792,22 @@ async fn start_service_locked(
     } else {
         &config.whisper_context_prompt_es
     };
+    if discover_managed_python(&managed_runtime_root()).is_none() {
+        let backend = if config.device.eq_ignore_ascii_case("cuda") {
+            AsrBackend::Cu121
+        } else {
+            AsrBackend::Cpu
+        };
+        let runtime_token = startup_token.child_token();
+        if let Err(error) = prepare_managed_runtime(app, state, backend, runtime_token).await {
+            *state.asr_state.write().await = "stopped".to_string();
+            if let Ok(status) = get_service_status_internal(state).await {
+                let _ = app.emit("service_status_changed", &status);
+            }
+            return Err(format!("ASR runtime preparation failed: {error}"));
+        }
+    }
+
     let mut worker_config = WorkerProcessConfig::discover_asr_worker();
     worker_config.init_payload = Some(serde_json::json!({
         "model_name": clean_model_name,
@@ -564,10 +823,19 @@ async fn start_service_locked(
     .await
     {
         *state.asr_state.write().await = "stopped".to_string();
+        let _ = app.emit(
+            "runtime_setup_progress",
+            RuntimeSetupProgress {
+                phase: "error".to_string(),
+                text: "ASR runtime is unavailable. Choose Repair ASR Runtime and retry."
+                    .to_string(),
+                percent: None,
+            },
+        );
         if let Ok(status) = get_service_status_internal(state).await {
             let _ = app.emit("service_status_changed", &status);
         }
-        return Err(error.to_string());
+        return Err(desktop_runtime_preflight_error(&error));
     }
 
     *state.session_error.write().await = None;
@@ -607,6 +875,14 @@ async fn start_service_locked(
         "🐍 Arrancando proceso supervisado Faster-Whisper (timeout handshake: {}s)...",
         worker_config.ready_timeout.as_secs()
     );
+    let _ = app.emit(
+        "runtime_setup_progress",
+        RuntimeSetupProgress {
+            phase: "starting_worker".to_string(),
+            text: "Starting the ASR worker and waiting for it to become ready…".to_string(),
+            percent: None,
+        },
+    );
 
     let mut supervisor = match ProcessSupervisor::new(worker_config, std::process::id(), 0, None) {
         Ok(supervisor) => supervisor,
@@ -624,9 +900,40 @@ async fn start_service_locked(
         }
     };
 
-    let mut worker_events = supervisor.subscribe_worker_events();
+    let mut startup_events = supervisor.subscribe_worker_events();
+    let startup_events_cancel = tokio_util::sync::CancellationToken::new();
+    let startup_events_stop = startup_events_cancel.clone();
+    let app_startup_events = app.clone();
+    let state_startup_events = state.clone();
+    let startup_event_task = tokio::spawn(async move {
+        let mut latest_attempt = None;
+        loop {
+            tokio::select! {
+                _ = startup_events_stop.cancelled() => break,
+                message = startup_events.recv() => match message {
+                    Ok(value) => forward_startup_worker_event(
+                        &app_startup_events,
+                        &state_startup_events,
+                        &value,
+                        &mut latest_attempt,
+                    ).await,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        }
+    });
 
-    if let Err(error) = supervisor.start_internal().await {
+    let start_result = supervisor
+        .start_internal_cancellable(startup_token.clone())
+        .await;
+    startup_events_cancel.cancel();
+    if let Err(error) = startup_event_task.await {
+        tracing::warn!("Startup ASR event dispatcher failed: {error}");
+    }
+
+    if let Err(error) = start_result {
+        *state.asr_progress.write().await = None;
         if let Err(stop_error) = supervisor
             .stop_internal(std::time::Duration::from_secs(2))
             .await
@@ -644,6 +951,10 @@ async fn start_service_locked(
         }
         return Err(err_msg);
     }
+    *state.asr_state.write().await = "ready".to_string();
+    *state.asr_progress.write().await = None;
+    let mut worker_events = supervisor.subscribe_worker_events();
+    let initial_worker_attempt = supervisor.current_worker_attempt();
     let supervisor_arc = Arc::new(supervisor);
     *state.supervisor.lock().await = Some(supervisor_arc.clone());
 
@@ -676,14 +987,19 @@ async fn start_service_locked(
         .clone()
         .unwrap_or_else(|| "auto".to_string());
     let session_started = Instant::now();
+    let initial_worker_attempt = initial_worker_attempt.max(1);
 
     let event_task = tokio::spawn(async move {
+        let mut latest_attempt = Some(initial_worker_attempt);
         loop {
             tokio::select! {
                 _ = cancel_events.cancelled() => break,
                 msg_res = worker_events.recv() => {
                     match msg_res {
                         Ok(val) => {
+                            if !admit_worker_event_generation(&val, &mut latest_attempt) {
+                                continue;
+                            }
                             if let Some(event_type) = val.get("event").and_then(|v| v.as_str()) {
                                 match event_type {
                                     "status" => {
@@ -691,21 +1007,21 @@ async fn start_service_locked(
                                             let text = val.get("payload").and_then(|p| p.get("text")).and_then(|t| t.as_str()).unwrap_or("");
                                             tracing::info!("📡 [ASR Worker Status] {} - {}", st, text);
                                             *state_events.asr_state.write().await = st.to_string();
+                                            if st == "ready" {
+                                                *state_events.asr_progress.write().await = None;
+                                            } else if st == "downloading" {
+                                                forward_startup_worker_event(&app_events, &state_events, &val, &mut latest_attempt).await;
+                                            }
                                             if let Ok(current_status) = get_service_status_internal(&state_events).await {
                                                 let _ = app_events.emit("service_status_changed", &current_status);
                                             }
                                         }
                                     }
                                     "download_progress" => {
-                                        if let Some(payload) = val.get("payload") {
-                                            let text = payload.get("text").and_then(|t| t.as_str()).unwrap_or("Descargando...");
-                                            let pct = payload.get("percent").and_then(|p| p.as_f64());
-                                            let progress_text = match pct {
-                                                Some(p) => format!("Descargando ({:.0}%)", p),
-                                                None => text.to_string(),
-                                            };
-                                            tracing::info!("📥 [ASR Download] {}", progress_text);
-                                            *state_events.asr_state.write().await = progress_text;
+                                        if let Some(progress) = asr_progress_from_worker_event(&val) {
+                                            tracing::info!("📥 [ASR Download] {}", progress.text);
+                                            *state_events.asr_state.write().await = progress.phase.clone();
+                                            *state_events.asr_progress.write().await = Some(progress);
                                             if let Ok(current_status) = get_service_status_internal(&state_events).await {
                                                 let _ = app_events.emit("service_status_changed", &current_status);
                                             }
@@ -714,6 +1030,7 @@ async fn start_service_locked(
                                     "ready" => {
                                         tracing::info!("✅ [ASR Worker Ready] Faster-Whisper inicializado y listo para inferencia");
                                         *state_events.asr_state.write().await = "ready".to_string();
+                                        *state_events.asr_progress.write().await = None;
                                         if let Ok(current_status) = get_service_status_internal(&state_events).await {
                                             let _ = app_events.emit("service_status_changed", &current_status);
                                         }
@@ -724,6 +1041,7 @@ async fn start_service_locked(
                                             let msg = payload.get("message").and_then(|m| m.as_str()).unwrap_or("Unknown error");
                                             tracing::error!("❌ [ASR Worker Error] {}: {}", code, msg);
                                             *state_events.asr_state.write().await = format!("error: {}", code);
+                                            *state_events.asr_progress.write().await = None;
                                             if let Ok(current_status) = get_service_status_internal(&state_events).await {
                                                 let _ = app_events.emit("service_status_changed", &current_status);
                                             }
@@ -835,7 +1153,7 @@ async fn start_service_locked(
         ring_buffer_capacity: 500,
     };
 
-    let mut audio_source = CpalAudioSource::new();
+    let mut audio_source = CpalAudioSource::new().with_rnnoise_enabled(config.rnnoise_enabled);
     let mut audio_rx = match audio_source.start(&stream_config).await {
         Ok(receiver) => receiver,
         Err(error) => {
@@ -846,7 +1164,7 @@ async fn start_service_locked(
                 cancel_token.clone(),
                 ws_created_here,
                 format!(
-                    "Error al inicializar el dispositivo de audio seleccionado: {}",
+                    "Error al inicializar la captura de audio (dispositivo o RNNoise): {}",
                     error
                 ),
             )
@@ -917,6 +1235,8 @@ async fn start_service_locked(
     let state_audio = state.clone();
     let cancel_audio = cancel_token.clone();
     let supervisor_audio = supervisor_arc.clone();
+    let ws_audio = ws_server.clone();
+    let acoustic_events_enabled = config.acoustic_events_enabled;
 
     let pre_buffer_capacity = vad.config().pre_buffer_chunks().max(1);
     let max_samples = (16000.0 * config.max_chunk_duration.ceil()) as usize;
@@ -927,19 +1247,40 @@ async fn start_service_locked(
             VecDeque::with_capacity(pre_buffer_capacity + 1);
         let mut is_in_utterance = false;
         let mut utterance_seq = 0u64;
+        let mut acoustic_lifecycle = AcousticEventLifecycle::new();
+        let mut close_reason = AcousticSpeechEndReason::ServiceStopped;
 
-        loop {
+        'capture: loop {
             tokio::select! {
                 _ = cancel_audio.cancelled() => break,
                 chunk_opt = audio_rx.recv() => {
                     let chunk = match chunk_opt {
-                        Some(c) => c,
-                        None => break,
+                        Some(c) => {
+                            if capture_error_preempts_audio(&audio_rx) {
+                                close_reason = AcousticSpeechEndReason::CaptureError;
+                                break 'capture;
+                            }
+                            c
+                        },
+                        None => {
+                            close_reason = audio_receiver_close_reason(&audio_rx);
+                            break;
+                        },
                     };
 
                     for frame in chunk.samples.chunks_exact(512) {
+                        if capture_error_preempts_audio(&audio_rx) {
+                            close_reason = AcousticSpeechEndReason::CaptureError;
+                            break 'capture;
+                        }
                         match vad.evaluate_chunk(frame) {
                             Ok(decision) => {
+                                observe_and_publish_acoustic_transition(
+                                    &mut acoustic_lifecycle,
+                                    &ws_audio,
+                                    acoustic_events_enabled,
+                                    decision.transition,
+                                );
                                 let prev_onset = state_audio.vad_onset.swap(decision.is_speech, Ordering::SeqCst);
                                 if prev_onset != decision.is_speech {
                                     if let Ok(current_status) = get_service_status_internal(&state_audio).await {
@@ -1027,6 +1368,15 @@ async fn start_service_locked(
             }
         }
 
+        if audio_rx.capture_failed() {
+            close_reason = AcousticSpeechEndReason::CaptureError;
+        }
+        close_and_publish_acoustic_attempt(
+            &mut acoustic_lifecycle,
+            &ws_audio,
+            acoustic_events_enabled,
+            close_reason,
+        );
         let _ = audio_source.stop().await;
     });
 
@@ -1041,7 +1391,97 @@ async fn start_service_locked(
     let _ = app.emit("service_status_changed", &status);
 
     tracing::info!("Pipeline de transcripción iniciado correctamente");
+    let _ = app.emit(
+        "runtime_setup_progress",
+        RuntimeSetupProgress {
+            phase: "ready".to_string(),
+            text: "ASR runtime is ready.".to_string(),
+            percent: Some(100.0),
+        },
+    );
     Ok(status)
+}
+
+async fn prepare_managed_runtime(
+    app: &AppHandle,
+    state: &AppState,
+    backend: AsrBackend,
+    cancellation: tokio_util::sync::CancellationToken,
+) -> Result<(), String> {
+    {
+        let mut active = state.runtime_setup_token.lock().await;
+        if active.is_some() {
+            return Err("ASR runtime preparation is already running".to_string());
+        }
+        *active = Some(cancellation.clone());
+    }
+
+    let setup_result = async {
+        let uv = app
+            .path()
+            .resolve(
+                "packaging/vendor/uv.exe",
+                tauri::path::BaseDirectory::Resource,
+            )
+            .map_err(|error| format!("Bundled uv executable is unavailable: {error}"))?;
+        let worker = WorkerProcessConfig::find_asr_worker_source()
+            .ok_or_else(|| "Bundled ASR worker package is unavailable".to_string())?;
+        let package_root = WorkerProcessConfig::find_package_root(&Some(worker))
+            .ok_or_else(|| "Bundled ASR worker package root is unavailable".to_string())?;
+        let app_events = app.clone();
+        provision_runtime_with_uv_cancellable(
+            &managed_runtime_root(),
+            &package_root,
+            backend,
+            &uv,
+            cancellation,
+            move |progress: RuntimeSetupProgress| {
+                let _ = app_events.emit("runtime_setup_progress", &progress);
+            },
+        )
+        .await
+        .map_err(|error| error.to_string())
+    }
+    .await;
+    *state.runtime_setup_token.lock().await = None;
+    setup_result
+}
+
+/// Prepare or repair the managed ASR environment from the runtime bundled with the desktop app.
+#[tauri::command]
+pub async fn prepare_asr_runtime(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    let _transition_guard = state.transition_lock.lock().await;
+    if state.is_running.load(Ordering::SeqCst) {
+        return Err("Stop the transcription service before repairing its ASR runtime".to_string());
+    }
+    let config = state.config.read().await.clone();
+    let backend = if config.device.eq_ignore_ascii_case("cuda") {
+        AsrBackend::Cu121
+    } else {
+        AsrBackend::Cpu
+    };
+    prepare_managed_runtime(
+        &app,
+        state.inner(),
+        backend,
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+}
+
+/// Cancel active runtime preparation or the startup readiness handshake without taking the transition lock.
+#[tauri::command]
+pub async fn cancel_runtime_setup(state: State<'_, AppState>) -> Result<bool, String> {
+    let mut cancelled = false;
+    if let Some(token) = state.runtime_setup_token.lock().await.as_ref() {
+        token.cancel();
+        cancelled = true;
+    }
+    if let Some(token) = state.startup_cancel_token.lock().await.as_ref() {
+        token.cancel();
+        cancelled = true;
+    }
+    Ok(cancelled)
 }
 
 pub(crate) async fn send_audio_command_until_cancelled(
@@ -1075,6 +1515,7 @@ async fn stop_service_locked(
     }
 
     *state.asr_state.write().await = "stopping".to_string();
+    *state.asr_progress.write().await = None;
     if let Ok(stopping_status) = get_service_status_internal(state).await {
         let _ = app.emit("service_status_changed", &stopping_status);
     }
@@ -1160,10 +1601,17 @@ pub async fn restart_service(
     state: State<'_, AppState>,
 ) -> Result<ServiceStatusDto, String> {
     let _transition_guard = state.transition_lock.lock().await;
+    let startup_token = tokio_util::sync::CancellationToken::new();
+    *state.startup_cancel_token.lock().await = Some(startup_token.clone());
     if state.is_running.load(Ordering::SeqCst) {
-        stop_service_locked(&app, state.inner()).await?;
+        if let Err(error) = stop_service_locked(&app, state.inner()).await {
+            *state.startup_cancel_token.lock().await = None;
+            return Err(error);
+        }
     }
-    start_service_locked(&app, state.inner(), true).await
+    let result = start_service_locked(&app, state.inner(), true, startup_token).await;
+    *state.startup_cancel_token.lock().await = None;
+    result
 }
 
 #[tauri::command]

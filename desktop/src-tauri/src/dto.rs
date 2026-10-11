@@ -28,6 +28,19 @@ pub struct ServiceStatusDto {
     pub restart_count: usize,
     pub session_path: Option<String>,
     pub session_error: Option<String>,
+    pub asr_progress: Option<AsrProgressDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AsrProgressDto {
+    pub phase: String,
+    pub text: String,
+    pub percent: Option<f64>,
+    pub bytes_downloaded: Option<u64>,
+    pub bytes_total: Option<u64>,
+    pub speed_bps: Option<u64>,
+    pub eta_sec: Option<f64>,
+    pub attempt: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

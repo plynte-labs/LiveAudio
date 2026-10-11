@@ -20,6 +20,24 @@ export interface ServiceStatus {
   restart_count: number;
   session_path: string | null;
   session_error: string | null;
+  asr_progress: AsrProgress | null;
+}
+
+export interface AsrProgress {
+  phase: string;
+  text: string;
+  percent: number | null;
+  bytes_downloaded: number | null;
+  bytes_total: number | null;
+  speed_bps: number | null;
+  eta_sec: number | null;
+  attempt: number | null;
+}
+
+export interface RuntimeSetupProgress {
+  phase: 'starting' | 'sync' | 'publishing' | 'starting_worker' | 'ready' | 'error';
+  text: string;
+  percent: number | null;
 }
 
 export interface ProfilePreset {
@@ -56,6 +74,8 @@ export interface LiveAudioConfig {
   profile_mode: 'preset' | 'custom';
   ws_port: number;
   obs_enabled: boolean;
+  rnnoise_enabled: boolean;
+  acoustic_events_enabled: boolean;
   prewarm: boolean;
   save_transcript_enabled: boolean;
   save_vtt_enabled: boolean;

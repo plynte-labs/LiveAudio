@@ -42,11 +42,13 @@
     "publisher": "franguh",
     "copyright": "Copyright (c) 2026 franguh",
     "resources": {
+      "../../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
       "../../liveaudio/*.py": "liveaudio",
       "../../liveaudio/assets/*": "liveaudio/assets",
       "../../liveaudio/core/*.py": "liveaudio/core",
       "../../liveaudio/service/*.py": "liveaudio/service",
-      "../../liveaudio/utils/*.py": "liveaudio/utils"
+      "../../liveaudio/utils/*.py": "liveaudio/utils",
+      "../../packaging/vendor/uv.exe": "packaging/vendor/uv.exe"
     },
     "windows": {
       "nsis": {

@@ -111,6 +111,67 @@ mod bounded_stop_tests {
     use std::time::{Duration, Instant};
 
     #[tokio::test]
+    async fn cancelling_startup_reaps_worker_while_waiting_for_ready() {
+        use std::time::SystemTime;
+        use tokio_util::sync::CancellationToken;
+
+        let unique = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let pid_file = std::env::temp_dir().join(format!(
+            "liveaudio-start-cancel-{}-{unique}.pid",
+            std::process::id()
+        ));
+        let mut config = WorkerProcessConfig::default();
+        config.name = "cancelled-start-worker".to_string();
+        config.command = "python".to_string();
+        config.args = vec![
+            "-u".to_string(),
+            "-c".to_string(),
+            "import os,sys,time; open(sys.argv[1], 'w').write(str(os.getpid())); time.sleep(60)"
+                .to_string(),
+            pid_file.to_string_lossy().to_string(),
+        ];
+        config.ready_timeout = Duration::from_secs(30);
+        config.auto_respawn = false;
+        let mut supervisor = ProcessSupervisor::new(config, std::process::id(), 0, None)
+            .expect("supervisor creation");
+        let cancellation = CancellationToken::new();
+        let cancel_task = {
+            let cancellation = cancellation.clone();
+            let pid_file = pid_file.clone();
+            tokio::spawn(async move {
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while !pid_file.exists() {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                })
+                .await
+                .expect("worker writes pid before cancellation");
+                let pid = std::fs::read_to_string(&pid_file)
+                    .expect("worker pid")
+                    .parse::<u32>()
+                    .expect("numeric pid");
+                cancellation.cancel();
+                pid
+            })
+        };
+
+        let result = supervisor.start_internal_cancellable(cancellation).await;
+        let pid = cancel_task.await.expect("cancel task");
+        assert!(matches!(
+            result,
+            Err(super::super::error::SupervisorError::Cancelled)
+        ));
+        assert!(
+            !super::super::is_parent_alive(pid),
+            "cancel must reap the worker"
+        );
+        let _ = std::fs::remove_file(pid_file);
+    }
+
+    #[tokio::test]
     async fn shutdown_deadline_includes_a_saturated_nonreading_worker_command_queue() {
         let mut config = WorkerProcessConfig::default();
         config.name = "nonreading-worker".to_string();
@@ -466,6 +527,7 @@ pub struct ProcessSupervisor {
     restart_count: Arc<AtomicUsize>,
     is_shutting_down: Arc<AtomicBool>,
     shutdown_complete: Arc<AtomicBool>,
+    worker_attempt: Arc<AtomicU64>,
     start_time: Instant,
     supervisor_loop_handle: Option<tokio::task::JoinHandle<()>>,
     worker_event_tx: tokio::sync::broadcast::Sender<serde_json::Value>,
@@ -481,6 +543,8 @@ impl ProcessSupervisor {
     ) -> std::io::Result<Self> {
         let job_object = Arc::new(JobObject::create()?);
         let event_bus = Arc::new(EventBus::default());
+        // This is a bounded event stream: consumers use progress as latest state,
+        // not a lossless history of every download sample.
         let (worker_event_tx, _) = tokio::sync::broadcast::channel(1024);
         let state_machine = Arc::new(Mutex::new(HealthStateMachine::new(
             service_pid,
@@ -508,6 +572,7 @@ impl ProcessSupervisor {
             restart_count: Arc::new(AtomicUsize::new(0)),
             is_shutting_down: Arc::new(AtomicBool::new(false)),
             shutdown_complete: Arc::new(AtomicBool::new(false)),
+            worker_attempt: Arc::new(AtomicU64::new(0)),
             start_time: Instant::now(),
             supervisor_loop_handle: None,
             worker_event_tx,
@@ -517,6 +582,11 @@ impl ProcessSupervisor {
     /// Subscribe to raw events emitted by the child worker over stdout (e.g. transcription_result, status).
     pub fn subscribe_worker_events(&self) -> tokio::sync::broadcast::Receiver<serde_json::Value> {
         self.worker_event_tx.subscribe()
+    }
+
+    /// Returns the generation assigned to the most recently spawned worker process.
+    pub fn current_worker_attempt(&self) -> u64 {
+        self.worker_attempt.load(Ordering::SeqCst)
     }
 
     /// Attach an external event bus.
@@ -584,13 +654,21 @@ impl ProcessSupervisor {
         service_pid: u32,
         parent_pid: u32,
         worker_event_tx: &tokio::sync::broadcast::Sender<serde_json::Value>,
+        attempt_id: u64,
+        cancellation: Option<&CancellationToken>,
     ) -> Result<ActiveChild, SupervisorError> {
+        let _ = worker_event_tx.send(serde_json::json!({
+            "event": "worker_attempt_started",
+            "attempt_id": attempt_id,
+        }));
         let mut cmd = Command::new(&config.command);
         cmd.args(&config.args);
         cmd.envs(&config.envs);
         cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
+        #[cfg(windows)]
+        crate::runtime::apply_no_console_to_tokio(&mut cmd);
 
         if let Some(ref dir) = config.working_dir {
             cmd.current_dir(dir);
@@ -755,13 +833,14 @@ impl ProcessSupervisor {
         let init_cmd = serde_json::json!({
             "version": 1,
             "cmd": "init",
+            "attempt_id": attempt_id,
             "timestamp_ms": now_millis(),
             "payload": init_payload,
         });
         let _ = cmd_tx.send(init_cmd.to_string()).await;
 
         // Await ready handshake with timeout
-        let handshake_res = tokio::time::timeout(config.ready_timeout, async {
+        let handshake = async {
             if is_ready.load(Ordering::SeqCst) {
                 return Ok(());
             }
@@ -771,9 +850,10 @@ impl ProcessSupervisor {
                     name: config.name.clone(),
                     reason: "Child exited prematurely before sending ready event".to_string(),
                 }),
+                _ = async { if let Some(token) = cancellation { token.cancelled().await } } => Err(SupervisorError::Cancelled),
             }
-        })
-        .await;
+        };
+        let handshake_res = tokio::time::timeout(config.ready_timeout, handshake).await;
 
         match handshake_res {
             Ok(Ok(())) => {
@@ -782,6 +862,9 @@ impl ProcessSupervisor {
             }
             Ok(Err(e)) => {
                 kill_notify.notify_waiters();
+                if matches!(&e, SupervisorError::Cancelled) {
+                    wait_for_child_exit(&exited, &exit_notify).await;
+                }
                 return Err(e);
             }
             Err(_) => {
@@ -853,6 +936,15 @@ impl ProcessSupervisor {
 
     /// Spawns and supervises the child process, handling auto-respawn and backoff.
     pub async fn start_internal(&mut self) -> Result<(), SupervisorError> {
+        self.start_internal_cancellable(CancellationToken::new())
+            .await
+    }
+
+    /// Starts the worker with a caller-owned cancellation token for the ready handshake.
+    pub async fn start_internal_cancellable(
+        &mut self,
+        cancellation: CancellationToken,
+    ) -> Result<(), SupervisorError> {
         if self.active_child.lock().await.is_some() {
             return Ok(());
         }
@@ -869,6 +961,8 @@ impl ProcessSupervisor {
             self.service_pid,
             self.parent_pid,
             &self.worker_event_tx,
+            self.worker_attempt.fetch_add(1, Ordering::SeqCst) + 1,
+            Some(&cancellation),
         )
         .await?;
 
@@ -889,6 +983,7 @@ impl ProcessSupervisor {
             let service_pid = self.service_pid;
             let parent_pid = self.parent_pid;
             let worker_event_tx = self.worker_event_tx.clone();
+            let worker_attempt = self.worker_attempt.clone();
 
             let handle = tokio::spawn(async move {
                 let mut current_exit_notify = exit_notify;
@@ -950,6 +1045,8 @@ impl ProcessSupervisor {
                                 service_pid,
                                 parent_pid,
                                 &worker_event_tx,
+                                worker_attempt.fetch_add(1, Ordering::SeqCst) + 1,
+                                None,
                             ).await {
                                 Ok(new_child) => {
                                     current_exit_notify = new_child.exit_notify.clone();
@@ -1123,6 +1220,8 @@ impl ServiceSupervisor for ProcessSupervisor {
                 self.service_pid,
                 self.parent_pid,
                 &self.worker_event_tx,
+                self.worker_attempt.fetch_add(1, Ordering::SeqCst) + 1,
+                None,
             )
             .await?;
 
@@ -1136,6 +1235,12 @@ impl ServiceSupervisor for ProcessSupervisor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_worker_processes_use_create_no_window() {
+        assert_eq!(crate::runtime::windows_no_console_flag(), 0x0800_0000);
+    }
 
     #[test]
     fn test_worker_process_config_discovery() {

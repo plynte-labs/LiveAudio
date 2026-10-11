@@ -1,6 +1,7 @@
 use liveaudio_core::runtime::{
     discover_managed_python, discover_managed_worker, discover_uv_in, managed_python,
-    preflight_asr_runtime, provision_runtime_with_uv, AsrBackend,
+    preflight_asr_runtime, provision_runtime_with_uv, provision_runtime_with_uv_cancellable,
+    AsrBackend, RuntimeSetupProgress,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -121,6 +122,59 @@ fn provisioning_can_refresh_an_existing_managed_worker_tree() {
 }
 
 #[tokio::test]
+async fn provisioning_refresh_ignores_stale_previous_backup_and_preserves_its_contents() {
+    use tokio_util::sync::CancellationToken;
+
+    let root = test_root("stale-previous-backup");
+    let managed_root = root.join("managed");
+    let stale_backup = managed_root.with_file_name("managed.previous");
+    let package_source = root.join("source");
+    fs::create_dir_all(package_source.join("liveaudio/service")).unwrap();
+    fs::write(package_source.join("liveaudio/__init__.py"), "# fixture\n").unwrap();
+    fs::write(
+        package_source.join("liveaudio/service/asr_worker.py"),
+        "# worker\n",
+    )
+    .unwrap();
+    fs::create_dir_all(managed_root.join("liveaudio/service")).unwrap();
+    fs::write(
+        managed_root.join("liveaudio/__init__.py"),
+        "# prior package\n",
+    )
+    .unwrap();
+    fs::write(
+        managed_root.join("liveaudio/service/asr_worker.py"),
+        "# prior worker\n",
+    )
+    .unwrap();
+    fs::create_dir_all(&stale_backup).unwrap();
+    fs::write(stale_backup.join("sentinel.txt"), "preserve-stale-backup").unwrap();
+    let fake_uv = root.join("uv-success.cmd");
+    write_fake_uv_for_project(&fake_uv, &root);
+
+    provision_runtime_with_uv_cancellable(
+        &managed_root,
+        &package_source,
+        AsrBackend::Cpu,
+        &fake_uv,
+        CancellationToken::new(),
+        |_| {},
+    )
+    .await
+    .expect("repair should publish despite an unrelated stale backup");
+
+    assert!(managed_root
+        .join("liveaudio/service/asr_worker.py")
+        .exists());
+    assert!(managed_root.join(".venv").is_dir());
+    assert_eq!(
+        fs::read_to_string(stale_backup.join("sentinel.txt")).unwrap(),
+        "preserve-stale-backup"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn missing_asr_imports_return_actionable_setup_guidance_without_setup() {
     let root = test_root("preflight");
     fs::create_dir_all(&root).unwrap();
@@ -136,6 +190,153 @@ async fn missing_asr_imports_return_actionable_setup_guidance_without_setup() {
     assert!(!root.join("pyproject.toml").exists());
     assert!(!root.join(".venv").exists());
     fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn cancellable_provisioning_publishes_only_a_complete_runtime() {
+    use tokio_util::sync::CancellationToken;
+
+    let root = test_root("cancel-preserves-runtime");
+    let package_source = root.join("source");
+    let project_root = root.join("managed");
+    let fake_uv = root.join("uv-success.cmd");
+    fs::create_dir_all(package_source.join("liveaudio/service")).unwrap();
+    fs::write(package_source.join("liveaudio/__init__.py"), "# fixture\n").unwrap();
+    fs::write(
+        package_source.join("liveaudio/service/asr_worker.py"),
+        "# worker\n",
+    )
+    .unwrap();
+    fs::create_dir_all(project_root.join("liveaudio/service")).unwrap();
+    fs::write(project_root.join("existing-runtime.marker"), "preserve me").unwrap();
+    write_fake_uv_for_project(&fake_uv, &root);
+
+    let progress = std::sync::Arc::new(std::sync::Mutex::new(Vec::<RuntimeSetupProgress>::new()));
+    let progress_copy = progress.clone();
+    provision_runtime_with_uv_cancellable(
+        &project_root,
+        &package_source,
+        AsrBackend::Cpu,
+        &fake_uv,
+        CancellationToken::new(),
+        move |event| progress_copy.lock().unwrap().push(event),
+    )
+    .await
+    .unwrap();
+
+    assert!(project_root.join(".venv").is_dir());
+    assert!(project_root.join("pyproject.toml").is_file());
+    assert!(project_root
+        .join("liveaudio/service/asr_worker.py")
+        .is_file());
+    assert!(progress
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|event| event.phase == "sync"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn cancelling_uv_sync_reaps_child_and_preserves_previous_runtime() {
+    use tokio_util::sync::CancellationToken;
+
+    let root = test_root("cancel-running-uv");
+    let package_source = root.join("source");
+    let project_root = root.join("managed");
+    let fake_uv = root.join("uv-hang.cmd");
+    let started_marker = root.join("uv-started");
+    fs::create_dir_all(package_source.join("liveaudio/service")).unwrap();
+    fs::write(package_source.join("liveaudio/__init__.py"), "# fixture\n").unwrap();
+    fs::write(
+        package_source.join("liveaudio/service/asr_worker.py"),
+        "# worker\n",
+    )
+    .unwrap();
+    fs::create_dir_all(project_root.join(".venv")).unwrap();
+    fs::write(project_root.join("existing-runtime.marker"), "preserve me").unwrap();
+    fs::write(
+        &fake_uv,
+        format!(
+            "@echo off\r\necho started > \"{}\"\r\n:wait\r\ngoto wait\r\n",
+            started_marker.display()
+        ),
+    )
+    .unwrap();
+
+    let cancellation = CancellationToken::new();
+    let cancel_task = cancellation.clone();
+    let runtime_root = project_root.clone();
+    let source_root = package_source.clone();
+    let uv_path = fake_uv.clone();
+    let setup = tokio::spawn(async move {
+        provision_runtime_with_uv_cancellable(
+            &runtime_root,
+            &source_root,
+            AsrBackend::Cpu,
+            &uv_path,
+            cancel_task,
+            |_| {},
+        )
+        .await
+    });
+
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !started_marker.is_file() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("fake uv should start promptly");
+    cancellation.cancel();
+    let error = tokio::time::timeout(std::time::Duration::from_secs(5), setup)
+        .await
+        .expect("cancelled setup should reap its child")
+        .unwrap()
+        .expect_err("cancelled setup must not publish a runtime");
+
+    assert!(error.to_string().to_lowercase().contains("cancel"));
+    assert_eq!(
+        fs::read_to_string(project_root.join("existing-runtime.marker")).unwrap(),
+        "preserve me"
+    );
+    assert!(project_root.join(".venv").is_dir());
+
+    let retry_uv = root.join("uv-retry.cmd");
+    write_fake_uv_for_project(&retry_uv, &root);
+    provision_runtime_with_uv_cancellable(
+        &project_root,
+        &package_source,
+        AsrBackend::Cpu,
+        &retry_uv,
+        CancellationToken::new(),
+        |_| {},
+    )
+    .await
+    .expect("a later retry should publish a complete runtime");
+    assert!(project_root.join(".venv").is_dir());
+    assert!(project_root
+        .join("liveaudio/service/asr_worker.py")
+        .is_file());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(windows)]
+fn write_fake_uv_for_project(path: &Path, _root: &Path) {
+    fs::write(
+        path,
+        "@echo off\r\nif not exist \"%~3\\.venv\" mkdir \"%~3\\.venv\"\r\nexit /b 0\r\n",
+    )
+    .unwrap();
+}
+
+#[cfg(not(windows))]
+fn write_fake_uv_for_project(path: &Path, _root: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    fs::write(path, "#!/bin/sh\nmkdir -p \"$3/.venv\"\n").unwrap();
+    let mut permissions = fs::metadata(path).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path, permissions).unwrap();
 }
 
 #[cfg(windows)]

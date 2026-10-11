@@ -23,7 +23,9 @@ No necesitas Python instalado: el instalador aprovisiona su propio Python 3.11.
 1. Descarga la última versión desde [GitHub Releases](https://github.com/plynte-labs/LiveAudio/releases):
    - **Windows:** `LiveAudio-Setup-X.Y.Z.exe`
    - **Linux:** `LiveAudio-X.Y.Z-linux-x64.tar.gz` (extrae y ejecuta `./liveaudio-launcher`)
-2. Ejecútalo. La **primera ejecución** descarga Python y todas las dependencias (~400 MB en CPU, ~2.5 GB con CUDA) y detecta tu GPU automáticamente. Las siguientes ejecuciones arrancan al instante.
+2. Ejecútalo. Al iniciar ASR por primera vez, LiveAudio prepara Python 3.11 y las dependencias bloqueadas del runtime; esta preparación requiere conexión a internet y muestra el progreso en la interfaz. Puedes cancelarla y reintentarla después. Si el runtime necesita repararse, usa **Reparar runtime ASR** en Ajustes.
+
+El runtime nativo CPU de ONNX y el modelo Silero VAD están incluidos en los recursos de la aplicación para Windows y Linux; no se descargan durante el inicio. Si esos archivos de la aplicación faltan o no se pueden cargar, repara o reinstala LiveAudio. **Reparar runtime ASR** corresponde al entorno Python y no puede reemplazar los archivos nativos del instalador.
 
 ### Opción B: Desde el código fuente (desarrolladores)
 
@@ -71,14 +73,9 @@ uv run liveaudio
 
 Al iniciar por primera vez, se creará automáticamente un archivo `config.json` con valores predeterminados en la carpeta de datos: `%LOCALAPPDATA%\LiveAudio\data` (Windows) o `~/.local/share/liveaudio/data` (Linux) en instalaciones con launcher; `%APPDATA%\LiveAudio` o `~/.config/liveaudio` en ejecuciones de desarrollo. Puedes cambiar la ubicación con la variable de entorno `LIVEAUDIO_HOME`.
 
-### Detección automática de GPU
+### Dispositivo de cómputo
 
-LiveAudio detecta automáticamente si tenés GPU NVIDIA al iniciar:
-
-- **GPU disponible** → usa `cuda` por defecto.
-- **Sin GPU** → cambia automáticamente a `cpu`.
-
-No necesitás configurar nada manualmente. Si querés forzar un dispositivo distinto, podés cambiarlo en la pestaña **Modelo y Hardware**.
+Las configuraciones nuevas usan CPU de forma segura. LiveAudio conserva el dispositivo guardado en configuraciones existentes, pero no selecciona CUDA automáticamente ni confirma su disponibilidad mediante el nombre del adaptador. Si tu sistema tiene una instalación CUDA compatible, puedes elegirla manualmente en **Avanzado**; si no, selecciona CPU.
 
 ---
 

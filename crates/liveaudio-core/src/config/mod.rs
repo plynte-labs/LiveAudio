@@ -188,6 +188,12 @@ pub struct LiveAudioConfig {
     #[serde(default = "default_true")]
     pub obs_enabled: bool,
 
+    #[serde(default)]
+    pub rnnoise_enabled: bool,
+
+    #[serde(default)]
+    pub acoustic_events_enabled: bool,
+
     #[serde(default = "default_true")]
     pub prewarm: bool,
 
@@ -239,7 +245,7 @@ fn default_output_dir() -> PathBuf {
     get_data_home().join("sessions")
 }
 fn default_device() -> String {
-    "cuda".to_string()
+    "cpu".to_string()
 }
 fn default_model_size() -> String {
     "small (Balance CPU)".to_string()
@@ -329,6 +335,8 @@ impl Default for LiveAudioConfig {
             profile_mode: default_profile_mode(),
             ws_port: default_ws_port(),
             obs_enabled: true,
+            rnnoise_enabled: false,
+            acoustic_events_enabled: false,
             prewarm: true,
             save_transcript_enabled: true,
             save_vtt_enabled: true,
@@ -770,13 +778,40 @@ mod tests {
     #[test]
     fn test_default_config_fields() {
         let cfg = LiveAudioConfig::default();
-        assert_eq!(cfg.device, "cuda");
+        assert_eq!(cfg.device, "cpu");
         assert_eq!(cfg.ws_port, 8765);
         assert_eq!(cfg.subtitle_style, "default");
         assert_eq!(cfg.subtitle_display_mode, "adaptive");
         assert_eq!(cfg.subtitle_ribbon_max_lines, 3);
         assert_eq!(cfg.vad_speech_pad_ms, 200);
         assert_eq!(cfg.vad_threshold, 0.5);
+        assert!(!cfg.rnnoise_enabled);
+        assert!(!cfg.acoustic_events_enabled);
+    }
+
+    #[test]
+    fn persisted_cuda_choice_survives_deserialization_and_normalization() {
+        let mut config: LiveAudioConfig =
+            serde_json::from_str(r#"{"device":"cuda"}"#).expect("saved config");
+        assert_eq!(config.device, "cuda");
+        config.normalize();
+        assert_eq!(config.device, "cuda");
+    }
+
+    #[test]
+    fn optional_audio_flags_default_off_for_legacy_and_round_trip_when_explicit() {
+        let legacy: LiveAudioConfig = serde_json::from_str("{}").expect("legacy config");
+        assert!(!legacy.rnnoise_enabled);
+        assert!(!legacy.acoustic_events_enabled);
+
+        let mut config = LiveAudioConfig::default();
+        config.rnnoise_enabled = true;
+        config.acoustic_events_enabled = false;
+        let serialized = serde_json::to_string(&config).expect("serialize config");
+        let restored: LiveAudioConfig =
+            serde_json::from_str(&serialized).expect("deserialize config");
+        assert!(restored.rnnoise_enabled);
+        assert!(!restored.acoustic_events_enabled);
     }
 
     #[test]
@@ -792,7 +827,7 @@ mod tests {
 
         assert!(cfg.normalize());
 
-        assert_eq!(cfg.device, "cuda");
+        assert_eq!(cfg.device, "cpu");
         assert_eq!(cfg.ws_port, 8765);
         assert_eq!(cfg.subtitle_ribbon_max_lines, 8);
         assert_eq!(cfg.silence_timeout, 2.0);

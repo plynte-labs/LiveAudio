@@ -71,6 +71,12 @@ function mockInvoke(cmd, args) {
     case 'save_config':
       return Promise.resolve(true);
 
+    case 'prepare_asr_runtime':
+      return Promise.resolve();
+
+    case 'cancel_runtime_setup':
+      return Promise.resolve(true);
+
     case 'get_profile_presets':
       return Promise.resolve([
         { id: 'fast', label: 'Rápido', description: 'Menos demora y frases cortas; baja un poco la precisión.', device: 'cpu', model_size: 'base (Rápido)', silence_timeout: 0.4, subtitle_backlog_policy: 'live_only', subtitle_max_live_delay_sec: 5, subtitle_catchup_interval_sec: 0.8 },
@@ -220,6 +226,11 @@ const elements = {
   pillHw: document.getElementById('pill-hw'),
   btnToggleService: document.getElementById('btn-toggle-service'),
   btnToggleServiceText: document.getElementById('btn-toggle-service-text'),
+  btnRuntimeRepair: document.getElementById('btn-runtime-repair'),
+  btnRuntimeCancel: document.getElementById('btn-runtime-cancel'),
+  runtimeSetupProgress: document.getElementById('runtime-setup-progress'),
+  runtimeSetupText: document.getElementById('runtime-setup-text'),
+  runtimeSetupMeter: document.getElementById('runtime-setup-meter'),
   btnSaveConfig: document.getElementById('btn-save-config'),
   btnResetConfig: document.getElementById('btn-reset-config'),
   btnExportDiag: document.getElementById('btn-export-diag'),
@@ -261,6 +272,8 @@ const elements = {
   checkContinuous: document.getElementById('check-continuous'),
   checkSaveTranscript: document.getElementById('check-save-transcript'),
   checkSaveVtt: document.getElementById('check-save-vtt'),
+  checkRnnoiseEnabled: document.getElementById('check-rnnoise-enabled'),
+  checkAcousticEventsEnabled: document.getElementById('check-acoustic-events-enabled'),
   sessionPath: document.getElementById('session-path'),
   sessionError: document.getElementById('session-error'),
   btnOpenSessionFolder: document.getElementById('btn-open-session-folder'),
@@ -351,10 +364,24 @@ let serviceActionPendingMode = null; // 'starting' | 'stopping'
 function updateStatusUI(status) {
   currentStatus = status;
 
+  if (status.asr_progress) {
+    setRuntimeSetupProgress({
+      phase: 'downloading',
+      text: status.asr_progress.text,
+      percent: status.asr_progress.percent,
+    });
+  } else if (['ready', 'listening', 'stopped'].includes(status.asr_state)) {
+    setRuntimeSetupProgress({ phase: 'ready', text: '', percent: null });
+  } else if (status.asr_state && status.asr_state.startsWith('error')) {
+    setRuntimeSetupProgress({ phase: 'error', text: status.asr_state, percent: null });
+  }
+
   // Master Toggle Button - Real-time state handling & anti-race conditions
   const isTransitioning = isServiceActionPending
     || status.asr_state === 'starting'
     || status.asr_state === 'stopping'
+    || status.asr_state === 'downloading'
+    || Boolean(status.asr_progress)
     || (status.asr_state && status.asr_state.startsWith('Descargando'));
 
   if (isTransitioning) {
@@ -384,11 +411,12 @@ function updateStatusUI(status) {
 
   // ASR State Pill
   const state = status.asr_state || (status.is_running ? 'listening' : 'stopped');
-  const cssState = state.startsWith('error') ? 'failed' : state.startsWith('Descargando') ? 'starting' : state;
+  const cssState = state.startsWith('error') ? 'failed' : (state.startsWith('Descargando') || state === 'downloading') ? 'starting' : state;
   elements.pillStatus.className = `pill state-${cssState}`;
   const stateLabels = {
     stopped: t('status_stopped'),
     starting: t('status_starting'),
+    downloading: t('status_downloading'),
     ready: t('status_ready'),
     listening: t('status_listening'),
     transcribing: t('status_transcribing'),
@@ -568,7 +596,7 @@ function populateForm(config, updateSavedBaseline = true) {
 
   // Audio & Hardware compute device
   if (elements.selectComputeDevice) {
-    elements.selectComputeDevice.value = config.device || 'cuda';
+    elements.selectComputeDevice.value = config.device || 'cpu';
   } else if (config.device === 'cuda') {
     if (elements.deviceRadioCuda) elements.deviceRadioCuda.checked = true;
   } else {
@@ -624,6 +652,8 @@ function populateForm(config, updateSavedBaseline = true) {
   elements.checkContinuous.checked = Boolean(config.continuous_session);
   elements.checkSaveTranscript.checked = Boolean(config.save_transcript_enabled);
   elements.checkSaveVtt.checked = Boolean(config.save_vtt_enabled);
+  elements.checkRnnoiseEnabled.checked = Boolean(config.rnnoise_enabled);
+  elements.checkAcousticEventsEnabled.checked = Boolean(config.acoustic_events_enabled);
   elements.selectProfile.value = config.profile_mode === 'custom' ? 'custom' : (config.selected_profile_id || 'balanced');
   elements.sliderCatchupInterval.value = config.subtitle_catchup_interval_sec || 1.5;
   elements.valCatchupInterval.textContent = `${config.subtitle_catchup_interval_sec || 1.5}s`;
@@ -720,6 +750,8 @@ function collectFormData() {
   cfg.continuous_session = elements.checkContinuous.checked;
   cfg.save_transcript_enabled = elements.checkSaveTranscript.checked;
   cfg.save_vtt_enabled = elements.checkSaveVtt.checked;
+  cfg.rnnoise_enabled = elements.checkRnnoiseEnabled.checked;
+  cfg.acoustic_events_enabled = elements.checkAcousticEventsEnabled.checked;
   cfg.selected_profile_id = elements.selectProfile.value;
   cfg.profile_mode = elements.selectProfile.value === 'custom' ? 'custom' : 'preset';
   const selectedPreset = profilePresets.find((profile) => profile.id === elements.selectProfile.value);
@@ -979,6 +1011,26 @@ async function initApp() {
     }
   });
 
+  elements.btnRuntimeRepair.addEventListener('click', async () => {
+    try {
+      setRuntimeSetupProgress({ phase: 'starting', text: t('runtime_setup_starting'), percent: null });
+      await invoke('prepare_asr_runtime');
+      setRuntimeSetupProgress({ phase: 'ready', text: t('runtime_setup_ready'), percent: 100 });
+      showToast(t('runtime_setup_ready'));
+    } catch (error) {
+      setRuntimeSetupProgress({ phase: 'error', text: String(error), percent: null });
+      showToast(`${t('status_error')}: ${error}`, true);
+    }
+  });
+
+  elements.btnRuntimeCancel.addEventListener('click', async () => {
+    try {
+      await invoke('cancel_runtime_setup');
+    } catch (error) {
+      showToast(`${t('status_error')}: ${error}`, true);
+    }
+  });
+
   // Save Config Button
   elements.btnSaveConfig.addEventListener('click', async () => {
     await withProcessing(elements.btnSaveConfig, async () => {
@@ -1102,6 +1154,10 @@ async function initApp() {
 
   // Subscribe to Tauri events safely
   try {
+    await listen('runtime_setup_progress', (event) => {
+      if (event && event.payload) setRuntimeSetupProgress(event.payload);
+    });
+
     await listen('service_status_changed', (event) => {
       if (event && event.payload) {
         updateStatusUI(event.payload);
@@ -1124,6 +1180,30 @@ async function initApp() {
       updateStatusUI(status);
     } catch (_) {}
   }, 1000);
+}
+
+function setRuntimeSetupProgress(progress) {
+  if (!elements.runtimeSetupProgress || !progress) return;
+  const phase = String(progress.phase || 'preparing');
+  const text = String(progress.text || phase);
+  const percent = Number.isFinite(progress.percent) ? Math.max(0, Math.min(100, progress.percent)) : null;
+  elements.runtimeSetupProgress.hidden = phase === 'ready';
+  elements.runtimeSetupText.textContent = text;
+  const isPreparing = ['starting', 'sync', 'publishing', 'starting_worker', 'downloading'].includes(phase);
+  const startupFailed = phase === 'error' && !currentStatus.is_running;
+  elements.btnRuntimeCancel.hidden = !isPreparing && !startupFailed;
+  elements.btnRuntimeRepair.disabled = isPreparing;
+  if (percent === null) {
+    elements.runtimeSetupMeter.removeAttribute('value');
+    elements.runtimeSetupMeter.hidden = false;
+    elements.runtimeSetupProgress.removeAttribute('aria-valuenow');
+    elements.runtimeSetupProgress.setAttribute('aria-valuetext', text);
+  } else {
+    elements.runtimeSetupMeter.value = percent;
+    elements.runtimeSetupMeter.hidden = false;
+    elements.runtimeSetupProgress.setAttribute('aria-valuenow', String(percent));
+    elements.runtimeSetupProgress.setAttribute('aria-valuetext', `${Math.round(percent)}%`);
+  }
 }
 
 // Start application when DOM is ready

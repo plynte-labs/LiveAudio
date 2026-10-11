@@ -287,6 +287,76 @@ async fn test_mock_worker_bounded_respawn_and_backoff() {
 }
 
 #[tokio::test]
+async fn respawn_sends_a_new_attempt_id_in_each_worker_init() {
+    let (tmp_dir, _script_path) = create_mock_worker_script();
+    let script_path = tmp_dir.join("attempt_worker.py");
+    let attempts_path = tmp_dir.join("attempts.txt");
+    let script = format!(
+        r#"import json, os, sys, time
+attempts_path = r"{}"
+count_path = attempts_path + ".count"
+msg = json.loads(sys.stdin.readline())
+attempt_id = msg.get("attempt_id")
+with open(attempts_path, "a", encoding="utf-8") as out:
+    out.write(f"{{attempt_id}}\n")
+run = int(open(count_path).read()) + 1 if os.path.exists(count_path) else 1
+open(count_path, "w").write(str(run))
+print(json.dumps({{"event":"ready", "attempt_id":attempt_id, "payload":{{"device":"cpu"}}}}), flush=True)
+if run == 1:
+    time.sleep(0.1)
+    sys.exit(77)
+time.sleep(30)
+"#,
+        attempts_path.display()
+    );
+    std::fs::write(&script_path, script).unwrap();
+
+    let mut config = WorkerProcessConfig::default();
+    config.name = "attempt-generation-worker".to_string();
+    config.command = "python".to_string();
+    config.args = vec!["-u".into(), script_path.to_string_lossy().into_owned()];
+    config.ready_timeout = Duration::from_secs(5);
+    config.watchdog_interval = Duration::from_secs(10);
+    config.watchdog_timeout = Duration::from_secs(30);
+    config.base_backoff = Duration::from_millis(20);
+    config.max_backoff = Duration::from_millis(40);
+    config.auto_respawn = true;
+
+    let mut supervisor = ProcessSupervisor::new(config, std::process::id(), 0, None).unwrap();
+    supervisor
+        .start()
+        .await
+        .expect("first worker becomes ready");
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if std::fs::read_to_string(&attempts_path)
+                .map(|attempts| attempts.lines().count() >= 2)
+                .unwrap_or(false)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("supervisor respawns and sends second init");
+    let attempts = std::fs::read_to_string(&attempts_path).unwrap();
+    let attempts: Vec<u64> = attempts.lines().map(|line| line.parse().unwrap()).collect();
+    assert_eq!(attempts.len(), 2);
+    assert!(attempts[0] > 0, "first worker init must carry a generation");
+    assert!(
+        attempts[1] > attempts[0],
+        "respawn generation must increase"
+    );
+
+    supervisor
+        .stop(Duration::from_secs(1))
+        .await
+        .expect("stop respawned worker");
+    let _ = std::fs::remove_dir_all(tmp_dir);
+}
+
+#[tokio::test]
 async fn test_mock_worker_max_failures_exceeded_fails_fast() {
     // Respawn policy: verify that > 3 failures in 300s window fails fast
     let mut tracker = liveaudio_core::supervisor::RespawnTracker::new(

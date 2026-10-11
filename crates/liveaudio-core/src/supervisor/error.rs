@@ -4,6 +4,8 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum SupervisorError {
+    #[error("Worker startup was cancelled")]
+    Cancelled,
     #[error(
         "Child failure threshold exceeded ({count} crashes in {window_sec:.1}s), failing fast"
     )]

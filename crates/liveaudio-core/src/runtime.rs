@@ -108,12 +108,40 @@ pub enum RuntimeError {
     UvFailed { status: String, details: String },
     #[error("ASR dependency preflight exceeded {0} seconds")]
     ProbeTimedOut(u64),
+    #[error("ASR runtime preparation was cancelled")]
+    Cancelled,
     #[error("ASR runtime is not ready ({details}). Run `liveaudio setup-runtime --backend cpu` or choose `cu121` for NVIDIA CUDA 12.1.")]
     DependenciesUnavailable { details: String },
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct RuntimeSetupProgress {
+    pub phase: String,
+    pub text: String,
+    pub percent: Option<f64>,
+}
+
 pub fn managed_runtime_root() -> PathBuf {
     crate::config::get_data_home().join(MANAGED_RUNTIME_DIR)
+}
+
+#[cfg(windows)]
+pub(crate) const fn windows_no_console_flag() -> u32 {
+    0x0800_0000
+}
+
+#[cfg(windows)]
+pub(crate) fn apply_no_console_to_tokio(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    command
+        .as_std_mut()
+        .creation_flags(windows_no_console_flag());
+}
+
+#[cfg(windows)]
+fn apply_no_console_to_std(command: &mut std::process::Command) {
+    use std::os::windows::process::CommandExt;
+    command.creation_flags(windows_no_console_flag());
 }
 
 pub fn managed_python(root: &Path) -> PathBuf {
@@ -235,6 +263,151 @@ pub fn provision_runtime_with_uv(
     Ok(())
 }
 
+/// Stage and publish a managed runtime without damaging the current one if setup is cancelled.
+pub async fn provision_runtime_with_uv_cancellable<F>(
+    root: &Path,
+    package_source_root: &Path,
+    backend: AsrBackend,
+    uv_executable: &Path,
+    cancellation: tokio_util::sync::CancellationToken,
+    mut report: F,
+) -> Result<(), RuntimeError>
+where
+    F: FnMut(RuntimeSetupProgress) + Send,
+{
+    if !package_source_root.join("liveaudio").is_dir() {
+        return Err(RuntimeError::PackageSourceMissing);
+    }
+
+    let staged_root = setup_staging_root(root);
+    let _staging_cleanup = StagingCleanup(staged_root.clone());
+    fs::create_dir_all(&staged_root)?;
+    fs::write(staged_root.join("pyproject.toml"), PYPROJECT_TOML)?;
+    fs::write(staged_root.join("uv.lock"), UV_LOCK)?;
+    copy_package_tree(
+        &package_source_root.join("liveaudio"),
+        &staged_root.join("liveaudio"),
+    )?;
+    report(RuntimeSetupProgress {
+        phase: "sync".to_string(),
+        text: "Downloading Python and ASR dependencies. This may take several minutes.".to_string(),
+        percent: None,
+    });
+
+    let args = [
+        "sync".to_string(),
+        "--project".to_string(),
+        staged_root.to_string_lossy().into_owned(),
+        "--locked".to_string(),
+        "--no-install-project".to_string(),
+        "--no-dev".to_string(),
+        "--extra".to_string(),
+        backend.extra().to_string(),
+        "--python".to_string(),
+        "3.11".to_string(),
+    ];
+    let mut child = command_for(uv_executable, &args)
+        .current_dir(&staged_root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()?;
+    let mut heartbeat = tokio::time::interval_at(
+        tokio::time::Instant::now() + std::time::Duration::from_secs(15),
+        std::time::Duration::from_secs(15),
+    );
+    let status = loop {
+        tokio::select! {
+            status = child.wait() => break status?,
+            _ = cancellation.cancelled() => {
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+                return Err(RuntimeError::Cancelled);
+            }
+            _ = heartbeat.tick() => report(RuntimeSetupProgress {
+                phase: "sync".to_string(),
+                text: "Still preparing Python and ASR dependencies…".to_string(),
+                percent: None,
+            }),
+        }
+    };
+    if !status.success() {
+        return Err(RuntimeError::UvFailed {
+            status: status
+                .code()
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "terminated".to_string()),
+            details: "dependency preparation did not complete; retry or use Repair ASR Runtime"
+                .to_string(),
+        });
+    }
+
+    report(RuntimeSetupProgress {
+        phase: "publishing".to_string(),
+        text: "Finalizing the prepared ASR runtime…".to_string(),
+        percent: None,
+    });
+    publish_staged_runtime(&staged_root, root)?;
+    report(RuntimeSetupProgress {
+        phase: "ready".to_string(),
+        text: "ASR runtime is ready.".to_string(),
+        percent: Some(100.0),
+    });
+    Ok(())
+}
+
+fn setup_staging_root(root: &Path) -> PathBuf {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let name = root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("asr-runtime");
+    root.with_file_name(format!("{name}.setup-{}-{stamp}", std::process::id()))
+}
+
+fn publish_staged_runtime(staged_root: &Path, root: &Path) -> Result<(), RuntimeError> {
+    let Some(parent) = root.parent() else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "managed runtime root has no parent directory",
+        )
+        .into());
+    };
+    fs::create_dir_all(parent)?;
+    if !root.exists() {
+        fs::rename(staged_root, root)?;
+        return Ok(());
+    }
+
+    let staged_name = setup_staging_root(root);
+    let backup_root = staged_name.with_file_name(format!(
+        "{}.previous",
+        staged_name
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("asr-runtime.setup")
+    ));
+    fs::rename(root, &backup_root)?;
+    if let Err(error) = fs::rename(staged_root, root) {
+        let _ = fs::rename(&backup_root, root);
+        return Err(error.into());
+    }
+    let _ = fs::remove_dir_all(backup_root);
+    Ok(())
+}
+
+struct StagingCleanup(PathBuf);
+
+impl Drop for StagingCleanup {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
 /// Check imports without starting a model, choosing a GPU, or invoking a package manager.
 pub async fn preflight_asr_runtime(
     python: &Path,
@@ -350,10 +523,14 @@ fn command_for(executable: &Path, args: &[impl AsRef<std::ffi::OsStr>]) -> Comma
     {
         let mut command = Command::new("cmd.exe");
         command.arg("/D").arg("/C").arg(executable).args(args);
+        #[cfg(windows)]
+        apply_no_console_to_tokio(&mut command);
         return command;
     }
     let mut command = Command::new(executable);
     command.args(args);
+    #[cfg(windows)]
+    apply_no_console_to_tokio(&mut command);
     command
 }
 
@@ -368,16 +545,26 @@ fn sync_command_for(
     {
         let mut command = std::process::Command::new("cmd.exe");
         command.arg("/D").arg("/C").arg(executable).args(args);
+        #[cfg(windows)]
+        apply_no_console_to_std(&mut command);
         return command;
     }
     let mut command = std::process::Command::new(executable);
     command.args(args);
+    #[cfg(windows)]
+    apply_no_console_to_std(&mut command);
     command
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_runtime_commands_use_create_no_window() {
+        assert_eq!(windows_no_console_flag(), 0x0800_0000);
+    }
 
     #[test]
     fn missing_module_message_is_reduced_to_module_name() {

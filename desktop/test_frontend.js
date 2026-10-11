@@ -191,12 +191,29 @@ async function runTests() {
   assert(jsContent.includes('send_test_subtitle'), 'send_test_subtitle command invoked');
   assert(jsContent.includes('persistAndApplyRuntimeConfig') && jsContent.includes('window.confirm'),
     'saving active runtime changes asks for restart confirmation');
+  assert(jsContent.includes('checkRnnoiseEnabled.checked = Boolean(config.rnnoise_enabled)')
+    && jsContent.includes('checkAcousticEventsEnabled.checked = Boolean(config.acoustic_events_enabled)')
+    && jsContent.includes('cfg.rnnoise_enabled = elements.checkRnnoiseEnabled.checked')
+    && jsContent.includes('cfg.acoustic_events_enabled = elements.checkAcousticEventsEnabled.checked'),
+    'optional audio settings round-trip through the desktop draft and saved config');
   assert(htmlContent.includes('id="select-profile"')
     && htmlContent.includes('id="slider-catchup-interval"')
     && htmlContent.includes('id="btn-open-session-folder"')
     && htmlContent.includes('id="check-continuous"')
     && htmlContent.includes('id="check-save-vtt"'),
     'profile, subtitle timing and session file controls are present');
+  assert(htmlContent.includes('id="check-rnnoise-enabled"')
+    && htmlContent.includes('id="check-acoustic-events-enabled"'),
+    'optional audio settings expose both accessible controls');
+  assert(htmlContent.includes('data-i18n="hint_rnnoise_enabled"')
+    && htmlContent.includes('data-i18n="hint_acoustic_events_enabled"'),
+    'optional audio settings explain their current availability');
+  assert(/<label class="switch-label">\s*<span class="switch-track"><input type="checkbox" id="check-rnnoise-enabled"/.test(htmlContent)
+    && /<label class="switch-label">\s*<span class="switch-track"><input type="checkbox" id="check-acoustic-events-enabled"/.test(htmlContent),
+    'optional audio switches have accessible labels');
+  assert(htmlContent.includes('aria-describedby="hint-rnnoise-enabled"')
+    && htmlContent.includes('aria-describedby="hint-acoustic-events-enabled"'),
+    'optional audio switches expose their help text to assistive technology');
 
   const setupPane = htmlContent.match(/<section id="tab-setup"[\s\S]*?<\/section>/)?.[0] || '';
   const subtitlePane = htmlContent.match(/<section id="tab-subtitles"[\s\S]*?<\/section>/)?.[0] || '';
@@ -299,6 +316,18 @@ async function runTests() {
   assert(dtsContent.includes('interface ObsOverlayInfo'), 'ObsOverlayInfo type declared');
   assert(dtsContent.includes('interface DiagnosticsExportResult'), 'DiagnosticsExportResult type declared');
   assert(dtsContent.includes('interface SubtitleCue'), 'SubtitleCue type declared');
+  assert(dtsContent.includes('rnnoise_enabled: boolean;')
+    && dtsContent.includes('acoustic_events_enabled: boolean;'),
+    'LiveAudioConfig declares persisted optional audio flags');
+  for (const key of ['lbl_rnnoise_enabled', 'hint_rnnoise_enabled', 'lbl_acoustic_events_enabled', 'hint_acoustic_events_enabled']) {
+    assert((i18nContent.match(new RegExp(`${key}:`, 'g')) || []).length === 2,
+      `${key} is localized in Spanish and English`);
+  }
+  assert(/hint_acoustic_events_enabled:[\s\S]*?OpenCohost[\s\S]*?metadata/.test(i18nContent)
+    && /hint_rnnoise_enabled:[\s\S]*?RNNoise[\s\S]*?VAD/.test(i18nContent)
+    && !i18nContent.includes('not active yet')
+    && !i18nContent.includes('integration is complete'),
+    'help copy describes active RNNoise and metadata-only events without interim wording');
 
   const baseline = { model_size: 'small', device: 'cpu', ws_port: 8765, subtitle_style: 'default' };
   assert(!runtimeSettingsChanged(baseline, { ...baseline, subtitle_style: 'neon' }),
@@ -307,6 +336,33 @@ async function runTests() {
     'WebSocket port change requires a confirmed service restart');
   assert(runtimeSettingsChanged(baseline, { ...baseline, model_size: 'turbo' }),
     'ASR model change requires a confirmed service restart');
+  assert(runtimeSettingsChanged(baseline, { ...baseline, rnnoise_enabled: true })
+    && runtimeSettingsChanged(baseline, { ...baseline, acoustic_events_enabled: true }),
+    'both optional audio settings require a confirmed service restart');
+  const flagCalls = [];
+  const flagApplied = await persistAndApplyRuntimeConfig({
+    before: baseline,
+    after: { ...baseline, acoustic_events_enabled: true },
+    isRunning: true,
+    confirmRestart: () => { flagCalls.push('confirm'); return true; },
+    save: async () => flagCalls.push('save'),
+    restart: async () => { flagCalls.push('restart'); return { is_running: true }; },
+  });
+  assert(flagApplied.saved && flagApplied.restarted && flagCalls.join(',') === 'confirm,save,restart',
+    'acoustic event preference confirms before save and restarts only after save');
+  flagCalls.length = 0;
+  try {
+    await persistAndApplyRuntimeConfig({
+      before: baseline,
+      after: { ...baseline, rnnoise_enabled: true },
+      isRunning: true,
+      confirmRestart: () => { flagCalls.push('confirm'); return true; },
+      save: async () => { flagCalls.push('save'); throw new Error('disk unavailable'); },
+      restart: async () => { flagCalls.push('restart'); },
+    });
+  } catch (_) {}
+  assert(flagCalls.join(',') === 'confirm,save',
+    'persistence failure prevents restart and leaves active configuration untouched');
   const calls = [];
   const applied = await persistAndApplyRuntimeConfig({
     before: baseline,
@@ -349,7 +405,13 @@ async function runTests() {
     value: 'balanced',
     addEventListener(event, callback) { this.changeHandler = callback; },
   };
-  let profileDraft = { ...savedBaseline, audio_device: { id: 'usb', name: 'USB mic' }, subtitle_style: 'neon' };
+  let profileDraft = {
+    ...savedBaseline,
+    audio_device: { id: 'usb', name: 'USB mic' },
+    subtitle_style: 'neon',
+    rnnoise_enabled: false,
+    acoustic_events_enabled: true,
+  };
   bindProfileSelection(profileSelect, {
     getDraft: () => profileDraft,
     setDraft: (draft) => { profileDraft = draft; },
@@ -360,6 +422,14 @@ async function runTests() {
   assert(savedBaseline.device === 'cpu', 'profile selection keeps the saved config baseline immutable');
   assert(profileDraft.audio_device.id === 'usb' && profileDraft.subtitle_style === 'neon',
     'profile selection preserves unrelated unsaved settings in the draft');
+  assert(profileDraft.rnnoise_enabled === false && profileDraft.acoustic_events_enabled === true,
+    'profiles that omit optional audio flags preserve the current draft values');
+  const explicitProfile = runtimeSettings.applyProfilePreset(
+    { ...profileDraft, rnnoise_enabled: false, acoustic_events_enabled: true },
+    { ...balancedProfile, rnnoise_enabled: true, acoustic_events_enabled: false },
+  );
+  assert(explicitProfile.rnnoise_enabled === true && explicitProfile.acoustic_events_enabled === false,
+    'profiles apply explicit true and false optional audio values');
   assert(appSource.includes('getDraft: () => collectFormData()'),
     'profile selection captures current form edits before applying preset values');
   const profileCalls = [];
@@ -467,14 +537,28 @@ async function runTests() {
   assert(tauriConf.version === '1.5.0', 'tauri.conf.json has version 1.5.0');
   assert(tauriConf.bundle.category === 'Music', 'Tauri bundle category uses a supported audio-related category');
   const expectedResourceMap = {
+    '../../THIRD_PARTY_NOTICES.md': 'THIRD_PARTY_NOTICES.md',
     '../../liveaudio/*.py': 'liveaudio',
     '../../liveaudio/assets/*': 'liveaudio/assets',
     '../../liveaudio/core/*.py': 'liveaudio/core',
     '../../liveaudio/service/*.py': 'liveaudio/service',
     '../../liveaudio/utils/*.py': 'liveaudio/utils',
+    '../../packaging/vendor/uv.exe': 'packaging/vendor/uv.exe',
   };
   assert(JSON.stringify(tauriConf.bundle.resources) === JSON.stringify(expectedResourceMap),
-    'Tauri maps only direct runtime files to stable liveaudio resource paths');
+    'Tauri maps the bundled uv executable, third-party notice, and direct runtime files');
+  assert(htmlContent.includes('id="btn-runtime-repair"'), 'ASR runtime repair action exists');
+  assert(htmlContent.includes('id="btn-runtime-cancel"'), 'ASR setup cancellation action exists');
+  assert(jsContent.includes("listen('runtime_setup_progress'"), 'Runtime setup progress is forwarded to the UI');
+  assert(jsContent.includes('status.asr_progress'), 'Worker model progress is read from typed service status');
+  assert(jsContent.includes("phase: 'downloading'"), 'Model download progress reaches the shared progress UI');
+  assert(jsContent.includes("'starting_worker', 'downloading'"), 'Cancellation stays enabled through model download and readiness');
+  assert(jsContent.includes("removeAttribute('value')"), 'Unknown byte totals render as indeterminate progress');
+  assert(dtsContent.includes('asr_progress: AsrProgress | null'), 'Service status types carry optional model progress');
+  assert(htmlContent.includes('id="runtime-setup-meter"'), 'Model progress can use determinate or indeterminate HTML progress');
+  assert(jsContent.includes("invoke('cancel_runtime_setup'"), 'Runtime setup cancellation command is wired');
+  assert(jsContent.includes("config.device || 'cpu'"), 'UI falls back to CPU only when a saved device is absent');
+  assert(/<option value="cpu" id="device-cpu"[^>]*selected/.test(htmlContent), 'CPU is selected before saved configuration loads');
   assert(Object.entries(tauriConf.bundle.resources).some(([source, target]) =>
     source === '../../liveaudio/service/*.py' && target === 'liveaudio/service'),
   'ASR worker is mapped to the resolver-supported liveaudio/service path');

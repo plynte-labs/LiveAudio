@@ -19,6 +19,8 @@ const RUNTIME_SETTINGS = [
   'continuous_session',
   'save_transcript_enabled',
   'save_vtt_enabled',
+  'rnnoise_enabled',
+  'acoustic_events_enabled',
 ];
 
 export function runtimeSettingsChanged(before, after) {
@@ -36,6 +38,10 @@ export function applyProfilePreset(draft, profile) {
     subtitle_backlog_policy: profile.subtitle_backlog_policy,
     subtitle_max_live_delay_sec: profile.subtitle_max_live_delay_sec,
     subtitle_catchup_interval_sec: profile.subtitle_catchup_interval_sec,
+    ...(typeof profile.rnnoise_enabled === 'boolean' ? { rnnoise_enabled: profile.rnnoise_enabled } : {}),
+    ...(typeof profile.acoustic_events_enabled === 'boolean'
+      ? { acoustic_events_enabled: profile.acoustic_events_enabled }
+      : {}),
   };
 }
 
