@@ -583,6 +583,165 @@ async function runTests() {
   assert(t('modal_title_confirm').length > 0, 'English modal confirm title translation exists');
   assert(t('btn_starting').length > 0, 'English button starting state translation exists');
 
+  // 8. Verify Event Logger Panel and Uncluttered Action Bar
+  assert(htmlContent.includes('id="card-logger"'), 'Event Logger card element exists');
+  assert(htmlContent.includes('id="logger-console"'), 'Event Logger console element exists');
+  assert(htmlContent.includes('id="btn-clear-logs"'), 'Event Logger clear button exists');
+  assert(htmlContent.includes('id="btn-copy-logs"'), 'Event Logger copy button exists');
+  assert(htmlContent.includes('id="logger-count-badge"'), 'Event Logger counter badge exists');
+  assert(htmlContent.includes('class="tabs-footer"'), 'Settings tabs footer exists');
+  assert(cssContent.includes('.logger-card'), 'Logger card CSS styles exist');
+  assert(cssContent.includes('.logger-console'), 'Logger console CSS styles exist');
+  assert(cssContent.includes('.tabs-footer'), 'Tabs footer CSS styles exist');
+
+  // Verify that master-action-bar no longer contains save or reset buttons
+  const masterActionBarHtml = htmlContent.match(/<div class="master-action-bar">([\s\S]*?)<\/div>/)?.[1] || '';
+  assert(masterActionBarHtml.includes('id="btn-toggle-service"'), 'Master action bar contains toggle service button');
+  assert(!masterActionBarHtml.includes('id="btn-save-config"'), 'Master action bar no longer contains save button');
+  assert(!masterActionBarHtml.includes('id="btn-reset-config"'), 'Master action bar no longer contains reset button');
+  assert(!masterActionBarHtml.includes('id="btn-runtime-repair"'), 'Master action bar no longer contains runtime repair button');
+
+  // Verify translations for Event Logger
+  setLanguage('es');
+  assert(t('title_event_logger').length > 0, 'Spanish Event Logger title translation exists');
+  assert(t('btn_clear_logs').length > 0, 'Spanish Event Logger clear translation exists');
+  assert(t('btn_copy_logs').length > 0, 'Spanish Event Logger copy translation exists');
+  setLanguage('en');
+  assert(t('title_event_logger').length > 0, 'English Event Logger title translation exists');
+  assert(t('btn_clear_logs').length > 0, 'English Event Logger clear translation exists');
+  assert(t('btn_copy_logs').length > 0, 'English Event Logger copy translation exists');
+
+  // Verify collapse/minimize toggle button for Event Logger
+  assert(htmlContent.includes('id="btn-toggle-logger"'), 'Event Logger toggle button exists in index.html');
+  assert(cssContent.includes('.logger-card.collapsed'), 'Logger card collapsed CSS exists');
+  assert(cssContent.includes('.logger-card.collapsed .logger-console'), 'Logger console hide CSS exists');
+  assert(cssContent.includes('.form-group.device-dimmed'), 'Form group device-dimmed CSS exists');
+  assert(htmlContent.includes('id="group-cpu-threads"'), 'CPU threads container has group-cpu-threads ID');
+
+  // Verify VAD pill is in main header status area and not inside status-detail-items
+  const headerStatusHtml = htmlContent.match(/<div class="header-status">([\s\S]*?)<\/details>/)?.[1] || '';
+  const detailItemsHtml = htmlContent.match(/<div class="status-detail-items">([\s\S]*?)<\/div>/)?.[1] || '';
+  assert(headerStatusHtml.includes('id="pill-vad"'), 'VAD pill is located in the main header status area');
+  assert(!detailItemsHtml.includes('id="pill-vad"'), 'VAD pill is not hidden inside status details');
+
+  // Verify translations for toggle logger and cuda device hint
+  setLanguage('es');
+  assert(t('btn_toggle_logger_hide') === 'Ocultar', 'Spanish Event Logger hide translation exists');
+  assert(t('btn_toggle_logger_show') === 'Mostrar', 'Spanish Event Logger show translation exists');
+  assert(t('hint_cpu_threads_cuda').length > 0, 'Spanish CUDA CPU threads hint translation exists');
+  setLanguage('en');
+  assert(t('btn_toggle_logger_hide') === 'Hide', 'English Event Logger hide translation exists');
+  assert(t('btn_toggle_logger_show') === 'Show', 'English Event Logger show translation exists');
+  assert(t('hint_cpu_threads_cuda').length > 0, 'English CUDA CPU threads hint translation exists');
+
+  // Verify accessibility attributes and default collapsed state on toggle button
+  assert(htmlContent.includes('id="card-logger"') && htmlContent.includes('card logger-card collapsed'), 'Event Logger card is collapsed by default');
+  assert(htmlContent.includes('id="btn-toggle-logger"') && htmlContent.includes('aria-expanded="false"') && htmlContent.includes('aria-controls="logger-console"'), 'Event Logger toggle button has accessible aria attributes indicating collapsed state');
+  assert(htmlContent.includes('data-i18n="btn_toggle_logger_show"'), 'Event Logger toggle button shows expand action by default');
+  assert(appSource.includes('isLoggerCollapsed = true;'), 'Logger is collapsed by default in app.js');
+
+  // 9. Verify Stream-Chat Subtitle Feed Component & Interactions
+  assert(htmlContent.includes('id="card-subtitles-feed"'), 'Subtitle Feed card element exists in index.html');
+  assert(htmlContent.includes('id="subtitles-feed-container"'), 'Subtitle Feed container element exists');
+  assert(htmlContent.includes('id="feed-empty-state"'), 'Subtitle Feed empty state placeholder exists');
+  assert(htmlContent.includes('id="feed-count-badge"'), 'Subtitle Feed count badge exists');
+  assert(htmlContent.includes('id="btn-test-subtitle"'), 'Subtitle Feed test button exists');
+  assert(htmlContent.includes('id="btn-clear-feed"'), 'Subtitle Feed clear button exists');
+  assert(htmlContent.includes('id="feed-action-menu"'), 'Subtitle Feed action dropdown menu exists');
+  assert(htmlContent.includes('data-action="blacklist"')
+    && htmlContent.includes('data-action="prompt"')
+    && htmlContent.includes('data-action="copy"'),
+    'Subtitle Feed dropdown includes blacklist, prompt, and copy actions');
+
+  // Verify CSS styles for Stream-Chat Subtitle Feed
+  assert(cssContent.includes('.feed-card'), 'Feed card CSS styles exist');
+  assert(cssContent.includes('.feed-container'), 'Feed container CSS styles exist');
+  assert(cssContent.includes('.feed-item'), 'Feed item CSS styles exist');
+  assert(cssContent.includes('.feed-item-time'), 'Feed item timestamp CSS styles exist');
+  assert(cssContent.includes('.feed-item-text'), 'Feed item text CSS styles exist');
+  assert(cssContent.includes('.feed-item-blocked'), 'Feed item blocked CSS styles exist');
+  assert(cssContent.includes('.feed-item-badge-blocked'), 'Feed item blocked badge CSS styles exist');
+  assert(cssContent.includes('.btn-feed-item-menu'), 'Feed item 3-dots menu button CSS styles exist');
+  assert(cssContent.includes('.feed-action-dropdown'), 'Feed action dropdown CSS styles exist');
+  assert(cssContent.includes('.feed-menu-btn'), 'Feed menu button CSS styles exist');
+
+  // Verify i18n keys for Stream-Chat Subtitle Feed
+  setLanguage('es');
+  assert(t('title_subtitles_feed') === 'Feed de Subtítulos en Vivo', 'Spanish subtitle feed title translation exists');
+  assert(t('feed_empty_hint').length > 0, 'Spanish subtitle feed empty hint exists');
+  assert(t('btn_clear_feed') === 'Limpiar', 'Spanish clear feed button translation exists');
+  assert(t('menu_add_blacklist') === 'Añadir a Blacklist', 'Spanish add blacklist menu item exists');
+  assert(t('menu_add_prompt') === 'Añadir a Vocabulario / Prompt', 'Spanish add prompt menu item exists');
+  assert(t('menu_copy_text') === 'Copiar texto', 'Spanish copy text menu item exists');
+  assert(t('badge_blocked') === 'Baneado', 'Spanish blocked badge translation exists');
+  assert(t('toast_added_to_blacklist').length > 0, 'Spanish add blacklist toast exists');
+  assert(t('toast_added_to_prompt').length > 0, 'Spanish add prompt toast exists');
+  assert(t('toast_text_copied').length > 0, 'Spanish copy text toast exists');
+  assert(t('toast_feed_cleared').length > 0, 'Spanish feed cleared toast exists');
+
+  setLanguage('en');
+  assert(t('title_subtitles_feed') === 'Live Subtitles Feed', 'English subtitle feed title translation exists');
+  assert(t('feed_empty_hint').length > 0, 'English subtitle feed empty hint exists');
+  assert(t('btn_clear_feed') === 'Clear', 'English clear feed button translation exists');
+  assert(t('menu_add_blacklist') === 'Add to Blacklist', 'English add blacklist menu item exists');
+  assert(t('menu_add_prompt') === 'Add to Initial Prompt', 'English add prompt menu item exists');
+  assert(t('menu_copy_text') === 'Copy text', 'English copy text menu item exists');
+  assert(t('badge_blocked') === 'Blocked', 'English blocked badge translation exists');
+  assert(t('toast_added_to_blacklist').length > 0, 'English add blacklist toast exists');
+  assert(t('toast_added_to_prompt').length > 0, 'English add prompt toast exists');
+  assert(t('toast_text_copied').length > 0, 'English copy text toast exists');
+  assert(t('toast_feed_cleared').length > 0, 'English feed cleared toast exists');
+
+  // Verify JavaScript circular buffer, stick-to-bottom and blacklist logic in app.js
+  assert(appSource.includes('MAX_FEED_ITEMS = 120'), 'Feed enforces circular buffer with max 120 elements');
+  assert(appSource.includes('formatTimestamp'), 'Timestamp formatting helper exists');
+  assert(appSource.includes('addSubtitleToFeed'), 'addSubtitleToFeed helper exists');
+  assert(appSource.includes('clearSubtitleFeed'), 'clearSubtitleFeed helper exists');
+  assert(appSource.includes('addPhraseToBlacklist'), 'addPhraseToBlacklist helper exists');
+  assert(appSource.includes('addTermToInitialPrompt'), 'addTermToInitialPrompt helper exists');
+  assert(appSource.includes('openFeedActionMenu') && appSource.includes('closeFeedActionMenu'), 'Accessible dropdown menu handlers exist');
+  assert(appSource.includes('container.scrollHeight - container.scrollTop - container.clientHeight'),
+    'Smart stick-to-bottom checks scroll offset before inserting new subtitles');
+  assert(appSource.includes("listen('subtitle_cue'"), 'Real-time subtitle cues are wired to the feed');
+  assert(appSource.includes("itemElement.classList.add('feed-item-blocked')"),
+    'Blacklisting a phrase strikes through and marks the feed item as blocked');
+
+  // Verify robust state synchronization, serialized queue, keyboard navigation and bounds clamping
+  assert(appSource.includes('savedConfig = structuredClone(newConfig);'),
+    'savedConfig baseline is synchronized on blacklist and prompt additions');
+  assert(appSource.includes('queueConfigSave'),
+    'Config saves are serialized through queueConfigSave to prevent race conditions');
+  assert(appSource.includes('markFeedItemsBlocked'),
+    'markFeedItemsBlocked marks all occurrences of blacklisted phrases in the feed');
+  assert(appSource.includes("e.key === 'ArrowDown'") && appSource.includes("e.key === 'ArrowUp'"),
+    'Feed action dropdown supports ARIA keyboard arrow navigation');
+  assert(appSource.includes('viewportWidth') && appSource.includes('viewportHeight'),
+    'Dropdown menu position is bounded within window viewport boundaries');
+  assert(appSource.includes('copyTextFallback'),
+    'Clipboard copying provides resilient execCommand fallback');
+  assert(appSource.includes('prunedHeight'),
+    'Circular buffer pruning compensates scroll offset when user is reading history');
+
+  // Verify accessible HTML attributes and translations
+  assert(htmlContent.includes('data-i18n-aria-label="aria_subtitles_feed"'),
+    'Feed container has localized aria-label attribute');
+  assert(htmlContent.includes('data-i18n-title="title_feed_count"'),
+    'Feed counter badge has localized title attribute');
+  assert(htmlContent.includes('data-i18n-title="title_test_subtitle"'),
+    'Test subtitle button has localized title attribute');
+  assert(htmlContent.includes('data-i18n-title="title_clear_feed"'),
+    'Clear feed button has localized title attribute');
+  setLanguage('es');
+  assert(t('aria_subtitles_feed') === 'Feed de subtítulos en vivo',
+    'Spanish feed accessible name translation exists');
+  assert(t('title_feed_count') === 'Subtítulos en búfer',
+    'Spanish feed count title translation exists');
+  setLanguage('en');
+  assert(t('aria_subtitles_feed') === 'Live subtitles feed',
+    'English feed accessible name translation exists');
+  assert(t('title_feed_count') === 'Subtitles in buffer',
+    'English feed count title translation exists');
+
   // Restore Spanish as default
   setLanguage('es');
 

@@ -172,6 +172,12 @@ function mockInvoke(cmd, args) {
         timestamp_ms: Date.now(),
       });
 
+    case 'get_recent_logs':
+      return Promise.resolve([
+        '🚀 LiveAudio Desktop Logging Initialized',
+        '📁 Log file: C:\\Users\\...\\logs\\liveaudio-desktop.log',
+      ]);
+
     default:
       return Promise.reject(`Command not found: ${cmd}`);
   }
@@ -239,6 +245,7 @@ const elements = {
   deviceRadioCpu: document.getElementById('device-cpu'),
   deviceRadioCuda: document.getElementById('device-cuda'),
   sliderCpuThreads: document.getElementById('slider-cpu-threads'),
+  groupCpuThreads: document.getElementById('group-cpu-threads'),
   valCpuThreads: document.getElementById('val-cpu-threads'),
   sliderSilenceTimeout: document.getElementById('slider-silence-timeout'),
   valSilenceTimeout: document.getElementById('val-silence-timeout'),
@@ -277,8 +284,13 @@ const elements = {
   sessionPath: document.getElementById('session-path'),
   sessionError: document.getElementById('session-error'),
   btnOpenSessionFolder: document.getElementById('btn-open-session-folder'),
-  subtitleBox: document.getElementById('subtitle-box'),
+  cardSubtitlesFeed: document.getElementById('card-subtitles-feed'),
+  subtitlesFeedContainer: document.getElementById('subtitles-feed-container'),
+  feedEmptyState: document.getElementById('feed-empty-state'),
+  feedCountBadge: document.getElementById('feed-count-badge'),
   btnTestSubtitle: document.getElementById('btn-test-subtitle'),
+  btnClearFeed: document.getElementById('btn-clear-feed'),
+  feedActionMenu: document.getElementById('feed-action-menu'),
   inputObsUrl: document.getElementById('input-obs-url'),
   btnCopyObsUrl: document.getElementById('btn-copy-obs-url'),
   toastContainer: document.getElementById('toast-container'),
@@ -286,7 +298,118 @@ const elements = {
   winBtnMaximize: document.getElementById('win-btn-maximize'),
   winBtnClose: document.getElementById('win-btn-close'),
   winIconRect: document.getElementById('win-icon-rect'),
+  loggerCard: document.getElementById('card-logger'),
+  loggerConsole: document.getElementById('logger-console'),
+  loggerCountBadge: document.getElementById('logger-count-badge'),
+  btnToggleLogger: document.getElementById('btn-toggle-logger'),
+  btnClearLogs: document.getElementById('btn-clear-logs'),
+  btnCopyLogs: document.getElementById('btn-copy-logs'),
 };
+
+// Logger Console Subsystem
+const MAX_LOG_ENTRIES = 300;
+
+function appendLogEntry(level, message, source = '') {
+  if (!elements.loggerConsole) return;
+
+  const now = new Date();
+  const timeStr = [
+    String(now.getHours()).padStart(2, '0'),
+    String(now.getMinutes()).padStart(2, '0'),
+    String(now.getSeconds()).padStart(2, '0'),
+  ].join(':');
+
+  const line = document.createElement('div');
+  line.className = `log-line log-${level.toLowerCase()}`;
+
+  const timeSpan = document.createElement('span');
+  timeSpan.className = 'log-timestamp';
+  timeSpan.textContent = timeStr;
+
+  const tagSpan = document.createElement('span');
+  tagSpan.className = `log-tag tag-${level.toLowerCase()}`;
+  tagSpan.textContent = source || level.toUpperCase();
+
+  const msgSpan = document.createElement('span');
+  msgSpan.className = 'log-msg';
+  msgSpan.textContent = message;
+
+  line.appendChild(timeSpan);
+  line.appendChild(tagSpan);
+  line.appendChild(msgSpan);
+
+  elements.loggerConsole.appendChild(line);
+
+  while (elements.loggerConsole.children.length > MAX_LOG_ENTRIES) {
+    elements.loggerConsole.removeChild(elements.loggerConsole.firstChild);
+  }
+
+  if (elements.loggerCountBadge) {
+    elements.loggerCountBadge.textContent = String(elements.loggerConsole.children.length);
+  }
+
+  elements.loggerConsole.scrollTop = elements.loggerConsole.scrollHeight;
+}
+
+function clearLogs() {
+  if (!elements.loggerConsole) return;
+  elements.loggerConsole.innerHTML = '';
+  if (elements.loggerCountBadge) elements.loggerCountBadge.textContent = '0';
+}
+
+async function copyLogs() {
+  if (!elements.loggerConsole) return;
+  const lines = Array.from(elements.loggerConsole.querySelectorAll('.log-line')).map((el) => {
+    const time = el.querySelector('.log-timestamp')?.textContent || '';
+    const tag = el.querySelector('.log-tag')?.textContent || '';
+    const msg = el.querySelector('.log-msg')?.textContent || '';
+    return `[${time}] [${tag}] ${msg}`;
+  });
+  try {
+    await navigator.clipboard.writeText(lines.join('\n'));
+    showToast(t('toast_logs_copied') || 'Registro copiado');
+  } catch (err) {
+    showToast(`Error: ${err}`, true);
+  }
+}
+
+let isLoggerCollapsed = true;
+
+function toggleLoggerCollapse() {
+  isLoggerCollapsed = !isLoggerCollapsed;
+  if (elements.loggerCard) {
+    elements.loggerCard.classList.toggle('collapsed', isLoggerCollapsed);
+  }
+  if (elements.loggerConsole) {
+    elements.loggerConsole.hidden = isLoggerCollapsed;
+  }
+  if (elements.btnToggleLogger) {
+    const key = isLoggerCollapsed ? 'btn_toggle_logger_show' : 'btn_toggle_logger_hide';
+    elements.btnToggleLogger.textContent = t(key);
+    elements.btnToggleLogger.setAttribute('data-i18n', key);
+    elements.btnToggleLogger.setAttribute('aria-expanded', String(!isLoggerCollapsed));
+  }
+}
+
+function updateComputeDeviceReactivity(device) {
+  const currentDevice = device || (elements.selectComputeDevice ? elements.selectComputeDevice.value : 'cpu');
+  const isCuda = currentDevice === 'cuda';
+  const group = elements.groupCpuThreads || elements.sliderCpuThreads?.closest('.form-group');
+
+  if (elements.sliderCpuThreads) {
+    elements.sliderCpuThreads.disabled = isCuda;
+  }
+
+  if (group) {
+    group.classList.toggle('device-dimmed', isCuda);
+    const hint = group.querySelector('.form-hint');
+    if (hint) {
+      const hintKey = isCuda ? 'hint_cpu_threads_cuda' : 'hint_cpu_threads';
+      hint.setAttribute('data-i18n', hintKey);
+      hint.textContent = t(hintKey);
+    }
+  }
+}
 
 // Custom Frameless Window Controls Integration
 function setupWindowControls() {
@@ -451,25 +574,332 @@ function updateStatusUI(status) {
   }
 }
 
-// Render Subtitle in Preview Box
-function renderSubtitle(text, style) {
-  elements.subtitleBox.className = `sub-box style-${style}`;
+// Stream-Chat Subtitle Feed Subsystem
+const MAX_FEED_ITEMS = 120;
+let activeFeedMenuContext = null;
+let configSaveQueue = Promise.resolve();
 
-  if (style === 'karaoke' || style === 'rgb' || style === 'typewriter') {
-    const words = text.split(/\s+/).filter(Boolean);
-    elements.subtitleBox.innerHTML = words
-      .map((w, idx) => `<span class="word" style="animation-delay: ${idx * 0.08}s">${escapeHtml(w)}</span>`)
-      .join(' ');
-  } else {
-    elements.subtitleBox.textContent = text;
+function queueConfigSave(saveTask) {
+  const next = configSaveQueue.then(saveTask, saveTask);
+  configSaveQueue = next.catch(() => {});
+  return next;
+}
+
+function formatTimestamp(timestampMs) {
+  const d = timestampMs ? new Date(timestampMs) : new Date();
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const ss = String(d.getSeconds()).padStart(2, '0');
+  return `${hh}:${mm}:${ss}`;
+}
+
+function addSubtitleToFeed(text, cue = null) {
+  if (!elements.subtitlesFeedContainer) return;
+  const cleanText = (text || '').trim();
+  if (!cleanText) return;
+
+  if (elements.feedEmptyState) {
+    elements.feedEmptyState.hidden = true;
   }
 
-  if (subtitleClearTimeout) {
-    clearTimeout(subtitleClearTimeout);
+  const container = elements.subtitlesFeedContainer;
+  const isScrolledToBottom = (container.scrollHeight - container.scrollTop - container.clientHeight) <= 40;
+
+  const item = document.createElement('div');
+  item.className = 'feed-item';
+  const timestampMs = cue?.timestamp_ms || Date.now();
+  item.dataset.timestamp = String(timestampMs);
+  item.dataset.text = cleanText;
+
+  const timeSpan = document.createElement('span');
+  timeSpan.className = 'feed-item-time';
+  timeSpan.textContent = formatTimestamp(timestampMs);
+
+  const body = document.createElement('div');
+  body.className = 'feed-item-body';
+
+  const textSpan = document.createElement('span');
+  textSpan.className = 'feed-item-text';
+  textSpan.textContent = cleanText;
+  body.appendChild(textSpan);
+
+  const menuBtn = document.createElement('button');
+  menuBtn.className = 'btn-feed-item-menu';
+  menuBtn.type = 'button';
+  menuBtn.setAttribute('aria-haspopup', 'true');
+  menuBtn.setAttribute('aria-expanded', 'false');
+  const menuLabel = t('feed_item_menu_title') || 'Opciones de subtítulo';
+  menuBtn.setAttribute('aria-label', menuLabel);
+  menuBtn.title = menuLabel;
+  menuBtn.setAttribute('data-i18n-aria-label', 'feed_item_menu_title');
+  menuBtn.setAttribute('data-i18n-title', 'feed_item_menu_title');
+  menuBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="1.5"></circle><circle cx="12" cy="5" r="1.5"></circle><circle cx="12" cy="19" r="1.5"></circle></svg>`;
+
+  menuBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    openFeedActionMenu(cleanText, item, menuBtn);
+  });
+
+  item.appendChild(timeSpan);
+  item.appendChild(body);
+  item.appendChild(menuBtn);
+
+  container.appendChild(item);
+
+  // Circular buffer guard: maintain at most MAX_FEED_ITEMS elements
+  const allItems = container.querySelectorAll('.feed-item');
+  if (allItems.length > MAX_FEED_ITEMS) {
+    const toRemove = allItems.length - MAX_FEED_ITEMS;
+    let prunedHeight = 0;
+    for (let i = 0; i < toRemove; i++) {
+      if (allItems[i]) {
+        if (activeFeedMenuContext && activeFeedMenuContext.item === allItems[i]) {
+          closeFeedActionMenu();
+        }
+        if (!isScrolledToBottom) {
+          prunedHeight += allItems[i].offsetHeight || 0;
+        }
+        allItems[i].remove();
+      }
+    }
+    if (!isScrolledToBottom && prunedHeight > 0) {
+      container.scrollTop = Math.max(0, container.scrollTop - prunedHeight);
+    }
   }
-  subtitleClearTimeout = setTimeout(() => {
-    // Fade out or keep static
-  }, 6000);
+
+  if (elements.feedCountBadge) {
+    elements.feedCountBadge.textContent = String(container.querySelectorAll('.feed-item').length);
+  }
+
+  if (isScrolledToBottom) {
+    container.scrollTop = container.scrollHeight;
+  }
+}
+
+function openFeedActionMenu(text, itemElement, buttonElement) {
+  if (!elements.feedActionMenu) return;
+
+  if (activeFeedMenuContext && activeFeedMenuContext.button === buttonElement && !elements.feedActionMenu.hidden) {
+    closeFeedActionMenu();
+    return;
+  }
+
+  activeFeedMenuContext = {
+    text,
+    item: itemElement,
+    button: buttonElement,
+  };
+
+  buttonElement.setAttribute('aria-expanded', 'true');
+  elements.feedActionMenu.hidden = false;
+
+  const rect = buttonElement.getBoundingClientRect();
+  const menuWidth = elements.feedActionMenu.offsetWidth || 220;
+  const menuHeight = elements.feedActionMenu.offsetHeight || 135;
+  const margin = 8;
+  const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 800;
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 600;
+
+  let left = rect.right - menuWidth;
+  if (left + menuWidth > viewportWidth - margin) {
+    left = viewportWidth - menuWidth - margin;
+  }
+  if (left < margin) {
+    left = Math.max(margin, rect.left);
+  }
+
+  let top = rect.bottom + 4;
+  if (top + menuHeight > viewportHeight - margin) {
+    top = Math.max(margin, rect.top - menuHeight - 4);
+  }
+  if (top < margin) {
+    top = margin;
+  }
+
+  elements.feedActionMenu.style.top = `${top}px`;
+  elements.feedActionMenu.style.left = `${left}px`;
+
+  const firstBtn = elements.feedActionMenu.querySelector('.feed-menu-btn');
+  if (firstBtn) firstBtn.focus();
+}
+
+function closeFeedActionMenu() {
+  if (!elements.feedActionMenu) return;
+  elements.feedActionMenu.hidden = true;
+  if (activeFeedMenuContext?.button) {
+    activeFeedMenuContext.button.setAttribute('aria-expanded', 'false');
+    activeFeedMenuContext.button.focus();
+  }
+  activeFeedMenuContext = null;
+}
+
+async function handleFeedAction(action) {
+  if (!activeFeedMenuContext) return;
+  const { text, item } = activeFeedMenuContext;
+
+  if (action === 'blacklist') {
+    closeFeedActionMenu();
+    await addPhraseToBlacklist(text, item);
+  } else if (action === 'prompt') {
+    closeFeedActionMenu();
+    await addTermToInitialPrompt(text);
+  } else if (action === 'copy') {
+    closeFeedActionMenu();
+    await copyTextToClipboard(text);
+  }
+}
+
+function markFeedItemsBlocked(phrase) {
+  if (!elements.subtitlesFeedContainer) return;
+  const lowerPhrase = (phrase || '').trim().toLowerCase();
+  if (!lowerPhrase) return;
+  const items = elements.subtitlesFeedContainer.querySelectorAll('.feed-item');
+  items.forEach((item) => {
+    const text = (item.dataset.text || '').toLowerCase();
+    if (text.includes(lowerPhrase)) {
+      item.classList.add('feed-item-blocked');
+      const body = item.querySelector('.feed-item-body');
+      if (body && !body.querySelector('.feed-item-badge-blocked')) {
+        const badge = document.createElement('span');
+        badge.className = 'feed-item-badge-blocked';
+        badge.setAttribute('data-i18n', 'badge_blocked');
+        badge.textContent = t('badge_blocked') || 'Baneado';
+        body.appendChild(badge);
+      }
+    }
+  });
+}
+
+async function addPhraseToBlacklist(text, itemElement) {
+  const trimmed = text.trim();
+  if (!trimmed) return;
+
+  const langKey = currentAsrLang === 'en' ? 'en' : 'es';
+  if (elements.inputBlacklist) {
+    drafts.blacklists[langKey] = elements.inputBlacklist.value;
+  }
+  const currentBL = (drafts.blacklists[langKey] || '').trim();
+  const entries = currentBL
+    .split(/[,;\n\r]+/)
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean);
+
+  if (!entries.includes(trimmed.toLowerCase())) {
+    const updatedBL = currentBL ? `${currentBL}, ${trimmed}` : trimmed;
+    drafts.blacklists[langKey] = updatedBL;
+    if (elements.inputBlacklist) {
+      elements.inputBlacklist.value = updatedBL;
+    }
+  }
+
+  markFeedItemsBlocked(trimmed);
+  if (itemElement) {
+    itemElement.classList.add('feed-item-blocked');
+  }
+
+  await queueConfigSave(async () => {
+    const newConfig = collectFormData();
+    try {
+      await invoke('save_config', { config: newConfig });
+      currentConfig = newConfig;
+      savedConfig = structuredClone(newConfig);
+      appendLogEntry('info', `Frase añadida a lista negra: "${trimmed}"`, 'BLACKLIST');
+      showToast(t('toast_added_to_blacklist'));
+    } catch (err) {
+      appendLogEntry('error', `Error guardando lista negra: ${err}`, 'BLACKLIST');
+      showToast(`${t('status_error')}: ${err}`, true);
+    }
+  });
+}
+
+async function addTermToInitialPrompt(text) {
+  const trimmed = text.trim();
+  if (!trimmed) return;
+
+  const langKey = currentAsrLang === 'en' ? 'en' : 'es';
+  if (elements.promptEs) {
+    drafts.prompts[langKey] = elements.promptEs.value;
+  }
+  const currentPrompt = (drafts.prompts[langKey] || '').trim();
+  const entries = currentPrompt
+    .split(/[,;\n\r]+/)
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean);
+
+  if (!entries.includes(trimmed.toLowerCase())) {
+    const updatedPrompt = currentPrompt ? `${currentPrompt}, ${trimmed}` : trimmed;
+    drafts.prompts[langKey] = updatedPrompt;
+    if (elements.promptEs) {
+      elements.promptEs.value = updatedPrompt;
+    }
+  }
+
+  await queueConfigSave(async () => {
+    const newConfig = collectFormData();
+    try {
+      await invoke('save_config', { config: newConfig });
+      currentConfig = newConfig;
+      savedConfig = structuredClone(newConfig);
+      appendLogEntry('info', `Término añadido a vocabulario/prompt: "${trimmed}"`, 'PROMPT');
+      showToast(t('toast_added_to_prompt'));
+    } catch (err) {
+      appendLogEntry('error', `Error guardando vocabulario/prompt: ${err}`, 'PROMPT');
+      showToast(`${t('status_error')}: ${err}`, true);
+    }
+  });
+}
+
+function copyTextFallback(text) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  ta.style.pointerEvents = 'none';
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  const successful = document.execCommand('copy');
+  ta.remove();
+  if (!successful) throw new Error('execCommand copy failed');
+}
+
+async function copyTextToClipboard(text) {
+  const trimmed = text.trim();
+  if (!trimmed) return;
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(trimmed);
+    } else {
+      copyTextFallback(trimmed);
+    }
+    showToast(t('toast_text_copied'));
+  } catch (err) {
+    try {
+      copyTextFallback(trimmed);
+      showToast(t('toast_text_copied'));
+    } catch (fallbackErr) {
+      showToast(`Error al copiar: ${err}`, true);
+    }
+  }
+}
+
+function clearSubtitleFeed() {
+  if (!elements.subtitlesFeedContainer) return;
+  closeFeedActionMenu();
+  const items = elements.subtitlesFeedContainer.querySelectorAll('.feed-item');
+  items.forEach((item) => item.remove());
+  if (elements.feedEmptyState) {
+    elements.feedEmptyState.hidden = false;
+  }
+  if (elements.feedCountBadge) {
+    elements.feedCountBadge.textContent = '0';
+  }
+  showToast(t('toast_feed_cleared'));
+}
+
+function renderSubtitle(text, style, cue = null) {
+  if (!text || text === t('sample_preview_text')) return;
+  addSubtitleToFeed(text, cue || { text, style, timestamp_ms: Date.now() });
 }
 
 function escapeHtml(str) {
@@ -602,6 +1032,7 @@ function populateForm(config, updateSavedBaseline = true) {
   } else {
     if (elements.deviceRadioCpu) elements.deviceRadioCpu.checked = true;
   }
+  updateComputeDeviceReactivity(config.device || 'cpu');
 
   elements.sliderCpuThreads.value = config.cpu_threads;
   elements.valCpuThreads.textContent = config.cpu_threads;
@@ -659,9 +1090,6 @@ function populateForm(config, updateSavedBaseline = true) {
   elements.valCatchupInterval.textContent = `${config.subtitle_catchup_interval_sec || 1.5}s`;
 
   updateProfileDescription();
-
-  // Update initial preview theme
-  renderSubtitle(t('sample_preview_text'), config.subtitle_style);
 }
 
 // Synchronize dynamic prompt and blacklist content based on active spoken language
@@ -851,7 +1279,13 @@ async function initApp() {
       updateProfileDescription();
       updateStatusUI(currentStatus);
       applyTranslations(newLang);
-      renderSubtitle(t('sample_preview_text'), elements.selectSubtitleStyle.value);
+      updateComputeDeviceReactivity();
+    });
+  }
+
+  if (elements.selectComputeDevice) {
+    elements.selectComputeDevice.addEventListener('change', (e) => {
+      updateComputeDeviceReactivity(e.target.value);
     });
   }
 
@@ -893,10 +1327,9 @@ async function initApp() {
     elements.valVadThreshold.textContent = `${e.target.value}`;
   });
 
-  // Subtitle Style Preview change
-  elements.selectSubtitleStyle.addEventListener('change', (e) => {
-    const text = elements.subtitleBox.textContent || t('sample_preview_text');
-    renderSubtitle(text, e.target.value);
+  // Subtitle Style change
+  elements.selectSubtitleStyle.addEventListener('change', () => {
+    // Style will be applied to future subtitles in OBS overlay
   });
 
   // ASR language change
@@ -939,29 +1372,31 @@ async function initApp() {
   });
 
   // Test Subtitle Button
-  elements.btnTestSubtitle.addEventListener('click', async () => {
-    await withProcessing(elements.btnTestSubtitle, async () => {
-      const samplePhrases = getLanguage() === 'es' ? [
-        '¡Hola mundo! Transcripción de voz en tiempo real con LiveAudio.',
-        'Excelente fidelidad acústica en español e inglés sin retraso.',
-        'Integración nativa con OBS Studio mediante fuente de navegador.',
-        'Tecnología Whisper con aceleración por hardware CUDA de baja latencia.',
-      ] : [
-        'Hello world! Real-time voice transcription powered by LiveAudio.',
-        'High acoustic fidelity in Spanish and English with ultra-low latency.',
-        'Native OBS Studio integration via local browser source.',
-        'Whisper ASR engine with GPU CUDA hardware acceleration.',
-      ];
-      const phrase = samplePhrases[Math.floor(Math.random() * samplePhrases.length)];
-      const style = elements.selectSubtitleStyle.value;
-      try {
-        const cue = await invoke('send_test_subtitle', { text: phrase, style });
-        renderSubtitle(cue.text, cue.style);
-      } catch (err) {
-        renderSubtitle(phrase, style);
-      }
+  if (elements.btnTestSubtitle) {
+    elements.btnTestSubtitle.addEventListener('click', async () => {
+      await withProcessing(elements.btnTestSubtitle, async () => {
+        const samplePhrases = getLanguage() === 'es' ? [
+          '¡Hola mundo! Transcripción de voz en tiempo real con LiveAudio.',
+          'Excelente fidelidad acústica en español e inglés sin retraso.',
+          'Integración nativa con OBS Studio mediante fuente de navegador.',
+          'Tecnología Whisper con aceleración por hardware CUDA de baja latencia.',
+        ] : [
+          'Hello world! Real-time voice transcription powered by LiveAudio.',
+          'High acoustic fidelity in Spanish and English with ultra-low latency.',
+          'Native OBS Studio integration via local browser source.',
+          'Whisper ASR engine with GPU CUDA hardware acceleration.',
+        ];
+        const phrase = samplePhrases[Math.floor(Math.random() * samplePhrases.length)];
+        const style = elements.selectSubtitleStyle.value;
+        try {
+          const cue = await invoke('send_test_subtitle', { text: phrase, style });
+          addSubtitleToFeed(cue.text, cue);
+        } catch (err) {
+          addSubtitleToFeed(phrase, { text: phrase, style, timestamp_ms: Date.now() });
+        }
+      });
     });
-  });
+  }
 
   // Copy OBS URL
   elements.btnCopyObsUrl.addEventListener('click', async () => {
@@ -989,15 +1424,18 @@ async function initApp() {
 
     try {
       if (targetAction === 'stopping') {
+        appendLogEntry('info', 'Deteniendo servicio de transcripción...', 'SERVICE');
         const newStatus = await invoke('stop_service');
         currentStatus = newStatus;
-        showToast(t('toast_service_stopped'));
+        appendLogEntry('info', 'Servicio detenido.', 'SERVICE');
       } else {
+        appendLogEntry('info', 'Iniciando servicio de transcripción...', 'SERVICE');
         const newStatus = await invoke('start_service');
         currentStatus = newStatus;
-        showToast(t('toast_service_started'));
+        appendLogEntry('info', 'Servicio iniciado correctamente.', 'SERVICE');
       }
     } catch (err) {
+      appendLogEntry('error', `Error en servicio: ${err}`, 'ERROR');
       showToast(`${t('status_error')}: ${err}`, true);
     } finally {
       isServiceActionPending = false;
@@ -1013,11 +1451,13 @@ async function initApp() {
 
   elements.btnRuntimeRepair.addEventListener('click', async () => {
     try {
+      appendLogEntry('info', 'Iniciando verificación/reparación de entorno ASR...', 'SETUP');
       setRuntimeSetupProgress({ phase: 'starting', text: t('runtime_setup_starting'), percent: null });
       await invoke('prepare_asr_runtime');
       setRuntimeSetupProgress({ phase: 'ready', text: t('runtime_setup_ready'), percent: 100 });
-      showToast(t('runtime_setup_ready'));
+      appendLogEntry('info', 'Entorno ASR preparado con éxito.', 'SETUP');
     } catch (error) {
+      appendLogEntry('error', `Error al preparar entorno ASR: ${error}`, 'SETUP');
       setRuntimeSetupProgress({ phase: 'error', text: String(error), percent: null });
       showToast(`${t('status_error')}: ${error}`, true);
     }
@@ -1152,21 +1592,136 @@ async function initApp() {
     console.error('Initialization error:', err);
   }
 
+  // Wire up Event Logger Controls
+  if (elements.btnToggleLogger) {
+    elements.btnToggleLogger.addEventListener('click', toggleLoggerCollapse);
+  }
+  if (elements.btnClearLogs) {
+    elements.btnClearLogs.addEventListener('click', clearLogs);
+  }
+  if (elements.btnCopyLogs) {
+    elements.btnCopyLogs.addEventListener('click', copyLogs);
+  }
+
+  // Wire up Subtitles Stream Feed Controls
+  if (elements.btnClearFeed) {
+    elements.btnClearFeed.addEventListener('click', clearSubtitleFeed);
+  }
+
+  if (elements.feedActionMenu) {
+    elements.feedActionMenu.addEventListener('click', (e) => {
+      const btn = e.target.closest('.feed-menu-btn');
+      if (btn) {
+        const action = btn.dataset.action;
+        handleFeedAction(action);
+      }
+    });
+  }
+
+  // Dismiss feed action menu on click outside, escape key, or container scroll
+  document.addEventListener('click', (e) => {
+    if (!elements.feedActionMenu || elements.feedActionMenu.hidden) return;
+    if (!elements.feedActionMenu.contains(e.target) && !e.target.closest('.btn-feed-item-menu')) {
+      closeFeedActionMenu();
+    }
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && elements.feedActionMenu && !elements.feedActionMenu.hidden) {
+      closeFeedActionMenu();
+    }
+  });
+
+  if (elements.feedActionMenu) {
+    elements.feedActionMenu.addEventListener('keydown', (e) => {
+      const menuButtons = Array.from(elements.feedActionMenu.querySelectorAll('.feed-menu-btn'));
+      if (menuButtons.length === 0) return;
+      const currentIndex = menuButtons.indexOf(document.activeElement);
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        const nextIndex = (currentIndex + 1) % menuButtons.length;
+        menuButtons[nextIndex]?.focus();
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        const prevIndex = (currentIndex - 1 + menuButtons.length) % menuButtons.length;
+        menuButtons[prevIndex]?.focus();
+      } else if (e.key === 'Home') {
+        e.preventDefault();
+        menuButtons[0]?.focus();
+      } else if (e.key === 'End') {
+        e.preventDefault();
+        menuButtons[menuButtons.length - 1]?.focus();
+      } else if (e.key === 'Tab') {
+        closeFeedActionMenu();
+      }
+    });
+  }
+
+  if (elements.subtitlesFeedContainer) {
+    elements.subtitlesFeedContainer.addEventListener('scroll', () => {
+      if (elements.feedActionMenu && !elements.feedActionMenu.hidden) {
+        closeFeedActionMenu();
+      }
+    });
+  }
+
+  // Auto-dismiss floating menu when window is resized or outer view is scrolled
+  window.addEventListener('resize', () => {
+    if (elements.feedActionMenu && !elements.feedActionMenu.hidden) {
+      closeFeedActionMenu();
+    }
+  });
+  window.addEventListener('scroll', () => {
+    if (elements.feedActionMenu && !elements.feedActionMenu.hidden) {
+      closeFeedActionMenu();
+    }
+  }, true);
+
+  // Load Initial / Recent System Logs
+  try {
+    const recentLogs = await invoke('get_recent_logs', { max_lines: 40 });
+    if (Array.isArray(recentLogs) && recentLogs.length > 0) {
+      if (elements.loggerConsole) elements.loggerConsole.innerHTML = '';
+      for (const line of recentLogs) {
+        const clean = line.replace(/\x1b\[[0-9;]*m/g, '').trim();
+        if (!clean) continue;
+        let lvl = 'info';
+        if (/ERROR/i.test(clean)) lvl = 'error';
+        else if (/WARN/i.test(clean)) lvl = 'warn';
+        else if (/ASR/i.test(clean)) lvl = 'asr';
+        else if (/VAD/i.test(clean)) lvl = 'vad';
+        appendLogEntry(lvl, clean, 'INIT');
+      }
+    } else {
+      appendLogEntry('info', 'Panel de eventos listo.', 'SYSTEM');
+    }
+  } catch (_) {
+    appendLogEntry('info', 'Panel de eventos listo.', 'SYSTEM');
+  }
+
   // Subscribe to Tauri events safely
   try {
     await listen('runtime_setup_progress', (event) => {
-      if (event && event.payload) setRuntimeSetupProgress(event.payload);
+      if (event && event.payload) {
+        setRuntimeSetupProgress(event.payload);
+        const isErr = event.payload.phase === 'error';
+        const pctStr = event.payload.percent != null ? ` (${Math.round(event.payload.percent)}%)` : '';
+        appendLogEntry(isErr ? 'error' : 'info', `[${event.payload.phase}] ${event.payload.text}${pctStr}`, 'SETUP');
+      }
     });
 
     await listen('service_status_changed', (event) => {
       if (event && event.payload) {
         updateStatusUI(event.payload);
+        const runningLabel = event.payload.is_running ? 'En ejecución' : 'Detenido';
+        appendLogEntry('info', `Estado: ${runningLabel} | ASR: ${event.payload.asr_state}`, 'STATUS');
       }
     });
 
     await listen('subtitle_cue', (event) => {
       if (event && event.payload) {
-        renderSubtitle(event.payload.text, event.payload.style || elements.selectSubtitleStyle.value);
+        addSubtitleToFeed(event.payload.text, event.payload);
+        appendLogEntry('asr', `"${event.payload.text}"`, 'SUBTITLE');
       }
     });
   } catch (err) {

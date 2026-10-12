@@ -5,8 +5,8 @@
 use crate::commands::{
     admit_worker_event_generation, asr_progress_from_worker_event,
     asr_progress_update_for_worker_event, desktop_runtime_preflight_error,
-    get_service_status_internal, persist_config_and_apply, profile_presets, stop_active_websocket,
-    worker_attempt_is_current,
+    get_service_status_internal, is_text_blacklisted, persist_config_and_apply, profile_presets, stop_active_websocket,
+    trim_boundary_overlap, trim_boundary_overlap_with_max, worker_attempt_is_current,
 };
 use crate::dto::*;
 use crate::state::AppState;
@@ -1143,3 +1143,252 @@ fn test_encode_f32_le_base64_codec() {
     assert!(!b64.is_empty());
     assert_eq!(b64.len() % 4, 0);
 }
+
+#[test]
+fn test_is_text_blacklisted_cases() {
+    let blacklist = "amara.org, subtítulos por, suscríbete, dale like, \"gracias por ver\"";
+
+    // Matches exact and substring
+    assert!(is_text_blacklisted("Subtítulos realizados por la comunidad de amara.org", blacklist));
+    assert!(is_text_blacklisted("subtítulos por favor", blacklist));
+    assert!(is_text_blacklisted("SUSCRÍBETE a mi canal", blacklist));
+    assert!(is_text_blacklisted("No olvides dale like y comentar", blacklist));
+    assert!(is_text_blacklisted("Muchas gracias por ver este video", blacklist));
+
+    // Accent and diacritic folding: matches even if transcript has no accent or blacklist has no accent
+    assert!(is_text_blacklisted("Suscribete a mi canal", blacklist)); // unaccented text matches accented blacklist
+    assert!(is_text_blacklisted("¡SUSCRIBETE!", blacklist));
+    let unaccented_bl = "suscribete, subtitulos por";
+    assert!(is_text_blacklisted("¡Suscríbete a mi canal!", unaccented_bl)); // accented text matches unaccented blacklist
+    assert!(is_text_blacklisted("Subtítulos por favor", unaccented_bl));
+
+    // Multiline and semicolon delimiters
+    let multiline_bl = "amara.org\nsuscribete;gracias por ver";
+    assert!(is_text_blacklisted("amara.org", multiline_bl));
+    assert!(is_text_blacklisted("suscríbete ya", multiline_bl));
+    assert!(is_text_blacklisted("muchas gracias por ver", multiline_bl));
+
+    // Smart and typographical quotes
+    let smart_quotes_bl = "“amara.org”, ‘suscríbete’, «dale like»";
+    assert!(is_text_blacklisted("amara.org", smart_quotes_bl));
+    assert!(is_text_blacklisted("suscribete", smart_quotes_bl));
+    assert!(is_text_blacklisted("dale like", smart_quotes_bl));
+
+    // Clean text does not match
+    assert!(!is_text_blacklisted("Hola a todos, hoy vamos a programar en Rust", blacklist));
+    assert!(!is_text_blacklisted("Este es un audio completamente normal", blacklist));
+
+    // Empty blacklist passes everything
+    assert!(!is_text_blacklisted("amara.org", ""));
+    assert!(!is_text_blacklisted("amara.org", "   ,   "));
+
+    // Empty text returns false
+    assert!(!is_text_blacklisted("", blacklist));
+}
+
+#[test]
+fn test_trim_boundary_overlap_exact_match() {
+    assert_eq!(trim_boundary_overlap("hola mundo", "hola mundo"), "");
+    assert_eq!(
+        trim_boundary_overlap("esto es una prueba completa", "esto es una prueba completa"),
+        ""
+    );
+    assert_eq!(trim_boundary_overlap("impresionante", "impresionante"), "");
+}
+
+#[test]
+fn test_trim_boundary_overlap_single_word() {
+    assert_eq!(
+        trim_boundary_overlap("esto es impresionante", "impresionante y puede pasar"),
+        "y puede pasar"
+    );
+    assert_eq!(
+        trim_boundary_overlap("vamos a empezar", "empezar ahora mismo"),
+        "ahora mismo"
+    );
+    assert_eq!(
+        trim_boundary_overlap("el cielo está despejado", "despejado hoy"),
+        "hoy"
+    );
+}
+
+#[test]
+fn test_trim_boundary_overlap_multi_word() {
+    // 2-word overlap
+    assert_eq!(
+        trim_boundary_overlap("creo que esto es muy bueno", "muy bueno para todos"),
+        "para todos"
+    );
+    // 3-word overlap
+    assert_eq!(
+        trim_boundary_overlap("la casa blanca en el bosque", "en el bosque encantado"),
+        "encantado"
+    );
+    // 4-word overlap
+    assert_eq!(
+        trim_boundary_overlap(
+            "uno dos tres cuatro cinco seis",
+            "tres cuatro cinco seis siete ocho"
+        ),
+        "siete ocho"
+    );
+    // Custom window testing
+    assert_eq!(
+        trim_boundary_overlap_with_max("uno dos tres", "dos tres cuatro", 2),
+        "cuatro"
+    );
+    assert_eq!(
+        trim_boundary_overlap_with_max("uno dos tres", "dos tres cuatro", 1),
+        "dos tres cuatro" // only 1 word tested ("tres" != "dos")
+    );
+}
+
+#[test]
+fn test_trim_boundary_overlap_punctuation_and_diacritics() {
+    // Punctuation on overlap boundaries
+    assert_eq!(
+        trim_boundary_overlap("¡Eso fue increíble!", "Increíble... pero cierto."),
+        "pero cierto."
+    );
+    assert_eq!(
+        trim_boundary_overlap("hola mundo,", "¿Hola mundo? Claro que sí."),
+        "Claro que sí."
+    );
+    assert_eq!(
+        trim_boundary_overlap("atención:", "Atención - continuemos."),
+        "continuemos."
+    );
+    assert_eq!(
+        trim_boundary_overlap("bienvenidos;", "bienvenidos, amigos"),
+        "amigos"
+    );
+    assert_eq!(
+        trim_boundary_overlap("¿estamos listos?", "¡Listos! Empecemos."),
+        "Empecemos."
+    );
+
+    // Diacritic folding tolerance
+    assert_eq!(
+        trim_boundary_overlap("información", "Informacion importante"),
+        "importante"
+    );
+    assert_eq!(
+        trim_boundary_overlap("está bien", "esta bien amigo"),
+        "amigo"
+    );
+
+    // Preserving Spanish opening punctuation in remainder
+    assert_eq!(
+        trim_boundary_overlap("terminó", "terminó. ¿Qué sigue ahora?"),
+        "¿Qué sigue ahora?"
+    );
+    assert_eq!(
+        trim_boundary_overlap("vamos", "vamos ¡vamos con todo!"),
+        "¡vamos con todo!"
+    );
+    // Unicode ellipsis and dash trimming tolerance
+    assert_eq!(
+        trim_boundary_overlap("increíble", "Increíble … pero cierto."),
+        "pero cierto."
+    );
+    assert_eq!(
+        trim_boundary_overlap("increíble", "Increíble – continuemos."),
+        "continuemos."
+    );
+    assert_eq!(
+        trim_boundary_overlap("vamos", "vamos… ¡vamos con todo!"),
+        "¡vamos con todo!"
+    );
+}
+
+#[test]
+fn test_trim_boundary_overlap_empty_and_boundaries() {
+    // Empty remainder when new chunk is subset of trailing words
+    assert_eq!(trim_boundary_overlap("muchas gracias", "gracias"), "");
+    assert_eq!(trim_boundary_overlap("¡Hola a todos!", "todos"), "");
+
+    // No overlap
+    assert_eq!(
+        trim_boundary_overlap("hola amigo", "buenas tardes"),
+        "buenas tardes"
+    );
+    // Common word in middle of previous transcript must not trigger false overlap
+    assert_eq!(
+        trim_boundary_overlap("el perro corre rápido", "el gato duerme"),
+        "el gato duerme"
+    );
+
+    // Empty or whitespace inputs
+    assert_eq!(trim_boundary_overlap("", "algo nuevo"), "algo nuevo");
+    assert_eq!(trim_boundary_overlap("algo viejo", ""), "");
+    assert_eq!(trim_boundary_overlap("", ""), "");
+    assert_eq!(
+        trim_boundary_overlap("   hola mundo   ", "   mundo y personas   "),
+        "y personas"
+    );
+}
+
+#[tokio::test]
+async fn test_app_state_previous_transcript_lifecycle() {
+    let state = AppState::default();
+    assert!(state.previous_transcript.read().await.is_none());
+
+    *state.previous_transcript.write().await = Some("primera transcripción".to_string());
+    assert_eq!(
+        state.previous_transcript.read().await.as_deref(),
+        Some("primera transcripción")
+    );
+
+    // Simulate service reset
+    *state.previous_transcript.write().await = None;
+    assert!(state.previous_transcript.read().await.is_none());
+}
+
+#[tokio::test]
+async fn test_multi_chunk_overlap_streaming_simulation() {
+    let state = AppState::default();
+    let mut emitted = Vec::new();
+
+    let chunks = vec![
+        "vamos a ver este gran proyecto",
+        "este gran proyecto genial",
+        "proyecto genial de código abierto",
+        "de código abierto", // fully duplicate chunk
+        "abierto para la comunidad",
+    ];
+
+    for text in chunks {
+        let trimmed = {
+            let prev_guard = state.previous_transcript.read().await;
+            if let Some(ref prev) = *prev_guard {
+                trim_boundary_overlap(prev, text)
+            } else {
+                text.to_string()
+            }
+        };
+
+        if !trimmed.trim().is_empty() {
+            *state.previous_transcript.write().await = Some(text.to_string());
+            emitted.push(trimmed);
+        }
+    }
+
+    assert_eq!(
+        emitted,
+        vec![
+            "vamos a ver este gran proyecto",
+            "genial",
+            "de código abierto",
+            "para la comunidad",
+        ]
+    );
+
+    let joined = emitted.join(" ");
+    assert_eq!(
+        joined,
+        "vamos a ver este gran proyecto genial de código abierto para la comunidad"
+    );
+}
+
+
+

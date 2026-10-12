@@ -38,6 +38,7 @@ pub fn run() {
             commands::send_test_subtitle,
             commands::open_session_folder,
             commands::open_author_profile,
+            commands::get_recent_logs,
         ])
         .run(tauri::generate_context!())
         .expect("error while running LiveAudio Desktop application");

@@ -31,13 +31,49 @@ use liveaudio_vad::{
 };
 
 fn initialize_bundled_cpu_runtime(app: &AppHandle) -> Result<(), String> {
-    let resource_root = app.path().resource_dir().map_err(|_| {
-        "LiveAudio resource files are unavailable. Repair or reinstall the application.".to_string()
-    })?;
-    let runtime_path = cpu_runtime_library_path(resource_root)
-        .map_err(|_| "LiveAudio's bundled CPU audio runtime is unavailable. Repair or reinstall the application.".to_string())?;
-    initialize_onnx_runtime(runtime_path)
-        .map_err(|_| "LiveAudio's bundled CPU audio runtime could not be loaded. Repair or reinstall the application.".to_string())
+    // 1. Try packaged resource directory first
+    let packaged_path = app.path().resource_dir().ok().and_then(|resource_root| {
+        cpu_runtime_library_path(&resource_root).ok()
+    }).filter(|p| p.is_file());
+
+    // 2. Try development and local executable fallbacks
+    let runtime_path = if let Some(path) = packaged_path {
+        path
+    } else {
+        let current_dir = std::env::current_dir().ok();
+        let exe_dir = std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.to_path_buf()));
+
+        let candidates = [
+            // packaging in current working dir (e.g. E:\LiveAudio\packaging)
+            current_dir.as_ref().map(|d| d.join("packaging")),
+            // packaging in workspace root if running from desktop directory
+            current_dir.as_ref().map(|d| d.join("../packaging")),
+            // packaging next to executable
+            exe_dir.as_ref().map(|d| d.join("packaging")),
+            // directly next to executable or target/debug
+            exe_dir.as_ref().cloned(),
+        ];
+
+        let mut found = None;
+        for candidate in candidates.into_iter().flatten() {
+            if let Ok(lib) = cpu_runtime_library_path(&candidate) {
+                if lib.is_file() {
+                    found = Some(lib);
+                    break;
+                }
+            }
+        }
+
+        found.ok_or_else(|| {
+            "LiveAudio's bundled CPU audio runtime is unavailable. Repair or reinstall the application.".to_string()
+        })?
+    };
+
+    tracing::info!("Cargando ONNX Runtime desde: {}", runtime_path.display());
+    initialize_onnx_runtime(&runtime_path).map_err(|error| {
+        tracing::error!("Error inicializando ONNX Runtime: {}", error);
+        format!("LiveAudio's bundled CPU audio runtime could not be loaded: {error}")
+    })
 }
 
 pub(crate) fn observe_and_publish_acoustic_transition(
@@ -438,6 +474,7 @@ pub(crate) async fn rollback_failed_audio_start(
     }
     *state.session_path.write().await = None;
     *state.active_config.write().await = None;
+    *state.previous_transcript.write().await = None;
 
     state.is_running.store(false, Ordering::SeqCst);
     state.vad_onset.store(false, Ordering::SeqCst);
@@ -971,6 +1008,7 @@ async fn start_service_locked(
         let mut start_guard = state.start_time.write().await;
         *start_guard = Some(Instant::now());
     }
+    *state.previous_transcript.write().await = None;
 
     // 4. Background Task: Worker events dispatcher (subtitles, model status)
     let app_events = app.clone();
@@ -982,10 +1020,7 @@ async fn start_service_locked(
     let backlog_policy = BacklogPolicy::from_config(&config.subtitle_backlog_policy);
     let max_live_delay_sec = config.subtitle_max_live_delay_sec;
     let catchup_interval_sec = config.subtitle_catchup_interval_sec;
-    let session_language = config
-        .language
-        .clone()
-        .unwrap_or_else(|| "auto".to_string());
+    let session_language = clean_lang.clone();
     let session_started = Instant::now();
     let initial_worker_attempt = initial_worker_attempt.max(1);
 
@@ -1057,59 +1092,80 @@ async fn start_service_locked(
                                             let timing = pending_events.lock().unwrap().complete(utt_id, inference_sec);
 
                                             if !text.is_empty() {
-                                                if let Some(sink) = state_events.session_sink.lock().await.clone() {
-                                                    let raw_response = AsrTranscriptionResponse {
-                                                        request_id: utt_id.to_string(),
-                                                        text: text.to_string(),
-                                                        language: session_language.clone(),
-                                                        duration_sec: dur_sec as f32,
-                                                        latency_sec: inference_sec as f32,
-                                                        segments: Vec::new(),
+                                                let blacklist = state_events.config.read().await.blacklist.clone();
+                                                if is_text_blacklisted(text, &blacklist) {
+                                                    tracing::info!("🚫 [Blacklist Filter] Descartando transcripción alucinada [{}] ({} caracteres)", utt_id, text.chars().count());
+                                                } else {
+                                                    let trimmed_text = {
+                                                        let prev_guard = state_events.previous_transcript.read().await;
+                                                        if let Some(ref prev) = *prev_guard {
+                                                            trim_boundary_overlap(prev, text)
+                                                        } else {
+                                                            text.to_string()
+                                                        }
                                                     };
-                                                    let cue = TranscriptionCue::new(
-                                                        session_started.elapsed().as_millis().max(1) as u64,
-                                                        session_started.elapsed().as_secs_f64(),
-                                                        session_started.elapsed().as_secs_f64() + dur_sec,
-                                                        text.to_string(),
-                                                        raw_response,
-                                                    );
-                                                    if let Err(error) = sink.emit(&cue).await {
-                                                        tracing::warn!("Session sink rejected a transcript cue: {}", error);
+
+                                                    if trimmed_text.trim().is_empty() {
+                                                        tracing::debug!("🔇 [ASR Solapamiento descartado] [{}] (todo el texto era duplicado del chunk anterior)", utt_id);
+                                                    } else {
+                                                        *state_events.previous_transcript.write().await = Some(text.to_string());
+                                                        let text_to_emit = trimmed_text;
+
+                                                        if let Some(sink) = state_events.session_sink.lock().await.clone() {
+                                                            let raw_response = AsrTranscriptionResponse {
+                                                                request_id: utt_id.to_string(),
+                                                                text: text_to_emit.clone(),
+                                                                language: session_language.clone(),
+                                                                duration_sec: dur_sec as f32,
+                                                                latency_sec: inference_sec as f32,
+                                                                segments: Vec::new(),
+                                                            };
+                                                            let cue = TranscriptionCue::new(
+                                                                session_started.elapsed().as_millis().max(1) as u64,
+                                                                session_started.elapsed().as_secs_f64(),
+                                                                session_started.elapsed().as_secs_f64() + dur_sec,
+                                                                text_to_emit.clone(),
+                                                                raw_response,
+                                                            );
+                                                            if let Err(error) = sink.emit(&cue).await {
+                                                                tracing::warn!("Session sink rejected a transcript cue: {}", error);
+                                                            }
+                                                            *state_events.session_error.write().await = session_sink_failure(&sink.stats());
+                                                        }
+                                                        log_transcription_metadata(payload);
+                                                        let now_ms = SystemTime::now()
+                                                            .duration_since(UNIX_EPOCH)
+                                                            .map(|d| d.as_millis() as u64)
+                                                            .unwrap_or(0);
+                                                        let active_style = state_events.config.read().await.subtitle_style.clone();
+
+                                                        let cue = SubtitleCueDto {
+                                                            id: now_ms,
+                                                            start: 0.0,
+                                                            end: dur_sec,
+                                                            text: text_to_emit.clone(),
+                                                            style: active_style.clone(),
+                                                            timestamp_ms: now_ms,
+                                                        };
+
+                                                        // Emit to Tauri webview UI preview
+                                                        let _ = app_events.emit("subtitle_cue", &cue);
+
+                                                        // Broadcast to OBS Studio Browser Source clients
+                                                        let wire_msg = subtitle_from_worker_result(
+                                                            utt_id.to_string(),
+                                                            cue.text.clone(),
+                                                            cue.style.clone(),
+                                                            inference_sec,
+                                                            timing,
+                                                            backlog_policy,
+                                                            max_live_delay_sec,
+                                                            catchup_interval_sec,
+                                                        );
+                                                        if let Some(wire_msg) = wire_msg {
+                                                            let _ = ws_events.broadcast_subtitle(&wire_msg);
+                                                        }
                                                     }
-                                                    *state_events.session_error.write().await = session_sink_failure(&sink.stats());
-                                                }
-                                                log_transcription_metadata(payload);
-                                                let now_ms = SystemTime::now()
-                                                    .duration_since(UNIX_EPOCH)
-                                                    .map(|d| d.as_millis() as u64)
-                                                    .unwrap_or(0);
-                                                let active_style = state_events.config.read().await.subtitle_style.clone();
-
-                                                let cue = SubtitleCueDto {
-                                                    id: now_ms,
-                                                    start: 0.0,
-                                                    end: dur_sec,
-                                                    text: text.to_string(),
-                                                    style: active_style.clone(),
-                                                    timestamp_ms: now_ms,
-                                                };
-
-                                                // Emit to Tauri webview UI preview
-                                                let _ = app_events.emit("subtitle_cue", &cue);
-
-                                                // Broadcast to OBS Studio Browser Source clients
-                                                let wire_msg = subtitle_from_worker_result(
-                                                    utt_id.to_string(),
-                                                    cue.text.clone(),
-                                                    cue.style.clone(),
-                                                    inference_sec,
-                                                    timing,
-                                                    backlog_policy,
-                                                    max_live_delay_sec,
-                                                    catchup_interval_sec,
-                                                );
-                                                if let Some(wire_msg) = wire_msg {
-                                                    let _ = ws_events.broadcast_subtitle(&wire_msg);
                                                 }
                                             } else {
                                                 tracing::debug!("🔇 [ASR Transcripción vacía] [{}] (silencio/ruido descartado)", utt_id);
@@ -1308,7 +1364,29 @@ async fn start_service_locked(
                                                 utterance_seq += 1;
                                                 tracing::info!("🎙️ [VAD] Voz finalizada: {}ms ({} muestras) -> enviando utt_{} a Faster-Whisper", duration_ms, utterance_samples.len(), utterance_seq);
                                                 let b64_audio = encode_f32_le_base64(&utterance_samples);
-                                                let lang = state_audio.config.read().await.language.clone();
+                                                let (clean_lang, context_prompt) = {
+                                                    let cfg = state_audio.config.read().await;
+                                                    let clean_lang = if !cfg.asr_language.is_empty() {
+                                                        cfg.asr_language.clone()
+                                                    } else {
+                                                        cfg.language
+                                                            .as_deref()
+                                                            .filter(|language| !language.is_empty() && *language != "auto")
+                                                            .unwrap_or("es")
+                                                            .to_string()
+                                                    };
+                                                    let prompt = if clean_lang == "en" {
+                                                        cfg.whisper_context_prompt_en.trim()
+                                                    } else {
+                                                        cfg.whisper_context_prompt_es.trim()
+                                                    };
+                                                    let context_prompt = if prompt.is_empty() {
+                                                        None
+                                                    } else {
+                                                        Some(prompt.to_string())
+                                                    };
+                                                    (clean_lang, context_prompt)
+                                                };
 
                                                 let cmd = serde_json::json!({
                                                     "version": 1,
@@ -1324,7 +1402,8 @@ async fn start_service_locked(
                                                         "sample_rate": 16000,
                                                         "channels": 1,
                                                         "duration_ms": duration_ms,
-                                                        "language": lang,
+                                                        "language": clean_lang,
+                                                        "context_prompt": context_prompt,
                                                     }
                                                 });
 
@@ -1530,6 +1609,7 @@ async fn stop_service_locked(
         let mut start_guard = state.start_time.write().await;
         *start_guard = None;
     }
+    *state.previous_transcript.write().await = None;
 
     // 1. Cancel audio capture and background tasks
     if let Some(token) = state.cancel_token.lock().await.take() {
@@ -1815,3 +1895,188 @@ pub async fn send_test_subtitle(
     let _ = app.emit("subtitle_cue", &cue);
     Ok(cue)
 }
+
+/// Retrieve recent lines from the application log file.
+#[tauri::command]
+pub async fn get_recent_logs(max_lines: Option<usize>) -> Result<Vec<String>, String> {
+    let limit = max_lines.unwrap_or(100);
+    let data_home = liveaudio_core::config::get_data_home();
+    let log_file_path = data_home.join("logs").join("liveaudio-desktop.log");
+
+    if !log_file_path.is_file() {
+        return Ok(Vec::new());
+    }
+
+    let content = std::fs::read_to_string(&log_file_path).map_err(|e| e.to_string())?;
+    let lines: Vec<String> = content
+        .lines()
+        .rev()
+        .take(limit)
+        .map(|s| s.to_string())
+        .collect();
+    let mut reversed = lines;
+    reversed.reverse();
+    Ok(reversed)
+}
+
+fn fold_diacritics(s: &str) -> String {
+    s.chars()
+        .flat_map(|c| c.to_lowercase())
+        .map(|c| match c {
+            'á' | 'à' | 'ä' | 'â' | 'ã' | 'ā' => 'a',
+            'é' | 'è' | 'ë' | 'ê' | 'ē' => 'e',
+            'í' | 'ì' | 'ï' | 'î' | 'ī' => 'i',
+            'ó' | 'ò' | 'ö' | 'ô' | 'õ' | 'ō' => 'o',
+            'ú' | 'ù' | 'ü' | 'û' | 'ū' => 'u',
+            other => other,
+        })
+        .collect()
+}
+
+/// Checks whether a transcribed text matches any phrase in the blacklist.
+/// Matches case-insensitively, folds diacritics/accents, splits on commas/semicolons/newlines,
+/// trims whitespace, and strips standard and typographical quotes.
+pub fn is_text_blacklisted(text: &str, blacklist_csv: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let text_folded = fold_diacritics(trimmed);
+    blacklist_csv
+        .split(|c| c == ',' || c == ';' || c == '\n' || c == '\r')
+        .map(|entry| {
+            entry
+                .trim()
+                .trim_matches(|c| {
+                    c == '"' || c == '\'' || c == '“' || c == '”' || c == '‘' || c == '’' || c == '«' || c == '»'
+                })
+                .trim()
+        })
+        .filter(|entry| !entry.is_empty())
+        .any(|phrase| {
+            let phrase_folded = fold_diacritics(phrase);
+            !phrase_folded.is_empty() && text_folded.contains(&phrase_folded)
+        })
+}
+
+#[derive(Debug, Clone)]
+struct WordToken {
+    normalized: String,
+    end_byte: usize,
+}
+
+fn normalize_word(token: &str) -> String {
+    fold_diacritics(token)
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .collect()
+}
+
+fn extract_words(s: &str) -> Vec<WordToken> {
+    let mut words = Vec::new();
+    let mut start_idx = None;
+
+    for (idx, ch) in s.char_indices() {
+        if ch.is_whitespace() {
+            if let Some(start) = start_idx {
+                let token = &s[start..idx];
+                let norm = normalize_word(token);
+                if !norm.is_empty() {
+                    words.push(WordToken {
+                        normalized: norm,
+                        end_byte: idx,
+                    });
+                }
+                start_idx = None;
+            }
+        } else if start_idx.is_none() {
+            start_idx = Some(idx);
+        }
+    }
+
+    if let Some(start) = start_idx {
+        let token = &s[start..];
+        let norm = normalize_word(token);
+        if !norm.is_empty() {
+            words.push(WordToken {
+                normalized: norm,
+                end_byte: s.len(),
+            });
+        }
+    }
+
+    words
+}
+
+fn clean_trimmed_remainder(remainder: &str) -> &str {
+    remainder
+        .trim_start_matches(|c: char| {
+            c.is_whitespace()
+                || c == ','
+                || c == '.'
+                || c == '-'
+                || c == '—'
+                || c == '–'
+                || c == '…'
+                || c == ':'
+                || c == ';'
+        })
+        .trim()
+}
+
+/// Trims boundary overlap words from `curr` that duplicate trailing words of `prev`.
+///
+/// Compares trailing 1..=max_words of `prev` with leading 1..=max_words of `curr`
+/// (case-insensitive, normalized punctuation and diacritics).
+/// If an overlap of length `k` is detected, the overlapping prefix in `curr` is stripped.
+/// Returns the trimmed remainder of `curr` (which may be empty).
+pub fn trim_boundary_overlap(prev: &str, curr: &str) -> String {
+    trim_boundary_overlap_with_max(prev, curr, 5)
+}
+
+/// Trims boundary overlap words from `curr` that duplicate trailing words of `prev`,
+/// testing overlaps up to `max_words` tokens (from largest down to 1).
+pub fn trim_boundary_overlap_with_max(prev: &str, curr: &str, max_words: usize) -> String {
+    let curr_trimmed = curr.trim();
+    if curr_trimmed.is_empty() {
+        return String::new();
+    }
+    let prev_trimmed = prev.trim();
+    if prev_trimmed.is_empty() || max_words == 0 {
+        return curr_trimmed.to_string();
+    }
+
+    let prev_words = extract_words(prev_trimmed);
+    let curr_words = extract_words(curr_trimmed);
+
+    if prev_words.is_empty() || curr_words.is_empty() {
+        return curr_trimmed.to_string();
+    }
+
+    let max_k = max_words.min(prev_words.len()).min(curr_words.len());
+
+    for k in (1..=max_k).rev() {
+        let prev_slice = &prev_words[prev_words.len() - k..];
+        let curr_slice = &curr_words[..k];
+
+        let matches = prev_slice
+            .iter()
+            .zip(curr_slice.iter())
+            .all(|(p, c)| p.normalized == c.normalized);
+
+        if matches {
+            let end_byte = curr_slice.last().map(|w| w.end_byte).unwrap_or(0);
+            let remainder = if end_byte < curr_trimmed.len() {
+                &curr_trimmed[end_byte..]
+            } else {
+                ""
+            };
+            return clean_trimmed_remainder(remainder).to_string();
+        }
+    }
+
+    curr_trimmed.to_string()
+}
+
+
+

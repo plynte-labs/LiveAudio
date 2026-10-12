@@ -26,14 +26,14 @@
             <span id="pill-status-text">Detenido</span>
           </div>
 
+          <div id="pill-vad" class="pill pill-vad" role="status" aria-live="polite">
+            <span class="pill-dot"></span>
+            <span id="pill-vad-text">VAD: Silencio</span>
+          </div>
+
           <details class="status-details">
             <summary data-i18n="header_details">Detalles</summary>
             <div class="status-detail-items">
-              <div id="pill-vad" class="pill pill-vad">
-                <span class="pill-dot"></span>
-                <span id="pill-vad-text">VAD: Silencio</span>
-              </div>
-
               <div id="pill-ws" class="pill pill-ws">
                 <span class="pill-dot"></span>
                 <span id="pill-ws-text">WS: 8765 (0 cli)</span>
@@ -79,35 +79,6 @@
               <polygon points="5 3 19 12 5 21 5 3"></polygon>
             </svg>
             <span id="btn-toggle-service-text" data-i18n="btn_start">Iniciar Transcripción</span>
-          </button>
-
-          <button id="btn-runtime-repair" class="btn-secondary" type="button" data-i18n="btn_runtime_repair">Repair ASR Runtime</button>
-          <button id="btn-runtime-cancel" class="btn-secondary" type="button" data-i18n="btn_runtime_cancel" hidden>Cancel setup</button>
-
-          <button id="btn-save-config" class="btn-secondary" title="Guardar Cambios" data-i18n-title="title_save_btn">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
-              <polyline points="17 21 17 13 7 13 7 21"></polyline>
-              <polyline points="7 3 7 8 15 8"></polyline>
-            </svg>
-            <span data-i18n="btn_save">Guardar</span>
-          </button>
-
-          <button id="btn-reset-config" class="btn-secondary" title="Valores por Defecto" data-i18n-title="title_reset_btn">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <polyline points="1 4 1 10 7 10"></polyline>
-              <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path>
-            </svg>
-            <span data-i18n="btn_reset">Restablecer</span>
-          </button>
-
-          <button id="btn-export-diag" class="btn-secondary" title="Exportar Reporte Diagnóstico" data-i18n-title="title_diag_btn">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-              <polyline points="7 10 12 15 17 10"></polyline>
-              <line x1="12" y1="15" x2="12" y2="3"></line>
-            </svg>
-            <span data-i18n="btn_diag">Diagnóstico</span>
           </button>
         </div>
         <div id="runtime-setup-progress" class="form-hint" role="progressbar" aria-valuetext="Idle" hidden>
@@ -217,7 +188,7 @@
                   <span class="form-hint" data-i18n="hint_compute_device">CUDA usa la GPU compatible; CPU es una alternativa si no hay GPU disponible.</span>
                 </div>
               </div>
-              <div class="form-group">
+              <div class="form-group" id="group-cpu-threads">
                 <label for="slider-cpu-threads" data-i18n="lbl_cpu_threads">Hilos de CPU</label>
                 <div class="slider-container">
                   <input type="range" id="slider-cpu-threads" min="1" max="16" step="1" value="8">
@@ -309,6 +280,15 @@
                 <textarea id="prompt-es" class="form-control" rows="3" placeholder="Términos técnicos, jerga de juego, nombres propios..." data-i18n-placeholder="ph_prompt_es"></textarea>
                 <span id="hint-prompt" class="form-hint" data-i18n="hint_prompt_es">Añade vocabulario que ayude al reconocimiento en el idioma seleccionado.</span>
               </div>
+
+              <div class="form-group" id="group-runtime-maintenance">
+                <label data-i18n="lbl_runtime_maintenance">Entorno y Mantenimiento de ASR</label>
+                <div class="button-row" style="display: flex; gap: 8px; margin-top: 6px;">
+                  <button id="btn-runtime-repair" class="btn-secondary" type="button" data-i18n="btn_runtime_repair">Reparar entorno de ASR</button>
+                  <button id="btn-runtime-cancel" class="btn-secondary" type="button" data-i18n="btn_runtime_cancel" hidden>Cancelar preparación</button>
+                </div>
+                <span class="form-hint" data-i18n="hint_runtime_maintenance">Instala o sincroniza las dependencias de Python y modelos para reconocimiento local.</span>
+              </div>
             </section>
 
             <section id="tab-files" class="tab-pane" role="tabpanel" aria-labelledby="tab-files-tab" tabindex="0" hidden>
@@ -339,26 +319,68 @@
                 </label>
                 <span class="form-hint" data-i18n="hint_save_sinks">Los archivos opcionales de sesión se guardan en el dispositivo.</span>
               </div>
+
+              <div class="form-group session-box" style="margin-top: 14px;">
+                <div class="session-box-heading">
+                  <label data-i18n="lbl_diagnostics">Reporte de Diagnóstico</label>
+                  <button id="btn-export-diag" class="btn-secondary" type="button" title="Exportar Reporte Diagnóstico" data-i18n-title="title_diag_btn">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                      <polyline points="7 10 12 15 17 10"></polyline>
+                      <line x1="12" y1="15" x2="12" y2="3"></line>
+                    </svg>
+                    <span data-i18n="btn_diag">Diagnóstico</span>
+                  </button>
+                </div>
+                <span class="form-hint" data-i18n="hint_diagnostics">Exporta un resumen técnico con versiones y estado para resolución de problemas.</span>
+              </div>
             </section>
+          </div>
+
+          <!-- Settings Actions Footer -->
+          <div class="tabs-footer">
+            <button id="btn-save-config" class="btn-primary-action" title="Guardar Cambios" data-i18n-title="title_save_btn">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
+                <polyline points="17 21 17 13 7 13 7 21"></polyline>
+                <polyline points="7 3 7 8 15 8"></polyline>
+              </svg>
+              <span data-i18n="btn_save">Guardar</span>
+            </button>
+
+            <button id="btn-reset-config" class="btn-secondary" title="Valores por Defecto" data-i18n-title="title_reset_btn">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="1 4 1 10 7 10"></polyline>
+                <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path>
+              </svg>
+              <span data-i18n="btn_reset">Restablecer</span>
+            </button>
+          </div>
         </div>
-      </div>
       </div>
 
       <!-- Right Pane: Live Subtitle Preview & OBS Integration -->
       <div class="right-pane">
-        <!-- Live Preview Card -->
-        <div class="card preview-card">
+        <!-- Subtitles Stream Feed Card (Stream-Chat style) -->
+        <div class="card feed-card" id="card-subtitles-feed">
           <div class="card-title">
-            <span data-i18n="title_preview">Vista Previa de Subtítulos</span>
-            <button id="btn-test-subtitle" class="btn-secondary" style="padding: 4px 10px; font-size: 0.75rem;" data-i18n="btn_test_subtitle">
-              Probar Animación
-            </button>
+            <div class="feed-title-group">
+              <span data-i18n="title_subtitles_feed">Feed de Subtítulos en Vivo</span>
+              <span id="feed-count-badge" class="badge-counter" title="Subtítulos en búfer" data-i18n-title="title_feed_count">0</span>
+            </div>
+            <div class="feed-controls">
+              <button id="btn-test-subtitle" class="btn-secondary btn-compact" type="button" data-i18n="btn_test_subtitle" title="Enviar subtítulo de prueba" data-i18n-title="title_test_subtitle">
+                Probar
+              </button>
+              <button id="btn-clear-feed" class="btn-secondary btn-compact" type="button" data-i18n="btn_clear_feed" title="Limpiar feed" data-i18n-title="title_clear_feed">
+                Limpiar
+              </button>
+            </div>
           </div>
 
-          <div class="preview-stage">
-            <span class="preview-badge" data-i18n="preview_badge">Preview 1920x1080</span>
-            <div id="subtitle-box" class="sub-box style-default" data-i18n="sample_preview_text">
-              Subtítulos en tiempo real para streamers y creadores con LiveAudio
+          <div id="subtitles-feed-container" class="feed-container" role="log" aria-live="polite" aria-label="Feed de subtítulos en vivo" data-i18n-aria-label="aria_subtitles_feed">
+            <div class="feed-empty-state" id="feed-empty-state" data-i18n="feed_empty_hint">
+              Los subtítulos transcritos aparecerán aquí en tiempo real como un chat en vivo...
             </div>
           </div>
         </div>
@@ -388,6 +410,24 @@
             </div>
           </details>
         </div>
+
+        <!-- Event Logger Card -->
+        <div class="card logger-card collapsed" id="card-logger">
+          <div class="card-title">
+            <div class="logger-title-group">
+              <span data-i18n="title_event_logger">Registro de Eventos</span>
+              <span id="logger-count-badge" class="badge-counter">0</span>
+            </div>
+            <div class="logger-controls">
+              <button id="btn-toggle-logger" class="btn-secondary btn-compact" type="button" aria-expanded="false" aria-controls="logger-console" data-i18n="btn_toggle_logger_show" title="Mostrar eventos">Mostrar</button>
+              <button id="btn-clear-logs" class="btn-secondary btn-compact" type="button" data-i18n="btn_clear_logs" title="Limpiar eventos">Limpiar</button>
+              <button id="btn-copy-logs" class="btn-secondary btn-compact" type="button" data-i18n="btn_copy_logs" title="Copiar al portapapeles">Copiar</button>
+            </div>
+          </div>
+          <div id="logger-console" class="logger-console" role="log" aria-live="polite">
+            <div class="log-line log-system"><span class="log-timestamp">--:--:--</span><span class="log-tag tag-system">SYSTEM</span><span class="log-msg">Panel de eventos inicializado.</span></div>
+          </div>
+        </div>
       </div>
     </main>
 
@@ -410,6 +450,31 @@
           <button id="modal-btn-confirm" class="btn-primary" type="button">Aceptar</button>
         </div>
       </div>
+    </div>
+
+    <!-- Stream-Chat Subtitle Action Dropdown Menu -->
+    <div id="feed-action-menu" class="feed-action-dropdown" hidden role="menu" aria-label="Opciones de subtítulo" data-i18n-aria-label="feed_item_menu_title">
+      <button type="button" class="feed-menu-btn" data-action="blacklist" role="menuitem">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <circle cx="12" cy="12" r="10"></circle>
+          <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"></line>
+        </svg>
+        <span data-i18n="menu_add_blacklist">Añadir a Blacklist</span>
+      </button>
+      <button type="button" class="feed-menu-btn" data-action="prompt" role="menuitem">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <path d="M12 20h9"></path>
+          <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path>
+        </svg>
+        <span data-i18n="menu_add_prompt">Añadir a Vocabulario / Prompt</span>
+      </button>
+      <button type="button" class="feed-menu-btn" data-action="copy" role="menuitem">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+        </svg>
+        <span data-i18n="menu_copy_text">Copiar texto</span>
+      </button>
     </div>
 
     <!-- Floating Toast Feedback Container -->

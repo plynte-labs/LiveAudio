@@ -35,6 +35,7 @@ pub struct AppState {
     pub transition_lock: Arc<Mutex<()>>,
     pub runtime_setup_token: Arc<Mutex<Option<CancellationToken>>>,
     pub startup_cancel_token: Arc<Mutex<Option<CancellationToken>>>,
+    pub previous_transcript: Arc<RwLock<Option<String>>>,
 }
 
 impl Default for AppState {
@@ -66,6 +67,7 @@ impl AppState {
             transition_lock: Arc::new(Mutex::new(())),
             runtime_setup_token: Arc::new(Mutex::new(None)),
             startup_cancel_token: Arc::new(Mutex::new(None)),
+            previous_transcript: Arc::new(RwLock::new(None)),
         }
     }
 
