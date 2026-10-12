@@ -463,6 +463,16 @@ def verify_tauri_bundle_configuration() -> bool:
     else:
         log_pass("NSIS installMode configured to 'currentUser' (no elevation required)")
 
+    installer_hooks = nsis_conf.get("installerHooks")
+    if not installer_hooks:
+        log_fail("NSIS installerHooks not configured in bundle.windows.nsis")
+        return False
+    hooks_file = tauri_conf_path.parent / installer_hooks
+    if not hooks_file.exists():
+        log_fail(f"NSIS hooks file not found at {hooks_file}")
+        return False
+    log_pass(f"NSIS installer hooks configured: {installer_hooks} ({hooks_file.name} present)")
+
     return True
 
 

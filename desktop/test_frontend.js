@@ -569,6 +569,26 @@ async function runTests() {
     'NSIS installer languages use installed NSIS language identifiers for English and es-ES');
   assert(tauriConf.bundle.windows.nsis.displayLanguageSelector === false,
     'NSIS installer keeps the configured operating-system language selection behavior');
+  assert(tauriConf.bundle.windows.nsis.installerHooks === 'hooks.nsh',
+    'NSIS installer hooks script is configured in tauri.conf.json bundle windows nsis');
+
+  // Verify NSIS hooks script content and legacy migration coverage
+  const hooksPath = path.join(__dirname, 'src-tauri', 'hooks.nsh');
+  assert(fs.existsSync(hooksPath), 'hooks.nsh exists in desktop/src-tauri');
+  const hooksContent = fs.readFileSync(hooksPath, 'utf8');
+  assert(hooksContent.includes('!macro NSIS_HOOK_PREINSTALL'), 'hooks.nsh defines NSIS_HOOK_PREINSTALL');
+  assert(hooksContent.includes('SetRegView 64') && hooksContent.includes('SetRegView 32'),
+    'hooks.nsh inspects both 64-bit and 32-bit registry views');
+  assert(hooksContent.includes('HKCU') && hooksContent.includes('HKLM'),
+    'hooks.nsh inspects both HKCU and HKLM uninstall registries');
+  assert(hooksContent.includes('installed.json') && hooksContent.includes('liveaudio.exe'),
+    'hooks.nsh inspects legacy Python installed.json and liveaudio.exe signatures');
+  assert(hooksContent.includes('PurgeLegacyPythonDirectory') && hooksContent.includes('PurgeLegacyShortcuts'),
+    'hooks.nsh purges deprecated Python files and legacy shortcuts');
+  assert(hooksContent.includes('$APPDATA\\LiveAudio') && !hooksContent.includes('RMDir /r "$APPDATA\\LiveAudio"'),
+    'hooks.nsh protects and preserves user configuration and data in %APPDATA%\\LiveAudio');
+  assert(hooksContent.includes('ExecWait'), 'hooks.nsh executes legacy uninstaller silently');
+
   assert(t('app_version').includes('v1.5.0'), 'i18n app_version includes v1.5.0');
 
   // 7. Verify Accessible Modal System & 3rd Loading State Button
