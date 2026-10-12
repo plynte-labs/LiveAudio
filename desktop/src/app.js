@@ -1721,7 +1721,6 @@ async function initApp() {
     await listen('subtitle_cue', (event) => {
       if (event && event.payload) {
         addSubtitleToFeed(event.payload.text, event.payload);
-        appendLogEntry('asr', `"${event.payload.text}"`, 'SUBTITLE');
       }
     });
   } catch (err) {

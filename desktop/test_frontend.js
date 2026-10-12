@@ -703,6 +703,8 @@ async function runTests() {
   assert(appSource.includes('container.scrollHeight - container.scrollTop - container.clientHeight'),
     'Smart stick-to-bottom checks scroll offset before inserting new subtitles');
   assert(appSource.includes("listen('subtitle_cue'"), 'Real-time subtitle cues are wired to the feed');
+  assert(!/listen\('subtitle_cue'[\s\S]*?appendLogEntry/.test(appSource),
+    'Subtitles are exclusive to the stream feed and excluded from event logger console');
   assert(appSource.includes("itemElement.classList.add('feed-item-blocked')"),
     'Blacklisting a phrase strikes through and marks the feed item as blocked');
 
