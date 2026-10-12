@@ -16,6 +16,58 @@ env:
   UV_VERSION: "0.11.6"
 
 jobs:
+  rust:
+    name: Rust workspace (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux audio and Tauri build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      - name: Verify bundled Silero model is tracked in the checkout
+        shell: bash
+        run: test -f crates/liveaudio-vad/models/silero_vad_v6.onnx
+
+      - name: Verify native CPU runtime package closure
+        shell: bash
+        run: |
+          if [[ "${RUNNER_OS}" == "Windows" ]]; then
+            root="packaging/onnxruntime/windows-x64"
+            test -f "$root/onnxruntime.dll"
+            test -f "$root/onnxruntime_providers_shared.dll"
+          else
+            root="packaging/onnxruntime/linux-x64"
+            test -f "$root/libonnxruntime.so.1.26.0"
+            test -f "$root/libonnxruntime_providers_shared.so"
+          fi
+          test "$(tr -d '\r\n' < "$root/VERSION_NUMBER")" = "1.26.0"
+          test -f "$root/LICENSE"
+          test -f "$root/ThirdPartyNotices.txt"
+
+      - name: Test locked Rust workspace
+        run: cargo test --workspace --locked
+
   test:
     name: test (${{ matrix.os }})
     strategy:

@@ -97,7 +97,7 @@ class TestNormalizeConfig(unittest.TestCase):
         config = DEFAULT_CONFIG.copy()
         config["device"] = "quantum_computer"
         result, updated = _normalize_config(config)
-        self.assertEqual(result["device"], "cuda")
+        self.assertEqual(result["device"], "cpu")
         self.assertTrue(updated)
 
     def test_normalizes_invalid_model(self):
@@ -662,10 +662,27 @@ class TestLoadSaveConfig(unittest.TestCase):
 
     def test_load_config_creates_default_if_missing(self):
         """load_config should create config.json with defaults if missing."""
-        config = load_config()
+        with patch("liveaudio.utils.cuda.cuda_is_available") as cuda_probe:
+            config = load_config()
         self.assertTrue(os.path.exists("config.json"))
         for key in DEFAULT_CONFIG:
             self.assertIn(key, config)
+        self.assertEqual(config["device"], "cpu")
+        cuda_probe.assert_not_called()
+
+    def test_explicit_cuda_preference_is_preserved_by_gui_and_service_loaders(self):
+        """Unavailable hardware must not rewrite the user's saved CUDA choice."""
+        save_config({"device": "cuda"})
+        with patch("liveaudio.utils.cuda.cuda_is_available", return_value=False) as cuda_probe:
+            gui_config = load_config()
+            from liveaudio.utils.config import load_config_readonly
+            service_config, _info = load_config_readonly()
+
+        self.assertEqual(gui_config["device"], "cuda")
+        self.assertEqual(service_config["device"], "cuda")
+        cuda_probe.assert_not_called()
+        with open("config.json", "r", encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)["device"], "cuda")
 
     def test_load_config_reads_existing(self):
         """load_config should read existing config.json."""
@@ -704,7 +721,7 @@ class TestLoadSaveConfig(unittest.TestCase):
             with patch("sys.stdout", io.StringIO()):
                 config = load_config()
 
-        self.assertEqual(config["device"], "cuda")
+        self.assertEqual(config["device"], "cpu")
         
         with open("config.json", "r", encoding="utf-8") as f:
             disk_config = json.load(f)

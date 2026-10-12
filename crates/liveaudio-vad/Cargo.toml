@@ -1,0 +1,14 @@
+[package]
+name = "liveaudio-vad"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+liveaudio-audio = { path = "../liveaudio-audio" }
+liveaudio-ipc = { path = "../liveaudio-ipc" }
+serde.workspace = true
+thiserror.workspace = true
+ort = { version = "2.0.0-rc.13", default-features = false, features = ["std", "ndarray", "load-dynamic", "copy-dylibs", "api-17"] }
+

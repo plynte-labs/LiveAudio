@@ -1,0 +1,19 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "resources": {
+      "../../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
+      "../../liveaudio/*.py": "liveaudio",
+      "../../liveaudio/assets/*": "liveaudio/assets",
+      "../../liveaudio/core/*.py": "liveaudio/core",
+      "../../liveaudio/service/*.py": "liveaudio/service",
+      "../../liveaudio/utils/*.py": "liveaudio/utils",
+      "../../packaging/vendor/uv.exe": "packaging/vendor/uv.exe",
+      "../../packaging/onnxruntime/windows-x64/onnxruntime.dll": "onnxruntime/windows-x64/onnxruntime.dll",
+      "../../packaging/onnxruntime/windows-x64/onnxruntime_providers_shared.dll": "onnxruntime/windows-x64/onnxruntime_providers_shared.dll",
+      "../../packaging/onnxruntime/windows-x64/LICENSE": "onnxruntime/windows-x64/LICENSE",
+      "../../packaging/onnxruntime/windows-x64/ThirdPartyNotices.txt": "onnxruntime/windows-x64/ThirdPartyNotices.txt",
+      "../../packaging/onnxruntime/windows-x64/VERSION_NUMBER": "onnxruntime/windows-x64/VERSION_NUMBER"
+    }
+  }
+}

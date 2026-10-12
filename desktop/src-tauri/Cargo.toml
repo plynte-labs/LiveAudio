@@ -1,0 +1,28 @@
+[package]
+name = "liveaudio-desktop"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Real-time local transcription with OBS subtitle overlay"
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+liveaudio-core = { path = "../../crates/liveaudio-core" }
+liveaudio-network = { path = "../../crates/liveaudio-network" }
+liveaudio-ipc = { path = "../../crates/liveaudio-ipc" }
+liveaudio-audio = { path = "../../crates/liveaudio-audio" }
+liveaudio-vad = { path = "../../crates/liveaudio-vad" }
+cpal = "0.18"
+serde = { workspace = true }
+serde_json = { workspace = true }
+tauri = "=2.12.0"
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = "0.3.23"
+
+[build-dependencies]
+tauri-build = "=2.7.0"

@@ -1,0 +1,18 @@
+[package]
+name = "liveaudio-network"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+liveaudio-ipc = { path = "../liveaudio-ipc" }
+liveaudio-core = { path = "../liveaudio-core" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio = { workspace = true, features = ["net", "io-util", "sync", "time"] }
+tokio-tungstenite = "0.30.0"
+futures-util = "0.3.32"
+tokio-util.workspace = true

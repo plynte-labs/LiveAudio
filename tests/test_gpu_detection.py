@@ -107,41 +107,43 @@ class TestVRAMCheckFunction(unittest.TestCase):
         self.assertLess(free_mb, 500)
 
 
-class TestGPUAutoDetectConfig(unittest.TestCase):
-    """Tests for GPU auto-detection in config loading."""
+class TestGPUConfigPreference(unittest.TestCase):
+    """Config loading defaults to CPU without rewriting an explicit choice."""
 
     @patch("liveaudio.utils.cuda.cuda_is_available")
     @patch("liveaudio.utils.config.os.path.exists")
     @patch("liveaudio.utils.config.save_config")
-    def test_auto_detect_cpu_when_cuda_unavailable(self, mock_save, mock_exists, mock_cuda):
-        """load_config should default to cpu when CUDA is unavailable."""
+    def test_missing_device_defaults_to_cpu_without_hardware_probe(self, mock_save, mock_exists, mock_cuda):
+        """A missing config uses the safe CPU default without auto-selecting CUDA."""
         mock_cuda.return_value = False
         mock_exists.return_value = False
 
-        from liveaudio.utils.config import load_config, DEFAULT_CONFIG
+        from liveaudio.utils.config import load_config
         config = load_config()
 
         self.assertEqual(config["device"], "cpu")
+        mock_cuda.assert_not_called()
 
     @patch("liveaudio.utils.cuda.cuda_is_available")
     @patch("liveaudio.utils.config.os.path.exists")
     @patch("liveaudio.utils.config.save_config")
-    def test_keeps_cuda_when_available(self, mock_save, mock_exists, mock_cuda):
-        """load_config should keep cuda when CUDA is available."""
+    def test_missing_device_defaults_to_cpu_even_when_cuda_is_available(self, mock_save, mock_exists, mock_cuda):
+        """Hardware detection does not change the initial CPU preference."""
         mock_cuda.return_value = True
         mock_exists.return_value = False
 
-        from liveaudio.utils.config import load_config, DEFAULT_CONFIG
+        from liveaudio.utils.config import load_config
         config = load_config()
 
-        self.assertEqual(config["device"], "cuda")
+        self.assertEqual(config["device"], "cpu")
+        mock_cuda.assert_not_called()
 
     @patch("liveaudio.utils.cuda.cuda_is_available")
     @patch("liveaudio.utils.config.os.path.exists")
     @patch("liveaudio.utils.config._save_config_no_lock")
     @patch("liveaudio.utils.config.json.load")
-    def test_forces_cpu_when_cuda_unavailable_existing_config(self, mock_json_load, mock_save, mock_exists, mock_cuda):
-        """load_config should force cpu if existing config has cuda but GPU unavailable."""
+    def test_preserves_explicit_cuda_when_unavailable(self, mock_json_load, mock_save, mock_exists, mock_cuda):
+        """Runtime fallback does not rewrite an explicit serialized CUDA preference."""
         mock_cuda.return_value = False
         mock_exists.return_value = True
         mock_json_load.return_value = {"device": "cuda", "output_dir": "/tmp/test"}
@@ -149,8 +151,10 @@ class TestGPUAutoDetectConfig(unittest.TestCase):
         from liveaudio.utils.config import load_config
         config = load_config()
 
-        self.assertEqual(config["device"], "cpu")
-        mock_save.assert_called_once()  # Config should be saved with updated device
+        self.assertEqual(config["device"], "cuda")
+        mock_save.assert_called_once()
+        self.assertEqual(mock_save.call_args.args[0]["device"], "cuda")
+        mock_cuda.assert_not_called()
 
 
 if __name__ == "__main__":
