@@ -23,12 +23,9 @@
     ${EndIf}
 
     ${If} ${FileExists} "${DIR_PATH}\data\sessions"
-      CreateDirectory "$APPDATA\LiveAudio"
-      ${IfNot} ${FileExists} "$APPDATA\LiveAudio\sessions"
-        DetailPrint "Preserving legacy sessions in $APPDATA\LiveAudio\sessions"
-        CreateDirectory "$APPDATA\LiveAudio\sessions"
-        CopyFiles /SILENT "${DIR_PATH}\data\sessions\*.*" "$APPDATA\LiveAudio\sessions"
-      ${EndIf}
+      CreateDirectory "$APPDATA\LiveAudio\sessions"
+      DetailPrint "Preserving legacy sessions in $APPDATA\LiveAudio\sessions"
+      CopyFiles /SILENT "${DIR_PATH}\data\sessions\*.*" "$APPDATA\LiveAudio\sessions"
     ${EndIf}
 
     ; Clean deprecated Python environment and application code
@@ -87,12 +84,14 @@
       Delete "${DIR_PATH}\LiveAudio-Setup.exe"
     ${EndIf}
 
+    ; Remove legacy InnoSetup uninstaller files if present
+    Delete "${DIR_PATH}\unins000.exe"
+    Delete "${DIR_PATH}\unins000.dat"
+
     ; If this legacy path is NOT the current target install directory ($INSTDIR)
     ${If} "${DIR_PATH}" != "$INSTDIR"
       ; Clean old uninstaller artifacts if present
       Delete "${DIR_PATH}\uninstall.exe"
-      Delete "${DIR_PATH}\unins000.exe"
-      Delete "${DIR_PATH}\unins000.dat"
       ${If} ${FileExists} "${DIR_PATH}\data"
         RMDir /r "${DIR_PATH}\data"
       ${EndIf}
@@ -102,9 +101,99 @@
 !macroend
 
 ; -----------------------------------------------------------------------------
+; Function: CleanInstallLocationJsonFile
+; Inspects install_location.json recorded by prior Python launchers (v1.1 - v1.2.7),
+; purges the legacy install_root directory, migrates settings, and removes the file.
+; -----------------------------------------------------------------------------
+Function CleanInstallLocationJsonFile
+  Exch $0 ; target file path
+  Push $1
+  Push $2
+  Push $3
+  Push $4
+  Push $5
+  Push $6
+  Push $7
+  Push $8
+  Push $9
+
+  ${If} ${FileExists} "$0"
+    ClearErrors
+    FileOpen $1 "$0" r
+    ${IfNot} ${Errors}
+      read_loc_loop:
+        ClearErrors
+        FileRead $1 $2
+        ${If} ${Errors}
+          Goto read_loc_done
+        ${EndIf}
+        ; Look for install_root token
+        ${StrLoc} $3 $2 "install_root" ">"
+        ${If} $3 != ""
+          ${StrLoc} $4 $2 ":" ">"
+          ${If} $4 != ""
+            IntOp $4 $4 + 1
+            StrCpy $5 $2 "" $4
+            ${StrLoc} $6 $5 '"' ">"
+            ${If} $6 != ""
+              IntOp $6 $6 + 1
+              StrCpy $5 $5 "" $6
+              ${StrLoc} $6 $5 '"' ">"
+              ${If} $6 != ""
+                StrCpy $5 $5 $6
+                ; Unescape double backslashes
+                StrCpy $7 ""
+                StrLen $8 $5
+                StrCpy $9 0
+                unescape_slash_loop:
+                  ${If} $9 >= $8
+                    Goto unescape_slash_done
+                  ${EndIf}
+                  StrCpy $3 $5 2 $9
+                  ${If} $3 == "\\"
+                    StrCpy $7 "$7\"
+                    IntOp $9 $9 + 2
+                  ${Else}
+                    StrCpy $3 $5 1 $9
+                    StrCpy $7 "$7$3"
+                    IntOp $9 $9 + 1
+                  ${EndIf}
+                  Goto unescape_slash_loop
+                unescape_slash_done:
+                ${If} $7 != ""
+                ${AndIf} $7 != "$APPDATA\LiveAudio"
+                ${AndIf} $7 != "$APPDATA\LiveAudio\"
+                ${AndIf} ${FileExists} "$7"
+                  DetailPrint "Detected legacy installation root from $0: $7"
+                  !insertmacro PurgeLegacyPythonDirectory "$7"
+                ${EndIf}
+              ${EndIf}
+            ${EndIf}
+          ${EndIf}
+        ${EndIf}
+        Goto read_loc_loop
+      read_loc_done:
+        FileClose $1
+    ${EndIf}
+    Delete "$0"
+  ${EndIf}
+
+  Pop $9
+  Pop $8
+  Pop $7
+  Pop $6
+  Pop $5
+  Pop $4
+  Pop $3
+  Pop $2
+  Pop $1
+  Pop $0
+FunctionEnd
+
+; -----------------------------------------------------------------------------
 ; Macro: CheckAndCleanLegacyRegistryKey
 ; Inspects a specific registry root and subkey.
-; If it represents a legacy Python LiveAudio installation (not v1.5.0 Rust app),
+; If it represents a legacy Python LiveAudio installation (not v1.5.0+ Rust app),
 ; executes uninstaller silently and purges legacy files.
 ; -----------------------------------------------------------------------------
 !macro CheckAndCleanLegacyRegistryKey ROOT_KEY SUBKEY_PATH
@@ -114,36 +203,92 @@
   ReadRegStr $R2 ${ROOT_KEY} "${SUBKEY_PATH}" "InstallLocation"
   ReadRegStr $R3 ${ROOT_KEY} "${SUBKEY_PATH}" "UninstallString"
   ReadRegStr $R4 ${ROOT_KEY} "${SUBKEY_PATH}" "QuietUninstallString"
+  ReadRegStr $R8 ${ROOT_KEY} "${SUBKEY_PATH}" "DisplayName"
 
-  ; Check if this is the modern v1.5.0 Rust desktop app
+  ; Check if this is the modern v1.5.0+ Rust desktop app
   StrCpy $R5 "0"
   ${If} $R1 == "liveaudio-desktop.exe"
-    ${StrLoc} $R6 $R0 "1.5." ">"
-    ${If} $R6 == "0"
-      StrCpy $R5 "1"
-    ${EndIf}
+    StrCpy $R5 "1"
+  ${EndIf}
+
+  ${If} $R5 == "0"
     ${If} $R0 == "1.5.0"
       StrCpy $R5 "1"
+    ${Else}
+      ${StrLoc} $R6 $R0 "1.5." ">"
+      ${If} $R6 == "0"
+        StrCpy $R5 "1"
+      ${EndIf}
     ${EndIf}
   ${EndIf}
 
-  ; If NOT v1.5.0 and the key contains LiveAudio uninstall information
+  ; If NOT modern app and the key contains LiveAudio uninstall information
   ${If} $R5 == "0"
     ${If} $R3 != ""
     ${OrIf} $R2 != ""
     ${OrIf} $R0 != ""
+    ${OrIf} $R8 != ""
       DetailPrint "Detected legacy LiveAudio registration in ${ROOT_KEY}\${SUBKEY_PATH} (v$R0)"
+
+      ; If InstallLocation is empty, derive it from UninstallString
+      ${If} $R2 == ""
+      ${AndIf} $R3 != ""
+        StrCpy $R9 $R3
+        StrCpy $R7 $R9 1 0
+        ${If} $R7 == '"'
+          StrCpy $R9 $R9 "" 1
+          ${StrLoc} $R6 $R9 '"' ">"
+          ${If} $R6 != ""
+            StrCpy $R9 $R9 $R6
+          ${EndIf}
+        ${Else}
+          ${StrLoc} $R6 $R9 " " ">"
+          ${If} $R6 != ""
+            StrCpy $R9 $R9 $R6
+          ${EndIf}
+        ${EndIf}
+        ${StrLoc} $R6 $R9 "\" "<"
+        ${If} $R6 != ""
+          StrCpy $R2 $R9 $R6
+        ${EndIf}
+      ${EndIf}
 
       ; Attempt silent execution of legacy uninstaller
       ${If} $R4 != ""
         DetailPrint "Running silent legacy uninstaller: $R4"
         ExecWait '$R4' $R7
       ${ElseIf} $R3 != ""
-        DetailPrint "Running legacy uninstaller: $R3 /S"
-        ${If} $R2 != ""
-          ExecWait '"$R3" /S _?=$R2' $R7
+        ; Determine uninstaller command and switches without corrupting quotes
+        ${StrCase} $R9 $R3 "L"
+        ${StrLoc} $R6 $R9 "unins" ">"
+        ${If} $R6 != ""
+          ; InnoSetup uninstaller
+          StrCpy $R7 $R3 1 0
+          ${If} $R7 == '"'
+            StrCpy $R9 '$R3 /VERYSILENT /SUPPRESSMSGBOXES /NORESTART'
+          ${Else}
+            StrCpy $R9 '"$R3" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART'
+          ${EndIf}
+          DetailPrint "Running silent InnoSetup legacy uninstaller: $R9"
+          ExecWait '$R9' $R7
         ${Else}
-          ExecWait '$R3 /S' $R7
+          ; NSIS uninstaller
+          StrCpy $R7 $R3 1 0
+          ${If} $R7 == '"'
+            ${If} $R2 != ""
+              StrCpy $R9 '$R3 /S _?=$R2'
+            ${Else}
+              StrCpy $R9 '$R3 /S'
+            ${EndIf}
+          ${Else}
+            ${If} $R2 != ""
+              StrCpy $R9 '"$R3" /S _?=$R2'
+            ${Else}
+              StrCpy $R9 '"$R3" /S'
+            ${EndIf}
+          ${EndIf}
+          DetailPrint "Running silent NSIS legacy uninstaller: $R9"
+          ExecWait '$R9' $R7
         ${EndIf}
       ${EndIf}
 
@@ -195,7 +340,7 @@
 !macro NSIS_HOOK_PREINSTALL
   DetailPrint "Checking for legacy LiveAudio Python installations..."
 
-  ; 1. Stop legacy liveaudio.exe process if running
+  ; 1. Stop legacy running processes if active
   nsis_tauri_utils::FindProcessCurrentUser "liveaudio.exe"
   Pop $R0
   ${If} $R0 = 0
@@ -204,15 +349,32 @@
     Sleep 500
   ${EndIf}
 
+  nsis_tauri_utils::FindProcessCurrentUser "liveaudio-launcher.exe"
+  Pop $R0
+  ${If} $R0 = 0
+    DetailPrint "Stopping running legacy liveaudio-launcher.exe process..."
+    nsis_tauri_utils::KillProcessCurrentUser "liveaudio-launcher.exe"
+    Sleep 500
+  ${EndIf}
+
+  nsis_tauri_utils::FindProcessCurrentUser "LiveAudio-Setup.exe"
+  Pop $R0
+  ${If} $R0 = 0
+    DetailPrint "Stopping running legacy LiveAudio-Setup.exe process..."
+    nsis_tauri_utils::KillProcessCurrentUser "LiveAudio-Setup.exe"
+    Sleep 500
+  ${EndIf}
+
   ; 2. Inspect 64-bit registry keys (HKCU & HKLM)
   ${If} ${RunningX64}
     SetRegView 64
   ${EndIf}
+  !insertmacro CheckAndCleanLegacyRegistryKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\LiveAudio"
+  !insertmacro CheckAndCleanLegacyRegistryKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\LiveAudio"
   !insertmacro CheckAndCleanLegacyRegistryKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\LiveAudio-Setup"
   !insertmacro CheckAndCleanLegacyRegistryKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\LiveAudio-Setup"
   !insertmacro CheckAndCleanLegacyRegistryKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\LiveAudio_is1"
   !insertmacro CheckAndCleanLegacyRegistryKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\LiveAudio_is1"
-  !insertmacro CheckAndCleanLegacyRegistryKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\LiveAudio"
 
   ; Clean legacy product registration keys if not needed
   DeleteRegKey HKCU "Software\LiveAudio"
@@ -231,7 +393,14 @@
     SetRegView 64
   ${EndIf}
 
-  ; 4. Check known legacy directories and signatures
+  ; 4. Inspect install_location.json recorded by legacy Python launchers
+  Push "$APPDATA\LiveAudio\install_location.json"
+  Call CleanInstallLocationJsonFile
+
+  Push "$LOCALAPPDATA\LiveAudio\install_location.json"
+  Call CleanInstallLocationJsonFile
+
+  ; 5. Check known legacy directories and signatures
   ; (a) Current target directory ($INSTDIR)
   ${If} ${FileExists} "$INSTDIR\installed.json"
   ${OrIf} ${FileExists} "$INSTDIR\app\.venv"
@@ -273,11 +442,7 @@
     ${EndIf}
   ${EndIf}
 
-  ; (e) Clean legacy install location marker if present, keeping config and sessions intact
-  Delete "$APPDATA\LiveAudio\install_location.json"
-  Delete "$LOCALAPPDATA\LiveAudio\install_location.json"
-
-  ; 5. Purge old shortcuts so they do not conflict with v1.5.0
+  ; 6. Purge old shortcuts so they do not conflict with v1.5.0
   !insertmacro PurgeLegacyShortcuts
 
   DetailPrint "Legacy cleanup completed. Continuing with LiveAudio v1.5.0 installation."

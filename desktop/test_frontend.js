@@ -581,6 +581,10 @@ async function runTests() {
     'hooks.nsh inspects both 64-bit and 32-bit registry views');
   assert(hooksContent.includes('HKCU') && hooksContent.includes('HKLM'),
     'hooks.nsh inspects both HKCU and HKLM uninstall registries');
+  assert(hooksContent.includes('CheckAndCleanLegacyRegistryKey HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\LiveAudio"'),
+    'hooks.nsh inspects HKCU LiveAudio uninstall registry key in 64-bit view');
+  assert(hooksContent.includes('CleanInstallLocationJsonFile'),
+    'hooks.nsh inspects and cleans install_location.json from legacy Python launchers');
   assert(hooksContent.includes('installed.json') && hooksContent.includes('liveaudio.exe'),
     'hooks.nsh inspects legacy Python installed.json and liveaudio.exe signatures');
   assert(hooksContent.includes('PurgeLegacyPythonDirectory') && hooksContent.includes('PurgeLegacyShortcuts'),
@@ -588,6 +592,10 @@ async function runTests() {
   assert(hooksContent.includes('$APPDATA\\LiveAudio') && !hooksContent.includes('RMDir /r "$APPDATA\\LiveAudio"'),
     'hooks.nsh protects and preserves user configuration and data in %APPDATA%\\LiveAudio');
   assert(hooksContent.includes('ExecWait'), 'hooks.nsh executes legacy uninstaller silently');
+  assert(hooksContent.includes('/VERYSILENT') && hooksContent.includes('/S'),
+    'hooks.nsh supports both InnoSetup and NSIS silent uninstaller switches');
+  assert(hooksContent.includes('liveaudio-desktop.exe'),
+    'hooks.nsh identifies modern Rust desktop client to prevent false-positive uninstallation');
 
   assert(t('app_version').includes('v1.5.0'), 'i18n app_version includes v1.5.0');
 
