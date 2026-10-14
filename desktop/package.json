@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "tauri dev",
     "build": "tauri build",
+    "build:release": "tauri build --config src-tauri/tauri.release.conf.json",
     "test": "node test_frontend.js"
   },
   "author": "LiveAudio Team",

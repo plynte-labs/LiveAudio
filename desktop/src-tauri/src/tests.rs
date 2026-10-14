@@ -1560,3 +1560,104 @@ async fn service_status_reports_audio_capture_state_only_while_running() {
     let stopped = get_service_status_internal(&state).await.unwrap();
     assert_eq!(stopped.audio_state, AudioSourceStatus::Stopped);
 }
+
+fn unique_test_dir(label: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir =
+        std::env::temp_dir().join(format!("liveaudio-{label}-{}-{nanos}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create test dir");
+    dir
+}
+
+#[test]
+fn test_obs_overlay_resolves_bundled_resource_first() {
+    let resource_dir = unique_test_dir("obs-resource");
+    let assets = resource_dir.join("liveaudio").join("assets");
+    std::fs::create_dir_all(&assets).unwrap();
+    std::fs::write(assets.join("subtitulos_obs.html"), "<html></html>").unwrap();
+
+    let resolved = crate::commands::resolve_obs_overlay_path(Some(&resource_dir))
+        .expect("bundled overlay must resolve");
+    assert_eq!(resolved, assets.join("subtitulos_obs.html"));
+
+    let _ = std::fs::remove_dir_all(&resource_dir);
+}
+
+#[test]
+fn test_obs_overlay_missing_resource_is_not_resolved_there() {
+    let resource_dir = unique_test_dir("obs-missing");
+    let resolved = crate::commands::resolve_obs_overlay_path(Some(&resource_dir));
+    assert!(resolved.map_or(true, |path| !path.starts_with(&resource_dir)));
+    let _ = std::fs::remove_dir_all(&resource_dir);
+}
+
+#[cfg(windows)]
+#[test]
+fn test_obs_overlay_url_percent_encodes_windows_path() {
+    let path =
+        PathBuf::from(r"\\?\C:\Users\José Ñ\Live Audio\liveaudio\assets\subtitulos_obs.html");
+    let url = crate::commands::obs_overlay_url(&path, 8765).expect("url");
+    assert_eq!(
+        url,
+        "file:///C:/Users/Jos%C3%A9%20%C3%91/Live%20Audio/liveaudio/assets/subtitulos_obs.html?port=8765"
+    );
+}
+
+#[cfg(not(windows))]
+#[test]
+fn test_obs_overlay_url_percent_encodes_unix_path() {
+    let path = PathBuf::from("/home/José Ñ/Live Audio/liveaudio/assets/subtitulos_obs.html");
+    let url = crate::commands::obs_overlay_url(&path, 8765).expect("url");
+    assert_eq!(
+        url,
+        "file:///home/Jos%C3%A9%20%C3%91/Live%20Audio/liveaudio/assets/subtitulos_obs.html?port=8765"
+    );
+}
+
+#[test]
+fn test_obs_overlay_url_rejects_relative_path() {
+    assert!(crate::commands::obs_overlay_url(&PathBuf::from("assets/x.html"), 1).is_err());
+}
+
+#[test]
+fn test_bundled_uv_resource_uses_platform_binary_name() {
+    let expected = if cfg!(windows) {
+        "packaging/vendor/uv.exe"
+    } else {
+        "packaging/vendor/uv"
+    };
+    assert_eq!(crate::commands::BUNDLED_UV_RESOURCE, expected);
+}
+
+#[test]
+fn test_select_uv_prefers_existing_bundled_file() {
+    let dir = unique_test_dir("uv-bundled");
+    let bundled = dir.join("uv");
+    std::fs::write(&bundled, "").unwrap();
+    let selected = crate::commands::select_uv_executable(Some(bundled.clone()), || {
+        panic!("fallback not expected")
+    });
+    assert_eq!(selected, Ok(bundled));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_select_uv_falls_back_when_bundled_file_absent() {
+    let dir = unique_test_dir("uv-fallback");
+    let fallback = dir.join("system-uv");
+    let selected = crate::commands::select_uv_executable(Some(dir.join("missing-uv")), || {
+        Some(fallback.clone())
+    });
+    assert_eq!(selected, Ok(fallback));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_select_uv_reports_actionable_error_when_nothing_found() {
+    let error = crate::commands::select_uv_executable(None, || None).unwrap_err();
+    assert!(error.contains("uv"));
+    assert!(error.contains("PATH"));
+}

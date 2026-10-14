@@ -46,7 +46,7 @@ A read-only audit (2026-10-14; 2 bug-hunt + 2 parity agents, parent-verified key
   - Forward `cpu_threads` in the worker init payload.
   - VTT cues numbered sequentially; cue timing from audio timeline, not emit time.
   - Text sanitization (bidi/control), 600-char presentation cap, `no_speech_prob` filter parity with `engine.py`.
-- [ ] T5 — Distribution (route: delegated)
+- [x] T5 — Distribution (route: delegated)
   - OBS overlay resolved from `resource_dir()` first; URL percent-encoded; existence checked.
   - `uv` resolution works on Linux (no hard-coded `uv.exe`; vendored `uv` with PATH fallback); Linux bundle target: AppImage only (owner decision 2026-10-14). Linux package must be built on Linux (no cross-build from Windows); building it is outside this task.
 - [ ] T6 — Minor fixes (route: delegated)
@@ -59,7 +59,7 @@ A read-only audit (2026-10-14; 2 bug-hunt + 2 parity agents, parent-verified key
   - [x] T7a — Service ownership core: `service.lock` becomes the service lock (taken by whoever runs the pipeline: desktop `start_service` and CLI `serve`; content `{"pid": N}` like Python `lock.py`), with a holder-alive query; desktop launch no longer exits when the lock is held. Pure JSON-lines stdout (move `println!` in `liveaudio-network/src/server.rs` to tracing). `tauri.localhost` origin from the stash with its tests.
   - [ ] T7b — CLI headless parity: configured audio device, `ResilientCapture`, real `devices`, honest `doctor` (moved from T6).
   - [ ] T7c — Desktop Monitor Mode UI/state: detect live holder at startup and before Start; status shows service owned by another process, Start disabled, read-only WS feed, deferred-settings banner, close leaves service, takeover when the holder dies.
-  - [ ] T7d — Installer ships `liveaudio-cli.exe` next to `liveaudio-desktop.exe`.
+  - [x] T7d — Installer ships `liveaudio-cli.exe` next to `liveaudio-desktop.exe`.
   - [ ] T7e — OpenCohost side (other repo, NOT authorized yet): resolve installed `liveaudio-cli.exe` and spawn `serve --parent-pid`.
 
 ## Progress and evidence
@@ -114,5 +114,15 @@ A read-only audit (2026-10-14; 2 bug-hunt + 2 parity agents, parent-verified key
   - Non-blocking findings carried forward: L1 holder probe briefly takes the lock → a concurrent acquire can spuriously see "already running" — T7c must poll sparingly and/or retry acquire once. L2 lock released even when stop cleanup fails (consistent with is_running=false). L3 desktop fails open if lock file unopenable, CLI fails closed (intentional). L4 Linux flock vs Python lockf do not interlock (parity holds on Windows only). L5 stdout_purity scans network src top-level only.
   - Excluded from commit: build-regenerated `desktop/src-tauri/gen/schemas/*.json`. Not tested on Linux.
 
+  - T7a commit: `24611f7` feat(service): make service.lock the owner lock for any pipeline.
+- T5 + T7d (one delegated writer, model fable; same packaging files).
+  - Overlay: `resolve_obs_overlay_path` tries `resource_dir()/liveaudio/assets/subtitulos_obs.html` first, then dev paths, requires existence (`std::path::absolute`, no `\?\` prefix); `obs_overlay_url` uses `tauri::Url::from_file_path` (percent-encoded) + `?port=N`; missing file returns an actionable error (frontend already catches it).
+  - uv: `BUNDLED_UV_RESOURCE` per platform; `select_uv_executable` prefers the existing bundled file, else `runtime::find_uv_executable()`, else error naming both.
+  - Linux: `tauri.linux.conf.json` `targets: ["appimage"]`, resource `packaging/vendor/uv`. Base `tauri.conf.json` no longer lists `uv.exe` (platform configs merge-patch over base; `tauri.windows.conf.json` keeps `uv.exe`).
+  - CLI in installer: `bundle.externalBin: ["binaries/liveaudio-cli"]` in new `tauri.release.conf.json` (release-only because tauri-build copies externalBin on every cargo build — parent verified `tauri-build-2.7.2/src/lib.rs:736`). `desktop/src-tauri/binaries/` gitignored. Parent added `npm run build:release` script (`tauri build --config src-tauri/tauri.release.conf.json`) in `desktop/package.json`.
+  - Release steps: `cargo build --release -p liveaudio-cli`; copy to `desktop/src-tauri/binaries/liveaudio-cli-<host-triple>[.exe]` (`rustc -vV`); vendor `packaging/vendor/uv.exe` (Windows) or `packaging/vendor/uv` chmod 755 (Linux, build on Linux); `npm run build:release` from `desktop/`.
+  - RED: 9 new tests compile-fail (helpers absent); GREEN 9/9. Checks: desktop 58 passed; workspace 0 failed; `cargo build -p liveaudio-desktop` ok; 4 tauri JSON parse ok. Parent spot check: desktop 58 passed.
+  - Not exercised: real NSIS/AppImage bundle; installed sidecar path from Tauri docs (bundler source not local). Risk: `tauri build` without `--config` silently omits the CLI.
+
 ## Next step
-T5 distribution (AppImage), then T7b.
+T7b CLI headless parity.

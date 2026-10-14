@@ -1619,6 +1619,28 @@ async fn start_pipeline_locked(
     Ok(status)
 }
 
+/// Bundled uv resource path, relative to the app resource directory.
+pub(crate) const BUNDLED_UV_RESOURCE: &str = if cfg!(windows) {
+    "packaging/vendor/uv.exe"
+} else {
+    "packaging/vendor/uv"
+};
+
+/// Prefer the bundled uv when it exists on disk, otherwise fall back to discovery (bundle roots, PATH).
+pub(crate) fn select_uv_executable(
+    bundled: Option<PathBuf>,
+    fallback: impl FnOnce() -> Option<PathBuf>,
+) -> Result<PathBuf, String> {
+    bundled
+        .filter(|path| path.is_file())
+        .or_else(fallback)
+        .ok_or_else(|| {
+            format!(
+                "uv executable not found: expected the bundled {BUNDLED_UV_RESOURCE} or uv on PATH; reinstall LiveAudio or install uv"
+            )
+        })
+}
+
 async fn prepare_managed_runtime(
     app: &AppHandle,
     state: &AppState,
@@ -1634,13 +1656,11 @@ async fn prepare_managed_runtime(
     }
 
     let setup_result = async {
-        let uv = app
+        let bundled = app
             .path()
-            .resolve(
-                "packaging/vendor/uv.exe",
-                tauri::path::BaseDirectory::Resource,
-            )
-            .map_err(|error| format!("Bundled uv executable is unavailable: {error}"))?;
+            .resolve(BUNDLED_UV_RESOURCE, tauri::path::BaseDirectory::Resource)
+            .ok();
+        let uv = select_uv_executable(bundled, liveaudio_core::runtime::find_uv_executable)?;
         let worker = WorkerProcessConfig::find_asr_worker_source()
             .ok_or_else(|| "Bundled ASR worker package is unavailable".to_string())?;
         let package_root = WorkerProcessConfig::find_package_root(&Some(worker))
@@ -1915,41 +1935,49 @@ pub async fn open_author_profile() -> Result<(), String> {
     Ok(())
 }
 
+const OBS_OVERLAY_RELATIVE: &str = "liveaudio/assets/subtitulos_obs.html";
+
+/// Find the OBS overlay: bundled resource directory first, then dev checkout fallbacks.
+pub(crate) fn resolve_obs_overlay_path(resource_dir: Option<&Path>) -> Option<PathBuf> {
+    resource_dir
+        .map(|dir| dir.join(OBS_OVERLAY_RELATIVE))
+        .into_iter()
+        .chain(
+            ["", "../", "../../"]
+                .iter()
+                .map(|prefix| PathBuf::from(format!("{prefix}{OBS_OVERLAY_RELATIVE}"))),
+        )
+        .find(|path| path.is_file())
+        .map(|path| std::path::absolute(&path).unwrap_or(path))
+}
+
+/// Build a percent-encoded `file:///` URL for the overlay with the `?port=` query.
+pub(crate) fn obs_overlay_url(path: &Path, port: u16) -> Result<String, String> {
+    let raw = path.to_string_lossy();
+    let clean = raw.strip_prefix(r"\\?\").unwrap_or(&raw);
+    let mut url = tauri::Url::from_file_path(clean)
+        .map_err(|_| format!("OBS overlay path is not absolute: {}", path.display()))?;
+    url.set_query(Some(&format!("port={port}")));
+    Ok(url.to_string())
+}
+
 /// Resolve OBS overlay URL and browser source recommendations.
 #[tauri::command]
-pub async fn get_obs_overlay_info(state: State<'_, AppState>) -> Result<ObsOverlayDto, String> {
+pub async fn get_obs_overlay_info(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<ObsOverlayDto, String> {
     let port = if state.is_running() {
         state.active_port.load(Ordering::SeqCst)
     } else {
         state.config.read().await.ws_port
     };
 
-    // Look for subtitulos_obs.html
-    let candidates = [
-        PathBuf::from("liveaudio/assets/subtitulos_obs.html"),
-        PathBuf::from("../liveaudio/assets/subtitulos_obs.html"),
-        PathBuf::from("../../liveaudio/assets/subtitulos_obs.html"),
-    ];
-
-    let mut resolved_path = None;
-    for cand in &candidates {
-        if let Ok(abs) = std::fs::canonicalize(cand) {
-            resolved_path = Some(abs);
-            break;
-        }
-    }
-
-    let raw_path = resolved_path
-        .unwrap_or_else(|| get_data_home().join("assets").join("subtitulos_obs.html"))
-        .to_string_lossy()
-        .replace('\\', "/");
-
-    let clean_path = raw_path.strip_prefix("//?/").unwrap_or(&raw_path);
-    let url = format!(
-        "file:///{}?port={}",
-        clean_path.trim_start_matches('/'),
-        port
-    );
+    let resource_dir = app.path().resource_dir().ok();
+    let overlay = resolve_obs_overlay_path(resource_dir.as_deref()).ok_or_else(|| {
+        "OBS overlay file subtitulos_obs.html was not found; reinstall LiveAudio".to_string()
+    })?;
+    let url = obs_overlay_url(&overlay, port)?;
 
     Ok(ObsOverlayDto {
         url,

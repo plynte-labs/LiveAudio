@@ -47,8 +47,7 @@
       "../../liveaudio/assets/*": "liveaudio/assets",
       "../../liveaudio/core/*.py": "liveaudio/core",
       "../../liveaudio/service/*.py": "liveaudio/service",
-      "../../liveaudio/utils/*.py": "liveaudio/utils",
-      "../../packaging/vendor/uv.exe": "packaging/vendor/uv.exe"
+      "../../liveaudio/utils/*.py": "liveaudio/utils"
     },
     "windows": {
       "nsis": {

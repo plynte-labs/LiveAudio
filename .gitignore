@@ -91,6 +91,7 @@ desktop.ini
 # ============================================
 packaging/_release_meta.py
 packaging/vendor/
+desktop/src-tauri/binaries/
 build_artifacts/
 
 # ============================================
