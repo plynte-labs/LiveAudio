@@ -4,7 +4,13 @@ use crate::error::NetworkError;
 use std::net::SocketAddr;
 
 pub const WS_PORT_FALLBACK_RANGE: u16 = 10;
-pub static WS_ALLOWED_ORIGINS: &[&str] = &["http://absolute"];
+pub static WS_ALLOWED_ORIGINS: &[&str] = &[
+    "http://absolute",
+    // Tauri custom-protocol origins (WebView2 on Windows). Exact matches only,
+    // no port: they are only reachable by local Tauri webviews, never web pages.
+    "http://tauri.localhost",
+    "https://tauri.localhost",
+];
 pub static WS_LOOPBACK_HOSTS: &[&str] = &["localhost", "127.0.0.1", "::1"];
 
 /// Calculate candidate fallback ports in range [base .. base + fallback_range - 1].
@@ -19,8 +25,10 @@ pub fn candidate_ports(base: u16, fallback_range: Option<u16>) -> Vec<u16> {
 /// Rules:
 /// 1. Missing origin or empty -> Allowed (native desktop/CLI clients and scripts).
 /// 2. `http://absolute` -> Allowed (CEF internal origin for OBS Browser Source).
-/// 3. Loopback hosts (`localhost`, `127.0.0.1`, `::1`) -> Allowed for local web interfaces.
-/// 4. Any external web origin -> Strictly rejected (prevents drive-by eavesdropping).
+/// 3. `http://tauri.localhost` / `https://tauri.localhost` -> Allowed (exact match, no port;
+///    origin of the installed Tauri desktop webview). Other `*.localhost` hosts are rejected.
+/// 4. Loopback hosts (`localhost`, `127.0.0.1`, `::1`) -> Allowed for local web interfaces.
+/// 5. Any external web origin -> Strictly rejected (prevents drive-by eavesdropping).
 pub fn is_origin_allowed(origin: Option<&str>) -> bool {
     let origin_str = match origin {
         Some(o) if !o.trim().is_empty() => o.trim(),

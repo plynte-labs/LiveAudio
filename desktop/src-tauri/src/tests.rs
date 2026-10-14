@@ -3,7 +3,7 @@
 //! Unit tests for LiveAudio Tauri Desktop backend.
 
 use crate::commands::{
-    admit_worker_event_generation, asr_progress_from_worker_event,
+    acquire_service_lock, admit_worker_event_generation, asr_progress_from_worker_event,
     asr_progress_update_for_worker_event, desktop_runtime_preflight_error,
     ensure_startup_websocket, get_service_status_internal, is_text_blacklisted, persist_config_and_apply, profile_presets, shutdown_service_resources, stop_active_websocket,
     trim_boundary_overlap, trim_boundary_overlap_with_max, worker_attempt_is_current,
@@ -1496,24 +1496,50 @@ async fn test_multi_chunk_overlap_streaming_simulation() {
 
 
 
-#[test]
-fn instance_lock_admits_a_single_owner_until_released() {
+#[tokio::test]
+async fn start_fails_cleanly_while_another_process_holds_the_service_lock() {
     let home = isolated_test_home();
-    let first = crate::try_acquire_instance_lock(&home)
+    let foreign = liveaudio_core::ServiceLock::try_acquire(&home)
         .expect("lock file opens")
-        .expect("first instance acquires the lock");
+        .expect("foreign owner holds the service lock");
+    let state = AppState::default();
+
+    let error = acquire_service_lock(&state, &home)
+        .await
+        .expect_err("a second pipeline must not start");
+    assert!(error.contains("service-already-running"), "{error}");
     assert!(
-        crate::try_acquire_instance_lock(&home)
-            .expect("lock file opens")
-            .is_none(),
-        "a second instance must not acquire a held lock"
+        error.contains(&std::process::id().to_string()),
+        "names the holder pid: {error}"
     );
-    drop(first);
-    assert!(
-        crate::try_acquire_instance_lock(&home)
-            .expect("lock file opens")
-            .is_some(),
-        "the lock is released when its owner exits"
+    assert!(state.service_lock.lock().await.is_none());
+
+    drop(foreign);
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[tokio::test]
+async fn desktop_holds_the_service_lock_while_running_and_releases_it_on_stop() {
+    let home = isolated_test_home();
+    let state = AppState::default();
+
+    acquire_service_lock(&state, &home)
+        .await
+        .expect("free lock is acquired");
+    assert_eq!(
+        liveaudio_core::service_lock_holder(&home).expect("query"),
+        Some(liveaudio_core::ServiceLockHolder {
+            pid: Some(std::process::id())
+        })
+    );
+
+    shutdown_service_resources(&state)
+        .await
+        .expect("idle shutdown succeeds");
+    assert_eq!(
+        liveaudio_core::service_lock_holder(&home).expect("query"),
+        None,
+        "stopping the pipeline releases the service lock"
     );
     let _ = std::fs::remove_dir_all(home);
 }

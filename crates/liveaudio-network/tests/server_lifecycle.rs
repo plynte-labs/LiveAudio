@@ -183,6 +183,17 @@ async fn test_handshake_origin_rejection_and_acceptance() {
     let local_conn = connect_async(local_req).await;
     assert!(local_conn.is_ok(), "http://localhost:1420 must be accepted");
 
+    // 4. Tauri release webview origin (http://tauri.localhost) must be accepted
+    let mut tauri_req = ws_url.clone().into_client_request().unwrap();
+    tauri_req
+        .headers_mut()
+        .insert("Origin", "http://tauri.localhost".parse().unwrap());
+    let tauri_conn = connect_async(tauri_req).await;
+    assert!(
+        tauri_conn.is_ok(),
+        "http://tauri.localhost must be accepted"
+    );
+
     // Metrics check
     assert!(
         server

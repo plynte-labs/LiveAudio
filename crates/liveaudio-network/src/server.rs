@@ -521,10 +521,6 @@ async fn handle_connection(
                 "[WebSocket] Conexion rechazada por Origin no permitido: {}",
                 received
             );
-            println!(
-                "[WebSocket] Conexion rechazada por Origin no permitido: {}",
-                received
-            );
             let err_resp = Response::builder()
                 .status(StatusCode::FORBIDDEN)
                 .body(Some(format!("Origen no permitido: {}\n", err)))
@@ -560,7 +556,6 @@ async fn handle_connection(
         peer_addr,
         count
     );
-    println!("[WebSocket] Cliente conectado: {}", peer_addr);
 
     let (mut ws_sink, mut ws_stream) = ws_stream.split();
 
@@ -669,7 +664,6 @@ async fn handle_connection(
         peer_addr,
         remaining
     );
-    println!("[WebSocket] Cliente desconectado: {}", peer_addr);
 
     let _ = inner.health_writer.as_ref().map(|w| {
         let rep = inner

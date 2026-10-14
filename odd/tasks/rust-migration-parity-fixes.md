@@ -48,13 +48,19 @@ A read-only audit (2026-10-14; 2 bug-hunt + 2 parity agents, parent-verified key
   - Text sanitization (bidi/control), 600-char presentation cap, `no_speech_prob` filter parity with `engine.py`.
 - [ ] T5 — Distribution (route: delegated)
   - OBS overlay resolved from `resource_dir()` first; URL percent-encoded; existence checked.
-  - `uv` resolution works on Linux (no hard-coded `uv.exe`); Linux bundle config/targets.
+  - `uv` resolution works on Linux (no hard-coded `uv.exe`; vendored `uv` with PATH fallback); Linux bundle target: AppImage only (owner decision 2026-10-14). Linux package must be built on Linux (no cross-build from Windows); building it is outside this task.
 - [ ] T6 — Minor fixes (route: delegated)
   - `get_recent_logs` arg `maxLines`.
   - Per-key tolerant config load (wrong type falls back to default for that key).
   - No `println!` in library code that pollutes CLI JSON stdout.
-  - CLI moves to `ResilientCapture` (added after T3; ~3-line change).
-  - CLI honors configured audio device; `devices` lists real devices; `doctor` reports only tested facts.
+  - (CLI items moved to T7b.)
+
+- [ ] T7 — Monitor Mode: owner-bound headless service (port of `conductor/tracks/service-backend_20260903/proposal_monitor_mode.md`, draft never implemented in Python). Owner rules 2026-10-14: spawner is the sole lifecycle owner; desktop opened while a service runs connects instead of starting another; no stop/restart of a foreign service; settings saved with "applies on next start" (Passive Config Persistence); closing the desktop leaves the service; if the owner dies while the desktop is open, the desktop starts its own service. Replaces the stashed `--autostart-service`; keeps the stashed `tauri.localhost` origin. Engram: `architecture/monitor-mode-service-ownership`.
+  - [x] T7a — Service ownership core: `service.lock` becomes the service lock (taken by whoever runs the pipeline: desktop `start_service` and CLI `serve`; content `{"pid": N}` like Python `lock.py`), with a holder-alive query; desktop launch no longer exits when the lock is held. Pure JSON-lines stdout (move `println!` in `liveaudio-network/src/server.rs` to tracing). `tauri.localhost` origin from the stash with its tests.
+  - [ ] T7b — CLI headless parity: configured audio device, `ResilientCapture`, real `devices`, honest `doctor` (moved from T6).
+  - [ ] T7c — Desktop Monitor Mode UI/state: detect live holder at startup and before Start; status shows service owned by another process, Start disabled, read-only WS feed, deferred-settings banner, close leaves service, takeover when the holder dies.
+  - [ ] T7d — Installer ships `liveaudio-cli.exe` next to `liveaudio-desktop.exe`.
+  - [ ] T7e — OpenCohost side (other repo, NOT authorized yet): resolve installed `liveaudio-cli.exe` and spawn `serve --parent-pid`.
 
 ## Progress and evidence
 - Audit evidence: Engram `audit/rust-migration-completeness`; scope decisions: `audit/rust-migration-scope-decisions`, `audit/rust-migration-scope-decisions-audio`.
@@ -100,5 +106,13 @@ A read-only audit (2026-10-14; 2 bug-hunt + 2 parity agents, parent-verified key
   - Checks: desktop 49 passed; workspace 220 passed; `cargo build -p liveaudio-desktop` ok; lib.rs rustfmt clean. Parent spot check: `cargo test -p liveaudio-desktop --offline --locked instance_lock`: 1 passed.
   - Manual pending (owner): launch twice from an installed build — window restores/focuses, service uninterrupted. Risks: Windows foreground rules may only flash the taskbar; Linux needs a D-Bus session bus.
 
+  - T1b commit: `814d47c` feat(desktop): focus the running window on second launch.
+- T7a (delegated writer, model fable). New `crates/liveaudio-core/src/service_lock.rs`: `ServiceLock::try_acquire` (writes `{"pid": N}` after acquiring), `service_lock_holder` (tries the lock; stale pid file → None). Windows: `LockFileEx` byte 0 length 1 (Python `msvcrt.locking` parity, mutually exclusive with the Python service); non-Windows: std flock. T1 instance lock moved here. Desktop acquires before any state change/bind, releases on every stop/failure/exit path; launch no longer exits when held; Start fails `service-already-running` without port fallback. CLI holds `_service_lock` for the service lifetime; already-running → one JSON fatal line, exit 2; unopenable lock → `service-lock-unwritable`. Removed duplicate `println!` in network server + `stdout_purity` guard test. Applied only the stash's `tauri.localhost` network hunks.
+  - RED/GREEN: origin test, 4 core lock tests, 2 desktop lock tests, CLI lock helper test, stdout_purity — all RED then GREEN.
+  - Checks: core/network/cli/desktop suites ok; workspace exit 0. Parent spot check: desktop `service_lock` 2 passed; `origin_security` 10 passed.
+  - Review assessment: risk HIGH (hot_path, unsafe FFI) → independent verifier (fable, read-only): PASS, workspace 229 passed 0 failed, no blocking defects.
+  - Non-blocking findings carried forward: L1 holder probe briefly takes the lock → a concurrent acquire can spuriously see "already running" — T7c must poll sparingly and/or retry acquire once. L2 lock released even when stop cleanup fails (consistent with is_running=false). L3 desktop fails open if lock file unopenable, CLI fails closed (intentional). L4 Linux flock vs Python lockf do not interlock (parity holds on Windows only). L5 stdout_purity scans network src top-level only.
+  - Excluded from commit: build-regenerated `desktop/src-tauri/gen/schemas/*.json`. Not tested on Linux.
+
 ## Next step
-T5 distribution.
+T5 distribution (AppImage), then T7b.

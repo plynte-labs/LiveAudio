@@ -10,35 +10,16 @@ pub mod state;
 #[cfg(test)]
 pub mod tests;
 
-use std::fs::{File, OpenOptions, TryLockError};
-use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use liveaudio_core::config::{get_data_home, load_config};
+use liveaudio_core::config::load_config;
 use state::AppState;
 use tauri::{Manager, RunEvent};
 
-const INSTANCE_LOCK_NAME: &str = "service.lock";
 /// Safety net over the stop path's own sink/worker deadlines so exit never hangs.
 const EXIT_STOP_DEADLINE: Duration = Duration::from_secs(10);
-
-/// Takes the non-blocking OS lock on `service.lock` in `dir` (Python `lock.py` parity).
-/// Returns `None` when another instance holds it; the OS releases it on process exit.
-pub(crate) fn try_acquire_instance_lock(dir: &Path) -> std::io::Result<Option<File>> {
-    std::fs::create_dir_all(dir)?;
-    let file = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(dir.join(INSTANCE_LOCK_NAME))?;
-    match file.try_lock() {
-        Ok(()) => Ok(Some(file)),
-        Err(TryLockError::WouldBlock) => Ok(None),
-        Err(TryLockError::Error(error)) => Err(error),
-    }
-}
 
 /// Brings the running instance's main window to front when a second launch is attempted.
 fn focus_main_window(app: &tauri::AppHandle) {
@@ -60,7 +41,8 @@ pub fn run() {
     let exit_stop_done = Arc::new(AtomicBool::new(false));
 
     // Must be the first plugin. A second desktop instance hands off to the first one and exits
-    // inside `build()`, before it takes the lock or reaches the run loop (no exit-stop handler).
+    // inside `build()`, before it reaches the run loop (no exit-stop handler). The service lock is
+    // taken by `start_service`, so a desktop opened while a headless service runs still opens.
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             focus_main_window(app)
@@ -87,19 +69,6 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building LiveAudio Desktop application");
-    // The plugin only sees other desktop instances; the lock also excludes any other owner of
-    // this data home (e.g. the legacy Python service).
-    let _instance_lock = match try_acquire_instance_lock(&get_data_home()) {
-        Ok(Some(lock)) => Some(lock),
-        Ok(None) => {
-            tracing::warn!("Another LiveAudio process owns the data home; exiting");
-            return;
-        }
-        Err(error) => {
-            tracing::warn!("Instance lock unavailable, continuing without it: {error}");
-            None
-        }
-    };
     app.run(move |app, event| {
         // Stop the service once before exiting so session sinks flush and the worker is reaped.
         if let RunEvent::ExitRequested { api, .. } = event {

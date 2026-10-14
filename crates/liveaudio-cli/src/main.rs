@@ -27,6 +27,7 @@ use liveaudio_core::asr::worker::{
 use liveaudio_core::config::{get_data_home, get_hf_home, load_config};
 use liveaudio_core::job_object::JobObject;
 use liveaudio_core::runtime::{preflight_asr_runtime, setup_managed_runtime, AsrBackend};
+use liveaudio_core::service_lock::ServiceLock;
 use liveaudio_core::supervisor::{
     is_parent_alive, HealthEmitter, ProcessSupervisor, SupervisorError, WorkerProcessConfig,
 };
@@ -493,6 +494,46 @@ mod acoustic_event_adapter_tests {
     }
 }
 
+/// Takes the service lock for this pipeline; the error is a Python-compatible `ServiceError` code.
+fn acquire_service_lock(dir: &Path) -> Result<ServiceLock, &'static str> {
+    match ServiceLock::try_acquire(dir) {
+        Ok(Some(lock)) => Ok(lock),
+        Ok(None) => Err("service-already-running"),
+        Err(_) => Err("service-lock-unwritable"),
+    }
+}
+
+#[cfg(test)]
+mod service_lock_tests {
+    use super::acquire_service_lock;
+
+    #[test]
+    fn serve_refuses_to_start_while_another_owner_holds_the_service_lock() {
+        let home = std::env::temp_dir().join(format!(
+            "liveaudio-cli-service-lock-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&home);
+        let foreign = liveaudio_core::ServiceLock::try_acquire(&home)
+            .expect("lock file opens")
+            .expect("foreign owner holds the service lock");
+        assert_eq!(
+            acquire_service_lock(&home).err(),
+            Some("service-already-running")
+        );
+        drop(foreign);
+        let own = acquire_service_lock(&home).expect("free lock is acquired");
+        assert_eq!(
+            liveaudio_core::service_lock_holder(&home).expect("query"),
+            Some(liveaudio_core::ServiceLockHolder {
+                pid: Some(std::process::id())
+            })
+        );
+        drop(own);
+        let _ = std::fs::remove_dir_all(home);
+    }
+}
+
 fn parse_setup_runtime_args(args: &[String]) -> Result<Option<AsrBackend>, String> {
     if args.first().map(String::as_str) != Some("setup-runtime") {
         return Ok(None);
@@ -632,12 +673,27 @@ async fn run_service(
     parent_pid: u32,
     port_override: Option<u16>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let current_pid = std::process::id();
+    // 1. Health Emitter (Arc for multi-task sharing)
+    let emitter = Arc::new(HealthEmitter::new(current_pid, parent_pid, None));
+
+    // Held for the whole service lifetime: one pipeline per data home (desktop or CLI).
+    let _service_lock = match acquire_service_lock(&get_data_home()) {
+        Ok(lock) => lock,
+        Err(code) => {
+            let mut payload = serde_json::Map::new();
+            payload.insert("code".to_string(), serde_json::json!(code));
+            emitter.emit(ServiceEventType::Fatal, payload);
+            eprintln!("LiveAudio service not started: {code}");
+            std::process::exit(2);
+        }
+    };
+
     let executable = std::env::current_exe()?;
     let development_resource_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packaging");
     let runtime_path = resolve_cli_onnx_runtime_path(&executable, &development_resource_dir)?;
     initialize_onnx_runtime(runtime_path)?;
 
-    let current_pid = std::process::id();
     let config = load_config().unwrap_or_default();
     let effective_base_port = port_override.unwrap_or(config.ws_port);
 
@@ -649,8 +705,6 @@ async fn run_service(
     )
     .await?;
 
-    // 1. Health Emitter (Arc for multi-task sharing)
-    let emitter = Arc::new(HealthEmitter::new(current_pid, parent_pid, None));
     emitter.emit_service_state("starting");
 
     eprintln!("============================================================");

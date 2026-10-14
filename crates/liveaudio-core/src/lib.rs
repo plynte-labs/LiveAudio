@@ -7,6 +7,7 @@ pub mod event;
 pub mod job_object;
 pub mod pipeline;
 pub mod runtime;
+pub mod service_lock;
 pub mod sink;
 pub mod supervisor;
 
@@ -27,6 +28,7 @@ pub use runtime::{
     managed_runtime_root, preflight_asr_runtime, provision_runtime_with_uv, setup_managed_runtime,
     RuntimeError,
 };
+pub use service_lock::{service_lock_holder, ServiceLock, ServiceLockHolder, SERVICE_LOCK_NAME};
 pub use sink::traits::BoxFuture;
 pub use sink::{
     format_vtt_timestamp, CompositeSink, JsonlSink, SinkError, SinkStats, TranscriptionCue,

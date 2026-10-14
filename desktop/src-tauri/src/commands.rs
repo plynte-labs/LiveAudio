@@ -19,6 +19,7 @@ use liveaudio_core::runtime::{
     discover_managed_python, managed_runtime_root, preflight_asr_runtime,
     provision_runtime_with_uv_cancellable, AsrBackend, RuntimeError, RuntimeSetupProgress,
 };
+use liveaudio_core::service_lock::{service_lock_holder, ServiceLock, ServiceLockHolder};
 use liveaudio_core::sink::{
     last_cue_counter, CompositeSink, JsonlSink, SinkError, SinkStats, TranscriptionCue,
     TranscriptionSink, WebVttSink,
@@ -547,6 +548,31 @@ pub(crate) async fn ensure_startup_websocket(
     Ok((ws, true))
 }
 
+/// Takes the service lock in `dir` for this desktop's pipeline. Another live owner (e.g. a
+/// headless `liveaudio-cli serve`) fails the start with `service-already-running`.
+pub(crate) async fn acquire_service_lock(state: &AppState, dir: &Path) -> Result<(), String> {
+    match ServiceLock::try_acquire(dir) {
+        Ok(Some(lock)) => {
+            *state.service_lock.lock().await = Some(lock);
+            Ok(())
+        }
+        Ok(None) => {
+            let holder = match service_lock_holder(dir) {
+                Ok(Some(ServiceLockHolder { pid: Some(pid) })) => format!(" (PID {pid})"),
+                _ => String::new(),
+            };
+            Err(format!(
+                "service-already-running: another LiveAudio process{holder} is already running the service"
+            ))
+        }
+        Err(error) => {
+            // Same policy as the former launch lock: an unopenable lock does not block the app.
+            tracing::warn!("Service lock unavailable, starting without it: {error}");
+            Ok(())
+        }
+    }
+}
+
 pub(crate) async fn stop_active_websocket(state: &AppState) -> Result<(), String> {
     let server = state.ws_server.lock().await.take();
     state.active_port.store(0, Ordering::SeqCst);
@@ -851,7 +877,26 @@ async fn start_service_locked(
     if state.is_running.load(Ordering::SeqCst) {
         return get_service_status_internal(state).await;
     }
+    if let Err(error) = acquire_service_lock(state, &get_data_home()).await {
+        if let Ok(status) = get_service_status_internal(state).await {
+            let _ = app.emit("service_status_changed", &status);
+        }
+        return Err(error);
+    }
+    let result = start_pipeline_locked(app, state, is_restart, startup_token).await;
+    if result.is_err() {
+        // Every failed start has rolled back its resources; give the lock back too.
+        state.service_lock.lock().await.take();
+    }
+    result
+}
 
+async fn start_pipeline_locked(
+    app: &AppHandle,
+    state: &AppState,
+    is_restart: bool,
+    startup_token: tokio_util::sync::CancellationToken,
+) -> Result<ServiceStatusDto, String> {
     initialize_bundled_cpu_runtime(app)?;
 
     *state.asr_state.write().await = "starting".to_string();
@@ -1782,6 +1827,7 @@ pub(crate) async fn shutdown_service_resources(state: &AppState) -> Result<(), S
         None => ("stopped", Ok(())),
     };
     *state.asr_state.write().await = asr_state.to_string();
+    state.service_lock.lock().await.take();
     result
 }
 

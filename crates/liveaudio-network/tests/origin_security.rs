@@ -122,3 +122,33 @@ fn test_remote_peer_addr_loopback_filter() {
     assert!(!is_remote_addr_allowed(&external_v4));
     assert!(!is_remote_addr_allowed(&external_v6));
 }
+
+#[test]
+fn test_tauri_custom_protocol_origins_allowed() {
+    for origin in ["http://tauri.localhost", "https://tauri.localhost"] {
+        assert!(
+            is_origin_allowed(Some(origin)),
+            "{origin} should be allowed"
+        );
+        assert!(validate_origin_headers(&[origin]).is_ok());
+    }
+}
+
+#[test]
+fn test_tauri_lookalike_origins_rejected() {
+    let rejected = [
+        "http://tauri.localhost.evil.com",
+        "https://tauri.localhost.evil.com",
+        "http://evil.tauri.localhost",
+        "http://tauri.localhost:1234",
+        "http://tauri.localhost@evil.com",
+        "http://other.localhost",
+    ];
+    for origin in rejected {
+        assert!(
+            !is_origin_allowed(Some(origin)),
+            "{origin} should be rejected"
+        );
+        assert!(validate_origin_headers(&[origin]).is_err());
+    }
+}
