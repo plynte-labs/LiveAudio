@@ -39,7 +39,7 @@ A read-only audit (2026-10-14; 2 bug-hunt + 2 parity agents, parent-verified key
   - RNNoise clamps out-of-range input/output instead of failing capture.
 - [x] T3 — Audio resilience parity (route: delegated)
   - Auto-reconnect on device loss (3 s retry), standby when no input device with hot-plug detection, capture watchdog; reuse Python semantics from `liveaudio/core/audio.py`.
-- [ ] T1b — Focus existing window on second launch (route: delegated, after T4 to keep one writer)
+- [x] T1b — Focus existing window on second launch (route: delegated, after T4 to keep one writer)
   - Owner decision 2026-10-14: second instance must bring the running window to front. Authorized to download `tauri-plugin-single-instance` (version compatible with the workspace Tauri 2). Keep the `service.lock` guard from T1 unless the plugin makes it redundant for the desktop; explain.
 - [x] T4 — ASR request and transcript output (route: delegated)
   - Enforce `asr_decode_timeout_sec` (forward `timeout_ms` and/or Rust-side deadline).
@@ -93,5 +93,12 @@ A read-only audit (2026-10-14; 2 bug-hunt + 2 parity agents, parent-verified key
   - Parent spot check: `--test supervisor_mock_worker decode`: 2 passed; `--lib asr::worker`: 5 passed. Risk medium (576 lines).
   - Not covered: desktop pipeline wiring inside async closures (compiles; helpers tested). Risk: slow CPU + long chunks vs 15 s default can escalate to Failed after 3 kills. UI `SubtitleCueDto.id` still timestamp (out of scope). Running count ~1,830.
 
+  - T4 commit: `9a823a3` fix(asr): enforce decode deadline and restore transcript parity.
+- T1b (delegated writer, model fable; owner-authorized download). `tauri-plugin-single-instance` 2.5.3 (compatible with pinned tauri 2.12.0), registered first; callback unminimizes/shows/focuses "main". Cargo.lock +35 packages (mostly Linux D-Bus deps), none changed.
+  - `service.lock` kept but moved after `build()` and before `run()`: second desktop instance exits inside plugin init (in `build()`), so it never reaches the lock or the ExitRequested handler; the lock still excludes a legacy Python service on the same data home. Parent verified in tauri-2.12.0 `app.rs`: config windows are created by `setup()` on `RunEvent::Ready` inside `run()` (line 1443), not in `build()`, and no tray is configured — so a lock-held exit creates no window.
+  - TDD: no RED/GREEN possible (needs live AppHandle; Tauri mock runtime not enabled); no new pure logic. Existing instance_lock test green.
+  - Checks: desktop 49 passed; workspace 220 passed; `cargo build -p liveaudio-desktop` ok; lib.rs rustfmt clean. Parent spot check: `cargo test -p liveaudio-desktop --offline --locked instance_lock`: 1 passed.
+  - Manual pending (owner): launch twice from an installed build — window restores/focuses, service uninterrupted. Risks: Windows foreground rules may only flash the taskbar; Linux needs a D-Bus session bus.
+
 ## Next step
-T1b focus existing window (plugin download authorized), then T5.
+T5 distribution.
