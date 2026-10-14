@@ -9,7 +9,33 @@ use liveaudio_ipc::{scrub_json_value, HealthSnapshot, ServiceEvent, ServiceEvent
 
 #[cfg(test)]
 mod tests {
-    use super::legacy_asr_state;
+    use super::{legacy_asr_state, write_json_line};
+    use std::io::{self, Write};
+
+    struct BrokenPipe;
+
+    impl Write for BrokenPipe {
+        fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+            Err(io::Error::from(io::ErrorKind::BrokenPipe))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Err(io::Error::from(io::ErrorKind::BrokenPipe))
+        }
+    }
+
+    #[test]
+    fn json_line_write_reports_a_closed_stdout_without_panicking() {
+        assert!(!write_json_line(&mut BrokenPipe, "{}"));
+
+        let mut sink = Vec::new();
+        assert!(write_json_line(&mut sink, "{\"event\":\"ready\"}"));
+        assert_eq!(
+            sink,
+            b"{\"event\":\"ready\"}
+"
+        );
+    }
 
     #[test]
     fn legacy_asr_state_matches_python_mirror_and_defaults_to_loading() {
@@ -43,6 +69,12 @@ pub struct HealthEmitter {
     parent_pid: u32,
     health_file: Option<PathBuf>,
     health_file_warned: AtomicBool,
+    stdout_closed: AtomicBool,
+}
+
+/// Writes one JSON line and flushes. Returns false when stdout is closed or unwritable.
+fn write_json_line<W: Write>(out: &mut W, line: &str) -> bool {
+    writeln!(out, "{}", line).and_then(|()| out.flush()).is_ok()
 }
 
 impl HealthEmitter {
@@ -52,20 +84,27 @@ impl HealthEmitter {
             parent_pid,
             health_file,
             health_file_warned: AtomicBool::new(false),
+            stdout_closed: AtomicBool::new(false),
         }
     }
 
     /// Emit a single structured JSON line event to stdout.
-    /// Never panics and never writes to disk.
+    /// Never panics and never writes to disk. Once stdout is closed (for example, the parent
+    /// dropped the pipe) further events are skipped and the service keeps running.
     pub fn emit(
         &self,
         event_type: ServiceEventType,
         payload: serde_json::Map<String, serde_json::Value>,
     ) {
+        if self.stdout_closed.load(Ordering::SeqCst) {
+            return;
+        }
         let event = ServiceEvent::new(self.service_pid, self.parent_pid, event_type, payload);
         if let Ok(line) = serde_json::to_string(&event) {
-            println!("{}", line);
-            let _ = std::io::stdout().flush();
+            let mut out = std::io::stdout().lock();
+            if !write_json_line(&mut out, &line) {
+                self.stdout_closed.store(true, Ordering::SeqCst);
+            }
         }
     }
 

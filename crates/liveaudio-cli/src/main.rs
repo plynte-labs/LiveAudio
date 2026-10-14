@@ -1144,19 +1144,28 @@ async fn run_service(
     cancel_token.cancel();
     audio_task.await?;
     emitter.emit_service_state("stopping");
-    emitter.emit(ServiceEventType::Stopped, serde_json::Map::new());
 
-    // Clean shutdown of child supervisor
-    let shutdown_cmd = serde_json::json!({
-        "version": 1,
-        "cmd": "shutdown",
-        "payload": { "grace_timeout_ms": 1500 }
-    });
-    let _ = supervisor_arc.send_command(&shutdown_cmd).await;
-    supervisor_arc.cancellation_token().cancel();
+    // Only a confirmed worker exit is reported as stopped.
+    match shut_down_worker(&supervisor_arc).await {
+        Ok(()) => {
+            emitter.emit(ServiceEventType::Stopped, serde_json::Map::new());
+            eprintln!("LiveAudio service shutdown completed: worker stopped.");
+            Ok(())
+        }
+        Err(error) => {
+            eprintln!("LiveAudio service shutdown incomplete: {error}");
+            Err(error.into())
+        }
+    }
+}
 
-    eprintln!("LiveAudio service shutdown completed cleanly. 0 orphan processes.");
-    Ok(())
+/// Longest the CLI waits for the worker to exit after asking it to shut down.
+const WORKER_SHUTDOWN_GRACE: Duration = Duration::from_millis(1500);
+
+/// Stops the worker through the supervisor's bounded stop: the shutdown request is queued
+/// under the grace deadline, then the worker is force-killed and reaped if it does not exit.
+async fn shut_down_worker(supervisor: &ProcessSupervisor) -> Result<(), SupervisorError> {
+    supervisor.stop_internal(WORKER_SHUTDOWN_GRACE).await
 }
 
 async fn list_devices() -> Result<(), Box<dyn std::error::Error>> {
@@ -1262,5 +1271,40 @@ mod headless_parity_tests {
         std::fs::write(&not_a_dir, b"x").expect("file");
         assert!(unicode_path_status(&not_a_dir).contains("FAILED"));
         let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+#[cfg(test)]
+mod shutdown_tests {
+    use super::*;
+    use std::time::Instant;
+
+    #[tokio::test]
+    async fn shutdown_stops_a_worker_that_ignores_the_shutdown_command() {
+        let mut config = WorkerProcessConfig::default();
+        config.name = "cli-shutdown-worker".to_string();
+        config.command = "python".to_string();
+        config.args = vec![
+            "-u".to_string(),
+            "-c".to_string(),
+            "import json,time; print(json.dumps({'event':'ready'}), flush=True); time.sleep(60)"
+                .to_string(),
+        ];
+        config.ready_timeout = Duration::from_secs(5);
+        config.auto_respawn = false;
+        let mut supervisor = ProcessSupervisor::new(config, std::process::id(), 0, None)
+            .expect("supervisor creation");
+        supervisor
+            .start_internal()
+            .await
+            .expect("mock worker ready handshake");
+        let pid = supervisor.child_pid().await.expect("worker pid");
+
+        let started = Instant::now();
+        shut_down_worker(&supervisor)
+            .await
+            .expect("shutdown must stop the worker within its bound");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(!is_parent_alive(pid), "shutdown must reap the worker");
     }
 }

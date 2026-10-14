@@ -594,3 +594,126 @@ async fn decodes_that_finish_within_the_deadline_keep_the_worker_alive() {
         .expect("cleanup should succeed");
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
+
+#[tokio::test]
+async fn stop_during_a_respawn_handshake_reaps_the_spawned_worker() {
+    let dir = std::env::temp_dir().join(format!(
+        "liveaudio-respawn-stop-{}-{}",
+        std::process::id(),
+        TEST_COUNTER.fetch_add(1, Ordering::SeqCst)
+    ));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let attempts_path = dir.join("attempts");
+    let pid_path = dir.join("respawned.pid");
+    let script_path = dir.join("worker.py");
+    std::fs::write(
+        &script_path,
+        r#"
+import json, os, sys, time
+attempts = sys.argv[1]
+n = int(open(attempts).read()) if os.path.exists(attempts) else 0
+open(attempts, 'w').write(str(n + 1))
+if n == 0:
+    print(json.dumps({"event": "ready"}), flush=True)
+    time.sleep(0.2)
+    sys.exit(99)
+open(sys.argv[2], 'w').write(str(os.getpid()))
+time.sleep(60)
+"#,
+    )
+    .expect("worker script");
+
+    let mut config = WorkerProcessConfig::default();
+    config.name = "respawn-stop-worker".to_string();
+    config.command = "python".to_string();
+    config.args = vec![
+        "-u".to_string(),
+        script_path.to_string_lossy().into_owned(),
+        attempts_path.to_string_lossy().into_owned(),
+        pid_path.to_string_lossy().into_owned(),
+    ];
+    config.ready_timeout = Duration::from_secs(30);
+    config.base_backoff = Duration::from_millis(10);
+    config.max_backoff = Duration::from_millis(20);
+    config.max_failures = 3;
+    config.failure_window = Duration::from_secs(300);
+    config.auto_respawn = true;
+
+    let mut supervisor =
+        ProcessSupervisor::new(config, std::process::id(), 0, None).expect("supervisor creation");
+    supervisor
+        .start()
+        .await
+        .expect("first worker becomes ready");
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !pid_path.exists() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("respawned worker is mid-handshake");
+    let pid: u32 = std::fs::read_to_string(&pid_path)
+        .expect("respawned pid")
+        .trim()
+        .parse()
+        .expect("numeric pid");
+
+    supervisor
+        .stop_internal(Duration::from_millis(300))
+        .await
+        .expect("bounded stop");
+    assert!(
+        !is_parent_alive(pid),
+        "stop must not leave the worker spawned by an aborted respawn alive"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn slow_startup_that_keeps_reporting_progress_is_not_killed() {
+    let mut config = WorkerProcessConfig::default();
+    config.name = "slow-progress-worker".to_string();
+    config.command = "python".to_string();
+    config.args = vec![
+        "-u".to_string(),
+        "-c".to_string(),
+        "import json,time; [(print(json.dumps({'event':'status','payload':{'state':'downloading','phase':'downloading'}}), flush=True), time.sleep(0.4)) for _ in range(7)]; print(json.dumps({'event':'ready'}), flush=True); time.sleep(60)"
+            .to_string(),
+    ];
+    // Startup takes ~2.8 s, well past the 1 s base window, but reports progress every 0.4 s.
+    config.ready_timeout = Duration::from_secs(1);
+    config.auto_respawn = false;
+    let mut supervisor =
+        ProcessSupervisor::new(config, std::process::id(), 0, None).expect("supervisor creation");
+    supervisor
+        .start()
+        .await
+        .expect("progress-reporting startup must not hit the stall window");
+    supervisor
+        .stop_internal(Duration::from_millis(300))
+        .await
+        .expect("bounded stop");
+}
+
+#[tokio::test]
+async fn silent_startup_is_killed_after_the_stall_window() {
+    let mut config = WorkerProcessConfig::default();
+    config.name = "silent-startup-worker".to_string();
+    config.command = "python".to_string();
+    config.args = vec![
+        "-u".to_string(),
+        "-c".to_string(),
+        "import time; time.sleep(60)".to_string(),
+    ];
+    config.ready_timeout = Duration::from_secs(1);
+    config.auto_respawn = false;
+    let mut supervisor =
+        ProcessSupervisor::new(config, std::process::id(), 0, None).expect("supervisor creation");
+    let started = std::time::Instant::now();
+    let result = supervisor.start().await;
+    assert!(
+        result.is_err(),
+        "a silent startup must fail after the stall window"
+    );
+    assert!(started.elapsed() < Duration::from_secs(10));
+}
