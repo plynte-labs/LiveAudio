@@ -1288,19 +1288,7 @@ async fn start_pipeline_locked(
     });
 
     // 5. Initialize Hardware Audio Capture (CPAL)
-    let audio_device_id = config
-        .audio_device
-        .as_ref()
-        .and_then(|v| v.get("id"))
-        .and_then(|v| v.as_str())
-        .filter(|id| *id != "default_microphone")
-        .map(|id| {
-            if id == "wasapi_loopback" {
-                "default_loopback".to_string()
-            } else {
-                id.to_string()
-            }
-        });
+    let audio_device_id = config.capture_device_id();
 
     let stream_config = AudioStreamConfig {
         device_id: audio_device_id.clone(),

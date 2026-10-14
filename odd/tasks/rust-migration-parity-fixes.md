@@ -57,7 +57,7 @@ A read-only audit (2026-10-14; 2 bug-hunt + 2 parity agents, parent-verified key
 
 - [ ] T7 — Monitor Mode: owner-bound headless service (port of `conductor/tracks/service-backend_20260903/proposal_monitor_mode.md`, draft never implemented in Python). Owner rules 2026-10-14: spawner is the sole lifecycle owner; desktop opened while a service runs connects instead of starting another; no stop/restart of a foreign service; settings saved with "applies on next start" (Passive Config Persistence); closing the desktop leaves the service; if the owner dies while the desktop is open, the desktop starts its own service. Replaces the stashed `--autostart-service`; keeps the stashed `tauri.localhost` origin. Engram: `architecture/monitor-mode-service-ownership`.
   - [x] T7a — Service ownership core: `service.lock` becomes the service lock (taken by whoever runs the pipeline: desktop `start_service` and CLI `serve`; content `{"pid": N}` like Python `lock.py`), with a holder-alive query; desktop launch no longer exits when the lock is held. Pure JSON-lines stdout (move `println!` in `liveaudio-network/src/server.rs` to tracing). `tauri.localhost` origin from the stash with its tests.
-  - [ ] T7b — CLI headless parity: configured audio device, `ResilientCapture`, real `devices`, honest `doctor` (moved from T6).
+  - [x] T7b — CLI headless parity: configured audio device, `ResilientCapture`, real `devices`, honest `doctor` (moved from T6).
   - [ ] T7c — Desktop Monitor Mode UI/state: detect live holder at startup and before Start; status shows service owned by another process, Start disabled, read-only WS feed, deferred-settings banner, close leaves service, takeover when the holder dies.
   - [x] T7d — Installer ships `liveaudio-cli.exe` next to `liveaudio-desktop.exe`.
   - [ ] T7e — OpenCohost side (other repo, NOT authorized yet): resolve installed `liveaudio-cli.exe` and spawn `serve --parent-pid`.
@@ -124,5 +124,11 @@ A read-only audit (2026-10-14; 2 bug-hunt + 2 parity agents, parent-verified key
   - RED: 9 new tests compile-fail (helpers absent); GREEN 9/9. Checks: desktop 58 passed; workspace 0 failed; `cargo build -p liveaudio-desktop` ok; 4 tauri JSON parse ok. Parent spot check: desktop 58 passed.
   - Not exercised: real NSIS/AppImage bundle; installed sidecar path from Tauri docs (bundler source not local). Risk: `tauri build` without `--config` silently omits the CLI.
 
+  - T5/T7d commit: `79b49a5` fix(packaging): resolve bundled overlay and uv, ship the CLI sidecar.
+- T7b (delegated writer, model fable). `LiveAudioConfig::capture_device_id()` in liveaudio-core shared by desktop and CLI (no setting/`default_microphone` → OS default; `wasapi_loopback` → `default_loopback`; else pass-through). CLI `serve` honors `audio_device.id` (other capture/VAD fields were already honored) and uses `ResilientCapture` (stopped on shutdown). Capture state → stderr only: no v1 event type fits, and Python emitted none (parent verified OpenCohost `parse_service_line` accepts any `type`, `supervisor.py:284`; Python service has no audio-state events). `devices` lists real ids like the desktop; `doctor` probes Job Object (N/A off Windows) and a real Unicode temp-dir round trip.
+  - RED: compile-only (new helpers) for core `capture_device_id` and 4 CLI `headless_parity` tests; GREEN all.
+  - Checks: cli 14, audio 34/7/8, workspace 242 passed 0 failed; fmt clean cli/core. Parent spot check: cli 14 passed, desktop 58 passed.
+  - Risks: `serve` with no mic now runs in Standby with no JSON signal to OpenCohost; stale persisted device id → reconnect/standby instead of silent default mic; `devices` output format changed. CLI installs no tracing subscriber (ResilientCapture tracing warnings dropped). Not hardware-tested.
+
 ## Next step
-T7b CLI headless parity.
+T7c desktop Monitor Mode UI + takeover (mind T7a L1 probe race).

@@ -357,6 +357,19 @@ impl Default for LiveAudioConfig {
 }
 
 impl LiveAudioConfig {
+    /// Capture device id for the persisted `audio_device` selection.
+    ///
+    /// `None` means the OS default microphone; the legacy `wasapi_loopback` id
+    /// maps to `default_loopback`.
+    pub fn capture_device_id(&self) -> Option<String> {
+        let id = self.audio_device.as_ref()?.get("id")?.as_str()?;
+        match id {
+            "default_microphone" => None,
+            "wasapi_loopback" => Some("default_loopback".to_string()),
+            other => Some(other.to_string()),
+        }
+    }
+
     /// Validates types, bounds, and normalizes values in-place.
     /// Returns `true` if any field was updated or clamped.
     pub fn normalize(&mut self) -> bool {
@@ -774,6 +787,33 @@ pub fn save_to_path(config: &LiveAudioConfig, path: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_device_id_maps_persisted_audio_device_to_capture_id() {
+        let with_id = |id: &str| LiveAudioConfig {
+            audio_device: Some(serde_json::json!({ "id": id, "name": "ignored" })),
+            ..LiveAudioConfig::default()
+        };
+        assert_eq!(LiveAudioConfig::default().capture_device_id(), None);
+        assert_eq!(with_id("default_microphone").capture_device_id(), None);
+        assert_eq!(
+            with_id("wasapi_loopback").capture_device_id().as_deref(),
+            Some("default_loopback")
+        );
+        assert_eq!(
+            with_id("loopback:Speakers").capture_device_id().as_deref(),
+            Some("loopback:Speakers")
+        );
+        assert_eq!(
+            with_id("Microphone (USB)").capture_device_id().as_deref(),
+            Some("Microphone (USB)")
+        );
+        let non_string = LiveAudioConfig {
+            audio_device: Some(serde_json::json!({ "id": 7 })),
+            ..LiveAudioConfig::default()
+        };
+        assert_eq!(non_string.capture_device_id(), None);
+    }
 
     #[test]
     fn test_default_config_fields() {

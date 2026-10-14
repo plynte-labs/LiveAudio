@@ -16,15 +16,16 @@ use tokio::time::sleep;
 
 const THIRD_PARTY_NOTICES: &str = include_str!("../../../THIRD_PARTY_NOTICES.md");
 
-use liveaudio_audio::traits::AudioSource;
-use liveaudio_audio::{AudioChunkReceiver, AudioStreamConfig, CpalAudioSource};
+use liveaudio_audio::{
+    AudioChunkReceiver, AudioDeviceInfo, AudioStreamConfig, CpalAudioSource, ResilientCapture,
+};
 use liveaudio_core::acoustic_events::{
     AcousticEventLifecycle, AcousticSpeechEndReason, AcousticSpeechEvent,
 };
 use liveaudio_core::asr::worker::{
     presentation_text, transcript_text_from_result, worker_init_payload,
 };
-use liveaudio_core::config::{get_data_home, get_hf_home, load_config};
+use liveaudio_core::config::{get_data_home, get_hf_home, load_config, LiveAudioConfig};
 use liveaudio_core::job_object::JobObject;
 use liveaudio_core::runtime::{preflight_asr_runtime, setup_managed_runtime, AsrBackend};
 use liveaudio_core::service_lock::ServiceLock;
@@ -55,6 +56,74 @@ fn resolve_cli_onnx_runtime_path(
             .join("resources")
     };
     Ok(cpu_runtime_library_path(resource_dir)?)
+}
+
+/// Capture settings for `serve`: the persisted device, same as the desktop service.
+fn cli_stream_config(config: &LiveAudioConfig) -> AudioStreamConfig {
+    AudioStreamConfig {
+        device_id: config.capture_device_id(),
+        sample_rate: 16000,
+        channels: 1,
+        chunk_size: 512,
+        ring_buffer_capacity: 500,
+    }
+}
+
+/// `devices` output: the ids `audio_device.id` accepts, as the desktop lists them.
+fn device_list_lines(enumerated: &[AudioDeviceInfo]) -> Vec<String> {
+    let mut entries = vec![("default_microphone", "Default system microphone", true)];
+    if cfg!(windows) {
+        entries.push((
+            "default_loopback",
+            "System audio / speakers (WASAPI loopback)",
+            false,
+        ));
+    }
+    entries.extend(
+        enumerated
+            .iter()
+            .map(|device| (device.id.as_str(), device.name.as_str(), device.is_default)),
+    );
+    entries
+        .into_iter()
+        .map(|(id, name, is_default)| {
+            let marker = if is_default { " [DEFAULT]" } else { "" };
+            format!("  [{id}] {name}{marker}")
+        })
+        .collect()
+}
+
+fn job_object_status(is_windows: bool, probe: impl FnOnce() -> std::io::Result<()>) -> String {
+    if !is_windows {
+        return "Windows Job Object: NOT APPLICABLE (non-Windows platform)".to_string();
+    }
+    match probe() {
+        Ok(()) => "Windows Job Object: AVAILABLE (created with kill-on-close)".to_string(),
+        Err(error) => format!("Windows Job Object: UNAVAILABLE ({error})"),
+    }
+}
+
+/// Writes, reads back and removes a file under a non-ASCII directory in `root`.
+fn unicode_path_status(root: &Path) -> String {
+    let dir = root.join(format!(
+        "liveaudio doctor accénts 🎙️ {}",
+        std::process::id()
+    ));
+    let check = || -> std::io::Result<()> {
+        std::fs::create_dir(&dir)?;
+        let file = dir.join("prueba ñ.txt");
+        std::fs::write(&file, "ok")?;
+        if std::fs::read_to_string(&file)? != "ok" {
+            return Err(std::io::Error::other("read-back mismatch"));
+        }
+        Ok(())
+    };
+    let result = check();
+    let _ = std::fs::remove_dir_all(&dir);
+    match result {
+        Ok(()) => format!("Unicode Path Support: VERIFIED ({})", root.display()),
+        Err(error) => format!("Unicode Path Support: FAILED ({}: {error})", root.display()),
+    }
 }
 
 fn observe_and_publish_acoustic_transition(
@@ -792,17 +861,24 @@ async fn run_service(
 
     let supervisor_arc = Arc::new(supervisor);
 
-    // 4. Audio Capture (CPAL)
-    let stream_config = AudioStreamConfig {
-        device_id: None,
-        sample_rate: 16000,
-        channels: 1,
-        chunk_size: 512,
-        ring_buffer_capacity: 500,
-    };
-    let mut audio_source = CpalAudioSource::new().with_rnnoise_enabled(config.rnnoise_enabled);
-    let mut audio_rx = audio_source.start(&stream_config).await?;
-    eprintln!("🎙️ Audio capture active on default microphone (16kHz mono)");
+    // 4. Audio Capture (CPAL), supervised: standby, reconnect and stall watchdog.
+    let stream_config = cli_stream_config(&config);
+    let device_label = stream_config
+        .device_id
+        .clone()
+        .unwrap_or_else(|| "default microphone".to_string());
+    let audio_source = CpalAudioSource::new().with_rnnoise_enabled(config.rnnoise_enabled);
+    let (mut audio_capture, mut audio_rx) = ResilientCapture::start(
+        audio_source,
+        stream_config,
+        liveaudio_audio::get_input_device_count,
+    )
+    .await?;
+    let mut audio_state_rx = audio_capture.state();
+    eprintln!(
+        "🎙️ Audio capture on {device_label} (16kHz mono): {:?}",
+        *audio_state_rx.borrow_and_update()
+    );
 
     // 5. Silero VAD (ONNX)
     let vad_cfg = VadConfig {
@@ -919,6 +995,10 @@ async fn run_service(
         'capture: loop {
             tokio::select! {
                 _ = cancel_audio.cancelled() => break,
+                Ok(()) = audio_state_rx.changed() => {
+                    // No service event type fits capture state; stdout stays JSON-lines only.
+                    eprintln!("Audio capture state: {:?}", *audio_state_rx.borrow_and_update());
+                }
                 chunk_opt = audio_rx.recv() => {
                     let chunk = match chunk_opt {
                         Some(c) => {
@@ -1024,7 +1104,7 @@ async fn run_service(
             acoustic_events_enabled,
             close_reason,
         );
-        let _ = audio_source.stop().await;
+        audio_capture.stop().await;
     });
 
     // Parent PID Watchdog
@@ -1075,9 +1155,11 @@ async fn run_service(
 }
 
 async fn list_devices() -> Result<(), Box<dyn std::error::Error>> {
-    println!("=== Audio Input Devices ===");
-    println!("  [0] Default System Microphone (16000Hz, 1ch) [DEFAULT]");
-    println!("  [1] Audio del sistema / Altavoces (WASAPI Loopback)");
+    let enumerated = liveaudio_audio::enumerate_cpal_devices()?;
+    println!("=== Audio Input Devices (id for audio_device.id) ===");
+    for line in device_list_lines(&enumerated) {
+        println!("{line}");
+    }
     Ok(())
 }
 
@@ -1086,11 +1168,10 @@ async fn run_doctor() -> Result<(), Box<dyn std::error::Error>> {
     println!("OS: {}", std::env::consts::OS);
     println!("Architecture: {}", std::env::consts::ARCH);
 
-    // Test Windows Job Object creation
-    match JobObject::create() {
-        Ok(_) => println!("Windows Job Object: AVAILABLE (0 zombie child guarantees)"),
-        Err(e) => println!("Windows Job Object: UNAVAILABLE ({})", e),
-    }
+    println!(
+        "{}",
+        job_object_status(cfg!(windows), || JobObject::create().map(drop))
+    );
 
     // Python Worker Discovery
     let py_path = WorkerProcessConfig::find_python_executable();
@@ -1106,12 +1187,7 @@ async fn run_doctor() -> Result<(), Box<dyn std::error::Error>> {
     println!("App Data Home: {}", data_home.display());
     println!("HuggingFace Cache (HF_HOME): {}", hf_cache.display());
 
-    // Unicode / Space Path Validation
-    let test_space_path = data_home.join("test spaces & accénts 🎙️");
-    println!(
-        "Unicode Path Support: VERIFIED ({})",
-        test_space_path.display()
-    );
+    println!("{}", unicode_path_status(&std::env::temp_dir()));
 
     // Candidate port range
     let ports = candidate_ports(8765, None);
@@ -1119,4 +1195,67 @@ async fn run_doctor() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Diagnostics complete.");
     Ok(())
+}
+
+#[cfg(test)]
+mod headless_parity_tests {
+    use super::*;
+    use liveaudio_audio::AudioDeviceInfo;
+    use liveaudio_core::LiveAudioConfig;
+
+    #[test]
+    fn serve_capture_uses_the_persisted_audio_device() {
+        let config = LiveAudioConfig {
+            audio_device: Some(serde_json::json!({ "id": "loopback:Speakers" })),
+            ..LiveAudioConfig::default()
+        };
+        let stream = cli_stream_config(&config);
+        assert_eq!(stream.device_id.as_deref(), Some("loopback:Speakers"));
+        assert_eq!((stream.sample_rate, stream.channels), (16000, 1));
+        assert_eq!(
+            cli_stream_config(&LiveAudioConfig::default()).device_id,
+            None
+        );
+    }
+
+    #[test]
+    fn devices_lists_selectable_ids_from_the_enumerator() {
+        let enumerated = vec![
+            AudioDeviceInfo::new("Mic (USB)", "Mic (USB)", true, 1, vec![48000], false),
+            AudioDeviceInfo::new("loopback:Speakers", "Speakers", false, 2, vec![48000], true),
+        ];
+        let lines = device_list_lines(&enumerated);
+        assert!(lines.iter().any(|l| l.contains("[default_microphone]")));
+        assert_eq!(
+            lines.iter().any(|l| l.contains("[default_loopback]")),
+            cfg!(windows)
+        );
+        assert!(lines
+            .iter()
+            .any(|l| l.contains("[Mic (USB)]") && l.ends_with("[DEFAULT]")));
+        assert!(lines.iter().any(|l| l.contains("[loopback:Speakers]")));
+        assert!(!lines.iter().any(|l| l.contains("[0]") || l.contains("[1]")));
+    }
+
+    #[test]
+    fn doctor_reports_job_object_only_where_it_applies() {
+        assert!(job_object_status(false, || Ok(())).contains("NOT APPLICABLE"));
+        assert!(job_object_status(true, || Ok(())).contains("AVAILABLE"));
+        let failed = job_object_status(true, || Err(std::io::Error::other("denied")));
+        assert!(failed.contains("UNAVAILABLE") && failed.contains("denied"));
+    }
+
+    #[test]
+    fn doctor_unicode_path_check_really_writes_and_cleans_up() {
+        let root = std::env::temp_dir().join(format!("liveaudio-doctor-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("root");
+        let line = unicode_path_status(&root);
+        assert!(line.contains("VERIFIED"), "{line}");
+        assert_eq!(std::fs::read_dir(&root).expect("read root").count(), 0);
+
+        let not_a_dir = root.join("plain-file");
+        std::fs::write(&not_a_dir, b"x").expect("file");
+        assert!(unicode_path_status(&not_a_dir).contains("FAILED"));
+        let _ = std::fs::remove_dir_all(root);
+    }
 }
