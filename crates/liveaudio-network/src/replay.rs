@@ -445,6 +445,11 @@ impl RetryBuffer {
         self.buffer.push_back(payload);
     }
 
+    /// Peek at the oldest pending retry message without removing it.
+    pub fn front(&self) -> Option<&String> {
+        self.buffer.front()
+    }
+
     /// Pop the next pending retry message.
     pub fn pop_front(&mut self) -> Option<String> {
         self.buffer.pop_front()

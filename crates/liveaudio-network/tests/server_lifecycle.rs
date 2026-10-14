@@ -525,3 +525,57 @@ async fn test_sink_adapter_bridges_cue_to_ws_client() {
 
     server_mut.stop().await.expect("Stop server");
 }
+
+#[tokio::test]
+async fn test_client_count_never_wraps_when_stop_closes_a_live_client() {
+    let port = 19950;
+    let mut server = WsServer::new(WsServerConfig {
+        base_port: port,
+        ..Default::default()
+    });
+    let bound = server.start(port).await.expect("Failed to start server");
+    let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{bound}"))
+        .await
+        .expect("client connects");
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while server.client_count() != 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("client registered");
+
+    server.stop().await.expect("Failed to stop server");
+    // The connection task decrements after it closes the socket, so EOF means it finished.
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while ws.next().await.is_some() {}
+    })
+    .await
+    .expect("server closes the client socket");
+
+    assert_eq!(server.client_count(), 0);
+}
+
+#[tokio::test]
+async fn test_silent_tcp_peer_is_dropped_after_handshake_timeout() {
+    use tokio::io::AsyncReadExt;
+
+    let port = 19960;
+    let mut server = WsServer::new(WsServerConfig {
+        base_port: port,
+        handshake_timeout: Duration::from_millis(100),
+        ..Default::default()
+    });
+    let bound = server.start(port).await.expect("Failed to start server");
+    let mut raw = tokio::net::TcpStream::connect(("127.0.0.1", bound))
+        .await
+        .expect("raw TCP connects");
+
+    let mut buf = [0u8; 16];
+    let read = tokio::time::timeout(Duration::from_secs(5), raw.read(&mut buf))
+        .await
+        .expect("server must close a peer that never completes the handshake");
+    assert_eq!(read.expect("read succeeds"), 0, "expected EOF");
+
+    server.stop().await.expect("Failed to stop server");
+}
