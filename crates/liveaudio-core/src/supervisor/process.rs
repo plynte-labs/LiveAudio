@@ -11,7 +11,7 @@
 //! - Idempotent double-shutdown guarantees
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as SyncMutex};
@@ -387,6 +387,45 @@ pub struct WorkerProcessConfig {
     pub decode_timeout: Option<Duration>,
 }
 
+/// Interpreter paths relative to the exe directory, in trust order.
+#[cfg(windows)]
+const BUNDLED_PYTHON_RELATIVE: [&str; 3] =
+    ["python.exe", "python/python.exe", "runtime/python.exe"];
+#[cfg(not(windows))]
+const BUNDLED_PYTHON_RELATIVE: [&str; 3] =
+    ["bin/python3", "python/bin/python3", "runtime/bin/python3"];
+
+/// Project virtualenv interpreter, also checked in the exe's ancestors for dev layouts.
+#[cfg(windows)]
+const VENV_PYTHON_RELATIVE: &str = ".venv/Scripts/python.exe";
+#[cfg(not(windows))]
+const VENV_PYTHON_RELATIVE: &str = ".venv/bin/python";
+
+/// Candidates derived only from the exe location, never from the current directory.
+pub(crate) fn bundled_python_candidates(exe_dir: &Path) -> Vec<PathBuf> {
+    let mut candidates: Vec<PathBuf> = BUNDLED_PYTHON_RELATIVE
+        .iter()
+        .map(|relative| exe_dir.join(relative))
+        .collect();
+    for ancestor in ["", "..", "../..", "../../.."] {
+        candidates.push(exe_dir.join(ancestor).join(VENV_PYTHON_RELATIVE));
+    }
+    candidates
+}
+
+/// First Python found in an absolute PATH directory. Relative PATH entries resolve against the cwd.
+pub(crate) fn python_on_path(path: &std::ffi::OsStr) -> Option<PathBuf> {
+    let name = if cfg!(windows) {
+        "python.exe"
+    } else {
+        "python"
+    };
+    std::env::split_paths(path)
+        .filter(|directory| directory.is_absolute())
+        .map(|directory| directory.join(name))
+        .find(|candidate| candidate.is_file())
+}
+
 impl WorkerProcessConfig {
     /// Discovers the Python executable from the environment, bundled directories, or PATH.
     pub fn find_python_executable() -> PathBuf {
@@ -405,57 +444,27 @@ impl WorkerProcessConfig {
             return managed_python;
         }
 
-        // 3. Relative to current exe (installed / portable bundle layout or debug bin)
+        // 3. Relative to current exe (installed / portable bundle layout or debug bin).
+        // The current directory is never searched: it is attacker-writable in practice.
         if let Ok(current_exe) = std::env::current_exe() {
             if let Some(exe_dir) = current_exe.parent() {
-                let candidates = [
-                    exe_dir.join("python.exe"),
-                    exe_dir.join("python").join("python.exe"),
-                    exe_dir.join("runtime").join("python.exe"),
-                    exe_dir.join(".venv").join("Scripts").join("python.exe"),
-                    exe_dir
-                        .join("..")
-                        .join(".venv")
-                        .join("Scripts")
-                        .join("python.exe"),
-                    exe_dir
-                        .join("../..")
-                        .join(".venv")
-                        .join("Scripts")
-                        .join("python.exe"),
-                    exe_dir
-                        .join("../../..")
-                        .join(".venv")
-                        .join("Scripts")
-                        .join("python.exe"),
-                ];
-                for cand in &candidates {
+                for cand in bundled_python_candidates(exe_dir) {
                     if cand.exists() {
-                        if let Ok(canonical) = std::fs::canonicalize(cand) {
+                        if let Ok(canonical) = std::fs::canonicalize(&cand) {
                             return canonical;
                         }
-                        return cand.clone();
+                        return cand;
                     }
                 }
             }
         }
 
-        // 4. Relative to current working directory
-        let cwd_candidates = [
-            PathBuf::from(".venv/Scripts/python.exe"),
-            PathBuf::from("python/python.exe"),
-            PathBuf::from("runtime/python.exe"),
-        ];
-        for cand in &cwd_candidates {
-            if cand.exists() {
-                if let Ok(canonical) = std::fs::canonicalize(cand) {
-                    return canonical;
-                }
-                return cand.clone();
-            }
+        // 4. Absolute PATH directories only. A bare `python` would let Windows CreateProcess
+        // consult the current directory before PATH.
+        if let Some(found) = std::env::var_os("PATH").and_then(|path| python_on_path(&path)) {
+            return found;
         }
 
-        // 5. Default to system PATH python
         PathBuf::from("python")
     }
 
@@ -514,17 +523,20 @@ impl WorkerProcessConfig {
             }
         }
 
-        // Relative to current working directory
-        let cwd_candidates = [
-            PathBuf::from("liveaudio/service/asr_worker.py"),
-            PathBuf::from("resources/liveaudio/service/asr_worker.py"),
-            PathBuf::from("../liveaudio/service/asr_worker.py"),
-        ];
-        for cand in &cwd_candidates {
-            if cand.exists() {
-                return std::fs::canonicalize(cand)
-                    .ok()
-                    .or_else(|| Some(cand.clone()));
+        // Relative to current working directory: dev builds only (`tauri dev` runs from desktop/).
+        // A release build must not execute a worker script planted in the working directory.
+        if cfg!(debug_assertions) {
+            let cwd_candidates = [
+                PathBuf::from("liveaudio/service/asr_worker.py"),
+                PathBuf::from("resources/liveaudio/service/asr_worker.py"),
+                PathBuf::from("../liveaudio/service/asr_worker.py"),
+            ];
+            for cand in &cwd_candidates {
+                if cand.exists() {
+                    return std::fs::canonicalize(cand)
+                        .ok()
+                        .or_else(|| Some(cand.clone()));
+                }
             }
         }
 
@@ -1469,5 +1481,60 @@ mod tests {
 
         let _ = std::fs::remove_file(&fake_py);
         let _ = std::fs::remove_file(&fake_worker);
+    }
+}
+
+#[cfg(test)]
+mod python_discovery_order_tests {
+    use super::{bundled_python_candidates, python_on_path};
+    use std::ffi::OsStr;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn bundled_candidates_stay_under_the_exe_directory_and_its_venv_ancestors() {
+        let exe_dir = if cfg!(windows) {
+            PathBuf::from(r"C:\Program Files\LiveAudio")
+        } else {
+            PathBuf::from("/opt/liveaudio")
+        };
+        let candidates = bundled_python_candidates(&exe_dir);
+
+        assert!(
+            candidates.iter().all(|path| path.is_absolute()),
+            "cwd-relative candidates must not be trusted: {candidates:?}"
+        );
+        let venv = if cfg!(windows) {
+            Path::new(".venv/Scripts/python.exe")
+        } else {
+            Path::new(".venv/bin/python")
+        };
+        assert!(candidates.contains(&exe_dir.join(venv)));
+        assert!(candidates.contains(&exe_dir.join("..").join(venv)));
+        let bundled = if cfg!(windows) {
+            exe_dir.join("python.exe")
+        } else {
+            exe_dir.join("bin/python3")
+        };
+        assert_eq!(candidates.first(), Some(&bundled));
+    }
+
+    #[test]
+    fn path_lookup_returns_the_python_in_an_absolute_directory() {
+        let root = std::env::temp_dir().join(format!("liveaudio-py-path-{}", std::process::id()));
+        let absolute_dir = root.join("bin");
+        std::fs::create_dir_all(&absolute_dir).unwrap();
+        let name = if cfg!(windows) {
+            "python.exe"
+        } else {
+            "python"
+        };
+        std::fs::write(absolute_dir.join(name), "real").unwrap();
+
+        let path = std::env::join_paths([absolute_dir.clone()]).unwrap();
+        let found = python_on_path(&path);
+        std::fs::remove_dir_all(&root).ok();
+
+        assert_eq!(found, Some(absolute_dir.join(name)));
+        assert_eq!(python_on_path(OsStr::new("")), None);
     }
 }

@@ -32,6 +32,13 @@ pub fn format_vtt_timestamp(seconds: f64) -> String {
     )
 }
 
+/// Cue text cannot contain the `-->` timing separator: a line with it would end the cue early and
+/// corrupt the file. The single left-to-right pass is enough, because the inserted `- ->` never
+/// forms a new `-->`.
+pub fn vtt_cue_text(text: &str) -> String {
+    text.replace("-->", "- ->")
+}
+
 /// Last cue number already written to a WebVTT file, so a resumed session keeps
 /// numbering sequentially (`engine.py` session resume). Missing file yields 0.
 pub fn last_cue_counter(path: &Path) -> u64 {
@@ -77,7 +84,11 @@ impl WebVttSink {
                 let end_str = format_vtt_timestamp(cue.end_timestamp_sec);
                 let entry = format!(
                     "{}\n{} --> {}\n{}\n\n#cue:{}\n\n",
-                    cue.cue_counter, start_str, end_str, cue.text, cue.cue_counter
+                    cue.cue_counter,
+                    start_str,
+                    end_str,
+                    vtt_cue_text(&cue.text),
+                    cue.cue_counter
                 );
 
                 let write_res = OpenOptions::new()
@@ -197,5 +208,14 @@ mod tests {
         .unwrap();
         assert_eq!(last_cue_counter(&path), 7);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cue_text_never_contains_the_vtt_arrow() {
+        assert_eq!(vtt_cue_text("plain text"), "plain text");
+        for text in ["see --> there", "--->", "a-->b-->c", "-->-->"] {
+            let cleaned = vtt_cue_text(text);
+            assert!(!cleaned.contains("-->"), "{cleaned:?} from {text:?}");
+        }
     }
 }

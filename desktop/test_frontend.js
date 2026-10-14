@@ -653,11 +653,31 @@ async function runTests() {
   assert(tauriConf.bundle.windows.nsis.installerHooks === 'hooks.nsh',
     'NSIS installer hooks script is configured in tauri.conf.json bundle windows nsis');
 
+  // Capability scope: the default capability is limited to the main window. The explicit
+  // allow-emit entry is unused (core:default still expands to it; full revocation is deferred).
+  const capability = JSON.parse(fs.readFileSync(path.join(__dirname, 'src-tauri', 'capabilities', 'default.json'), 'utf8'));
+  assert(JSON.stringify(capability.windows) === JSON.stringify(['main']),
+    'Default capability is scoped to the main window only');
+  assert(!capability.permissions.includes('core:event:allow-emit'),
+    'Default capability no longer lists the unused core:event:allow-emit entry');
+  assert(!/\bemit\s*\(/.test(jsContent), 'Frontend does not call emit, so the emit permission is unnecessary');
+
+  // The event panel ready line is translated through i18n, not hard-coded Spanish
+  const i18nSource = fs.readFileSync(path.join(__dirname, 'src', 'i18n.js'), 'utf8');
+  assert(!jsContent.includes("'Panel de eventos listo.'"), 'Event panel ready log line is not hard-coded Spanish');
+  assert(jsContent.includes("t('log_events_ready')"), 'Event panel ready log line uses the log_events_ready i18n key');
+  assert(i18nSource.includes("log_events_ready: 'Panel de eventos listo.'") && i18nSource.includes("log_events_ready: 'Event panel ready.'"),
+    'i18n defines log_events_ready in both Spanish and English');
+
   // Verify NSIS hooks script content and legacy migration coverage
   const hooksPath = path.join(__dirname, 'src-tauri', 'hooks.nsh');
   assert(fs.existsSync(hooksPath), 'hooks.nsh exists in desktop/src-tauri');
   const hooksContent = fs.readFileSync(hooksPath, 'utf8');
   assert(hooksContent.includes('!macro NSIS_HOOK_PREINSTALL'), 'hooks.nsh defines NSIS_HOOK_PREINSTALL');
+  assert(hooksContent.includes('IfFileExists "$R2\\liveaudio-desktop.exe"'),
+    'Legacy predicate treats an install directory that holds liveaudio-desktop.exe as modern');
+  assert(hooksContent.includes('${If} $R9 >= 5'),
+    'Legacy predicate treats any major.minor >= 1.5 as modern, so 1.6.0 without MainBinaryName is not purged');
   assert(hooksContent.includes('SetRegView 64') && hooksContent.includes('SetRegView 32'),
     'hooks.nsh inspects both 64-bit and 32-bit registry views');
   assert(hooksContent.includes('HKCU') && hooksContent.includes('HKLM'),

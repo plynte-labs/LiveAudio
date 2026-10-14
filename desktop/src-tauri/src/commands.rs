@@ -2106,7 +2106,7 @@ pub async fn export_diagnostics(
     let job_object_support = JobObject::create().is_ok();
     let ports = candidate_ports(config.ws_port, Some(5));
 
-    let report = serde_json::json!({
+    let mut report = serde_json::json!({
         "timestamp_epoch": now,
         "os": std::env::consts::OS,
         "arch": std::env::consts::ARCH,
@@ -2116,6 +2116,7 @@ pub async fn export_diagnostics(
         "config": config,
         "service_status": status,
     });
+    crate::diagnostics::scrub_diagnostics_value(&mut report);
 
     let bytes =
         serde_json::to_vec_pretty(&report).map_err(|e| format!("Serialization error: {}", e))?;

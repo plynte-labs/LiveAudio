@@ -221,6 +221,7 @@ export const TRANSLATIONS = {
     toast_session_open_failed: 'No se pudo abrir la carpeta de sesión: ',
     toast_diag_exported: 'Diagnóstico exportado en: ',
     toast_diag_failed: 'Error al exportar diagnóstico: ',
+    log_events_ready: 'Panel de eventos listo.',
   },
 
   en: {
@@ -438,6 +439,7 @@ export const TRANSLATIONS = {
     toast_session_open_failed: 'Could not open session folder: ',
     toast_diag_exported: 'Diagnostics exported to: ',
     toast_diag_failed: 'Error exporting diagnostics: ',
+    log_events_ready: 'Event panel ready.',
   },
 };
 

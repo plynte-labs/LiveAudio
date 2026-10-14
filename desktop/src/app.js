@@ -1727,10 +1727,10 @@ async function initApp() {
         appendLogEntry(lvl, clean, 'INIT');
       }
     } else {
-      appendLogEntry('info', 'Panel de eventos listo.', 'SYSTEM');
+      appendLogEntry('info', t('log_events_ready'), 'SYSTEM');
     }
   } catch (_) {
-    appendLogEntry('info', 'Panel de eventos listo.', 'SYSTEM');
+    appendLogEntry('info', t('log_events_ready'), 'SYSTEM');
   }
 
   // Subscribe to Tauri events safely

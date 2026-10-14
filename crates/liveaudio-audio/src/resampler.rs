@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 
+use crate::error::AudioError;
 use crate::types::{AudioChunk, DEFAULT_CHUNK_SIZE, DEFAULT_SAMPLE_RATE};
 
 /// Downmix interleaved multichannel float32 audio samples to a single mono channel.
@@ -85,8 +86,18 @@ pub struct AudioResampler {
 
 impl AudioResampler {
     /// Create a new resampler for the given hardware input sample rate.
-    pub fn new(input_sample_rate: u32, target_sample_rate: u32, chunk_size: usize) -> Self {
-        Self {
+    /// Both rates must be non-zero: a zero rate would never advance the interpolation loop.
+    pub fn new(
+        input_sample_rate: u32,
+        target_sample_rate: u32,
+        chunk_size: usize,
+    ) -> Result<Self, AudioError> {
+        if input_sample_rate == 0 || target_sample_rate == 0 {
+            return Err(AudioError::InvalidParameter(format!(
+                "sample rates must be non-zero (input {input_sample_rate} Hz, target {target_sample_rate} Hz)"
+            )));
+        }
+        Ok(Self {
             input_sample_rate,
             target_sample_rate,
             chunk_size: chunk_size.max(1),
@@ -94,11 +105,11 @@ impl AudioResampler {
             phase: 0.0,
             accumulated_samples: Vec::with_capacity(chunk_size * 2),
             sequence_id: 0,
-        }
+        })
     }
 
     /// Default resampler configured for standard 16kHz target and 512 chunk size.
-    pub fn for_input_rate(input_sample_rate: u32) -> Self {
+    pub fn for_input_rate(input_sample_rate: u32) -> Result<Self, AudioError> {
         Self::new(input_sample_rate, DEFAULT_SAMPLE_RATE, DEFAULT_CHUNK_SIZE)
     }
 
@@ -231,7 +242,7 @@ mod tests {
 
     #[test]
     fn test_resampler_passthrough_16k() {
-        let mut resampler = AudioResampler::new(16000, 16000, 512);
+        let mut resampler = AudioResampler::new(16000, 16000, 512).unwrap();
         let input = vec![0.1f32; 1024];
         let chunks = resampler.process_mono_samples(&input);
         assert_eq!(chunks.len(), 2);
@@ -245,7 +256,7 @@ mod tests {
     fn test_resampler_48k_to_16k_ratio() {
         // 48kHz -> 16kHz (3:1 ratio).
         // 1536 input samples @ 48kHz = 512 output samples @ 16kHz (exactly 1 chunk)
-        let mut resampler = AudioResampler::new(48000, 16000, 512);
+        let mut resampler = AudioResampler::new(48000, 16000, 512).unwrap();
         let input = vec![0.25f32; 1536];
         let chunks = resampler.process_mono_samples(&input);
         assert_eq!(chunks.len(), 1);
@@ -257,12 +268,26 @@ mod tests {
     #[test]
     fn test_resampler_44_1k_to_16k() {
         // 44.1kHz -> 16kHz
-        let mut resampler = AudioResampler::new(44100, 16000, 512);
+        let mut resampler = AudioResampler::new(44100, 16000, 512).unwrap();
         // Feed 44100 samples (1 second) -> expect approximately 16000 samples = ~31 chunks
         let input = vec![0.5f32; 44100];
         let chunks = resampler.process_mono_samples(&input);
         let total_samples: usize = chunks.iter().map(|c| c.samples.len()).sum();
         let expected_samples = (44100.0 * 16000.0 / 44100.0) as usize; // 16000
         assert!((total_samples as i64 - expected_samples as i64).abs() < 512);
+    }
+
+    #[test]
+    fn zero_sample_rate_is_rejected_at_construction() {
+        // A zero rate makes the ratio zero (or infinite), so the interpolation loop never ends.
+        assert!(matches!(
+            AudioResampler::new(0, 16000, 512),
+            Err(AudioError::InvalidParameter(_))
+        ));
+        assert!(matches!(
+            AudioResampler::new(48000, 0, 512),
+            Err(AudioError::InvalidParameter(_))
+        ));
+        assert!(AudioResampler::new(48000, 16000, 512).is_ok());
     }
 }

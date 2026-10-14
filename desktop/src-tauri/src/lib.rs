@@ -3,6 +3,7 @@
 //! LiveAudio Desktop Tauri 2 Application Backend Library.
 
 pub mod commands;
+pub mod diagnostics;
 pub mod dto;
 pub mod logging;
 pub mod state;

@@ -205,18 +205,31 @@ FunctionEnd
   ReadRegStr $R4 ${ROOT_KEY} "${SUBKEY_PATH}" "QuietUninstallString"
   ReadRegStr $R8 ${ROOT_KEY} "${SUBKEY_PATH}" "DisplayName"
 
-  ; Check if this is the modern v1.5.0+ Rust desktop app
+  ; Check if this is the modern v1.5.0+ Rust desktop app. Any of these markers is enough:
+  ; the MainBinaryName value, an install directory that holds liveaudio-desktop.exe, or a
+  ; major.minor version >= 1.5. Python releases are 1.2.x and older, so later Rust versions
+  ; (1.6.0, ...) stay modern even if the MainBinaryName value is missing.
   StrCpy $R5 "0"
   ${If} $R1 == "liveaudio-desktop.exe"
     StrCpy $R5 "1"
   ${EndIf}
 
   ${If} $R5 == "0"
-    ${If} $R0 == "1.5.0"
+  ${AndIf} $R2 != ""
+    IfFileExists "$R2\liveaudio-desktop.exe" 0 +2
       StrCpy $R5 "1"
-    ${Else}
-      ${StrLoc} $R6 $R0 "1.5." ">"
-      ${If} $R6 == "0"
+  ${EndIf}
+
+  ${If} $R5 == "0"
+  ${AndIf} $R0 != ""
+    ${StrLoc} $R6 $R0 "1." ">"
+    ${If} $R6 == "0"
+      StrCpy $R9 $R0 "" 2
+      ${StrLoc} $R6 $R9 "." ">"
+      ${If} $R6 != ""
+        StrCpy $R9 $R9 $R6
+      ${EndIf}
+      ${If} $R9 >= 5
         StrCpy $R5 "1"
       ${EndIf}
     ${EndIf}
