@@ -557,8 +557,9 @@ pub(crate) async fn acquire_service_lock(state: &AppState, dir: &Path) -> Result
             Ok(())
         }
         Ok(None) => {
-            let holder = match service_lock_holder(dir) {
-                Ok(Some(ServiceLockHolder { pid: Some(pid) })) => format!(" (PID {pid})"),
+            // Detection before every Start: a refused start enters Monitor Mode.
+            let holder = match refresh_foreign_service(state, dir).await {
+                Some(ServiceLockHolder { pid: Some(pid), .. }) => format!(" (PID {pid})"),
                 _ => String::new(),
             };
             Err(format!(
@@ -569,6 +570,86 @@ pub(crate) async fn acquire_service_lock(state: &AppState, dir: &Path) -> Result
             // Same policy as the former launch lock: an unopenable lock does not block the app.
             tracing::warn!("Service lock unavailable, starting without it: {error}");
             Ok(())
+        }
+    }
+}
+
+/// Monitor Mode poll interval. Short enough for a timely takeover (same 3 s cadence as audio
+/// reconnect); sparse because the non-Windows probe briefly takes the lock (T7a finding L1).
+const FOREIGN_SERVICE_POLL: Duration = Duration::from_secs(3);
+const TAKEOVER_RETRY_DELAY: Duration = Duration::from_secs(1);
+
+/// Outcome of one Monitor Mode poll.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ForeignServicePoll {
+    NotMonitoring,
+    Monitoring,
+    Released,
+}
+
+/// Records whether another live process owns the service lock in `dir`. A lock this desktop
+/// holds is never foreign; a failed probe counts as no owner (a later start re-checks).
+pub(crate) async fn refresh_foreign_service(
+    state: &AppState,
+    dir: &Path,
+) -> Option<ServiceLockHolder> {
+    let holder = if state.service_lock.lock().await.is_some() {
+        None
+    } else {
+        service_lock_holder(dir).ok().flatten()
+    };
+    *state.foreign_service.write().await = holder;
+    holder
+}
+
+/// Re-probes only while monitoring; `Released` means the foreign owner exited.
+pub(crate) async fn poll_foreign_service(state: &AppState, dir: &Path) -> ForeignServicePoll {
+    if state.foreign_service.read().await.is_none() {
+        return ForeignServicePoll::NotMonitoring;
+    }
+    match refresh_foreign_service(state, dir).await {
+        Some(_) => ForeignServicePoll::Monitoring,
+        None => ForeignServicePoll::Released,
+    }
+}
+
+/// Retries a start once when the lock looked held, absorbing a momentary probe/acquire race.
+pub(crate) async fn retry_once_if_already_running<T, F, Fut>(
+    delay: Duration,
+    mut attempt: F,
+) -> Result<T, String>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, String>>,
+{
+    match attempt().await {
+        Err(error) if error.starts_with("service-already-running") => {
+            tokio::time::sleep(delay).await;
+            attempt().await
+        }
+        result => result,
+    }
+}
+
+/// Detects a foreign service at launch, then polls it while in Monitor Mode and starts this
+/// desktop's own service when the foreign owner exits (takeover).
+pub(crate) async fn watch_foreign_service(app: AppHandle) {
+    let state = app.state::<AppState>().inner().clone();
+    let dir = get_data_home();
+    if refresh_foreign_service(&state, &dir).await.is_some() {
+        if let Ok(status) = get_service_status_internal(&state).await {
+            let _ = app.emit("service_status_changed", &status);
+        }
+    }
+    loop {
+        tokio::time::sleep(FOREIGN_SERVICE_POLL).await;
+        if poll_foreign_service(&state, &dir).await != ForeignServicePoll::Released {
+            continue;
+        }
+        tracing::info!("The service owner exited; starting this desktop's service");
+        let start = || start_service_guarded(&app, &state);
+        if let Err(error) = retry_once_if_already_running(TAKEOVER_RETRY_DELAY, start).await {
+            tracing::warn!("Service takeover did not start: {error}");
         }
     }
 }
@@ -762,10 +843,14 @@ pub async fn get_service_status_internal(state: &AppState) -> Result<ServiceStat
     let is_running = state.is_running.load(Ordering::SeqCst);
     let asr_state = state.asr_state.read().await.clone();
     let vad_onset = state.vad_onset.load(Ordering::SeqCst);
+    let foreign_service = *state.foreign_service.read().await;
     let ws_port = if is_running {
         state.active_port.load(Ordering::SeqCst)
     } else {
-        state.config.read().await.ws_port
+        let configured = state.config.read().await.ws_port;
+        foreign_service
+            .and_then(|holder| holder.ws_port)
+            .unwrap_or(configured)
     };
     let ws_clients = {
         let ws_guard = state.ws_server.lock().await;
@@ -845,6 +930,8 @@ pub async fn get_service_status_internal(state: &AppState) -> Result<ServiceStat
         } else {
             liveaudio_audio::AudioSourceStatus::Stopped
         },
+        monitor_mode: foreign_service.is_some(),
+        foreign_service_pid: foreign_service.and_then(|holder| holder.pid),
     })
 }
 
@@ -860,10 +947,17 @@ pub async fn start_service(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<ServiceStatusDto, String> {
+    start_service_guarded(&app, state.inner()).await
+}
+
+async fn start_service_guarded(
+    app: &AppHandle,
+    state: &AppState,
+) -> Result<ServiceStatusDto, String> {
     let _transition_guard = state.transition_lock.lock().await;
     let startup_token = tokio_util::sync::CancellationToken::new();
     *state.startup_cancel_token.lock().await = Some(startup_token.clone());
-    let result = start_service_locked(&app, state.inner(), false, startup_token).await;
+    let result = start_service_locked(app, state, false, startup_token).await;
     *state.startup_cancel_token.lock().await = None;
     result
 }

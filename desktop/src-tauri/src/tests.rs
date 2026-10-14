@@ -5,8 +5,11 @@
 use crate::commands::{
     acquire_service_lock, admit_worker_event_generation, asr_progress_from_worker_event,
     asr_progress_update_for_worker_event, desktop_runtime_preflight_error,
-    ensure_startup_websocket, get_service_status_internal, is_text_blacklisted, persist_config_and_apply, profile_presets, shutdown_service_resources, stop_active_websocket,
+    ensure_startup_websocket, get_service_status_internal, is_text_blacklisted,
+    persist_config_and_apply, poll_foreign_service, profile_presets, refresh_foreign_service,
+    retry_once_if_already_running, shutdown_service_resources, stop_active_websocket,
     trim_boundary_overlap, trim_boundary_overlap_with_max, worker_attempt_is_current,
+    ForeignServicePoll,
 };
 use crate::dto::*;
 use crate::state::AppState;
@@ -1519,6 +1522,143 @@ async fn start_fails_cleanly_while_another_process_holds_the_service_lock() {
 }
 
 #[tokio::test]
+async fn live_foreign_owner_puts_the_desktop_in_monitor_mode_on_its_bound_port() {
+    let home = isolated_test_home();
+    let mut foreign = liveaudio_core::ServiceLock::try_acquire(&home)
+        .expect("lock file opens")
+        .expect("foreign owner holds the service lock");
+    foreign.record_ws_port(8799).expect("record port");
+    let state = AppState::default();
+
+    assert!(refresh_foreign_service(&state, &home).await.is_some());
+    let status = get_service_status_internal(&state).await.unwrap();
+    assert!(status.monitor_mode && !status.is_running);
+    assert_eq!(status.foreign_service_pid, Some(std::process::id()));
+    assert_eq!(
+        status.ws_port, 8799,
+        "the feed must follow the holder's fallback port"
+    );
+
+    drop(foreign);
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[tokio::test]
+async fn start_refused_by_a_foreign_owner_enters_monitor_mode() {
+    let home = isolated_test_home();
+    let foreign = liveaudio_core::ServiceLock::try_acquire(&home)
+        .expect("lock file opens")
+        .expect("foreign owner holds the service lock");
+    let state = AppState::default();
+
+    acquire_service_lock(&state, &home)
+        .await
+        .expect_err("a second pipeline must not start");
+    let status = get_service_status_internal(&state).await.unwrap();
+    assert!(status.monitor_mode);
+
+    drop(foreign);
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[tokio::test]
+async fn own_service_lock_is_never_reported_as_a_foreign_service() {
+    let home = isolated_test_home();
+    let state = AppState::default();
+    acquire_service_lock(&state, &home)
+        .await
+        .expect("free lock is acquired");
+
+    assert_eq!(refresh_foreign_service(&state, &home).await, None);
+    let status = get_service_status_internal(&state).await.unwrap();
+    assert!(!status.monitor_mode);
+
+    shutdown_service_resources(&state).await.unwrap();
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[tokio::test]
+async fn monitor_poll_reports_release_only_after_the_foreign_owner_exits() {
+    let home = isolated_test_home();
+    let state = AppState::default();
+    assert_eq!(
+        poll_foreign_service(&state, &home).await,
+        ForeignServicePoll::NotMonitoring,
+        "no probe while this desktop is not monitoring"
+    );
+
+    let foreign = liveaudio_core::ServiceLock::try_acquire(&home)
+        .expect("lock file opens")
+        .expect("foreign owner holds the service lock");
+    refresh_foreign_service(&state, &home).await;
+    assert_eq!(
+        poll_foreign_service(&state, &home).await,
+        ForeignServicePoll::Monitoring
+    );
+
+    drop(foreign);
+    assert_eq!(
+        poll_foreign_service(&state, &home).await,
+        ForeignServicePoll::Released
+    );
+    let status = get_service_status_internal(&state).await.unwrap();
+    assert!(!status.monitor_mode);
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[tokio::test]
+async fn closing_a_monitoring_desktop_leaves_the_foreign_service_untouched() {
+    let home = isolated_test_home();
+    let foreign = liveaudio_core::ServiceLock::try_acquire(&home)
+        .expect("lock file opens")
+        .expect("foreign owner holds the service lock");
+    let state = AppState::default();
+    refresh_foreign_service(&state, &home).await;
+
+    shutdown_service_resources(&state).await.unwrap();
+    assert!(liveaudio_core::service_lock_holder(&home)
+        .expect("query")
+        .is_some());
+    assert!(
+        liveaudio_core::ServiceLock::try_acquire(&home)
+            .expect("open")
+            .is_none(),
+        "the foreign owner still holds its lock"
+    );
+
+    drop(foreign);
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[tokio::test]
+async fn takeover_start_retries_once_after_a_spurious_already_running() {
+    let attempts = std::sync::atomic::AtomicUsize::new(0);
+    let result = retry_once_if_already_running(std::time::Duration::ZERO, || async {
+        match attempts.fetch_add(1, Ordering::SeqCst) {
+            0 => Err("service-already-running: probe race".to_string()),
+            _ => Ok("started"),
+        }
+    })
+    .await;
+    assert_eq!(result, Ok("started"));
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+
+    let other = std::sync::atomic::AtomicUsize::new(0);
+    let failed: Result<(), String> =
+        retry_once_if_already_running(std::time::Duration::ZERO, || async {
+            other.fetch_add(1, Ordering::SeqCst);
+            Err("ASR runtime preparation failed".to_string())
+        })
+        .await;
+    assert!(failed.is_err());
+    assert_eq!(
+        other.load(Ordering::SeqCst),
+        1,
+        "other failures are not retried"
+    );
+}
+
+#[tokio::test]
 async fn desktop_holds_the_service_lock_while_running_and_releases_it_on_stop() {
     let home = isolated_test_home();
     let state = AppState::default();
@@ -1529,7 +1669,8 @@ async fn desktop_holds_the_service_lock_while_running_and_releases_it_on_stop() 
     assert_eq!(
         liveaudio_core::service_lock_holder(&home).expect("query"),
         Some(liveaudio_core::ServiceLockHolder {
-            pid: Some(std::process::id())
+            pid: Some(std::process::id()),
+            ws_port: None
         })
     );
 

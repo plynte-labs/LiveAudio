@@ -595,7 +595,8 @@ mod service_lock_tests {
         assert_eq!(
             liveaudio_core::service_lock_holder(&home).expect("query"),
             Some(liveaudio_core::ServiceLockHolder {
-                pid: Some(std::process::id())
+                pid: Some(std::process::id()),
+                ws_port: None
             })
         );
         drop(own);
@@ -747,7 +748,7 @@ async fn run_service(
     let emitter = Arc::new(HealthEmitter::new(current_pid, parent_pid, None));
 
     // Held for the whole service lifetime: one pipeline per data home (desktop or CLI).
-    let _service_lock = match acquire_service_lock(&get_data_home()) {
+    let mut service_lock = match acquire_service_lock(&get_data_home()) {
         Ok(lock) => lock,
         Err(code) => {
             let mut payload = serde_json::Map::new();
@@ -813,6 +814,10 @@ async fn run_service(
 
     // Emit ws_port event immediately over stdout JSON-lines for OpenCohost discovery
     emitter.emit_ws_port(effective_base_port, effective_port);
+    // Desktop monitors read the bound port from the lock (it may differ after port fallback).
+    if let Err(error) = service_lock.record_ws_port(effective_port) {
+        eprintln!("Could not record the WebSocket port in the service lock: {error}");
+    }
 
     // 3. Faster-Whisper Supervised Worker
     let clean_model_name = config

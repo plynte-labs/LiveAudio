@@ -48,6 +48,10 @@ pub fn run() {
             focus_main_window(app)
         }))
         .manage(app_state)
+        .setup(|app| {
+            tauri::async_runtime::spawn(commands::watch_foreign_service(app.handle().clone()));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::get_config,
             commands::get_profile_presets,

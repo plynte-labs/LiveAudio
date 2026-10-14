@@ -21,6 +21,9 @@ export interface ServiceStatus {
   session_path: string | null;
   session_error: string | null;
   asr_progress: AsrProgress | null;
+  /** Another process owns the running service; this desktop only monitors it. */
+  monitor_mode: boolean;
+  foreign_service_pid: number | null;
 }
 
 export interface AsrProgress {

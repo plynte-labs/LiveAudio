@@ -447,6 +447,47 @@ async function runTests() {
     && runtimeSettings.hardwareStatusLabel({ is_running: true, model_size: 'base', device: 'cpu', active_device: 'USB mic' })
       .includes('USB mic'),
     'runtime hardware status shows the selected audio input');
+  const monitorCalls = [];
+  const monitorSaved = await persistAndApplyRuntimeConfig({
+    before: baseline,
+    after: { ...baseline, ws_port: 9000 },
+    isRunning: false,
+    monitorMode: true,
+    confirmRestart: () => { monitorCalls.push('confirm'); return true; },
+    save: async () => monitorCalls.push('save'),
+    restart: async () => monitorCalls.push('restart'),
+  });
+  assert(monitorSaved.saved && !monitorSaved.restarted && monitorSaved.deferred === true
+    && monitorCalls.join(',') === 'save',
+    'Monitor Mode saves runtime settings as deferred without prompting or restarting the foreign service');
+  const styleOnlyInMonitor = await persistAndApplyRuntimeConfig({
+    before: baseline,
+    after: { ...baseline, subtitle_style: 'neon' },
+    isRunning: false,
+    monitorMode: true,
+    confirmRestart: () => true,
+    save: async () => {},
+    restart: async () => {},
+  });
+  assert(styleOnlyInMonitor.saved && !styleOnlyInMonitor.deferred,
+    'Monitor Mode does not flag style-only changes as deferred');
+  const { monitorFeedAction, monitorFeedText } = runtimeSettings;
+  assert(typeof monitorFeedAction === 'function'
+    && monitorFeedAction({ monitor_mode: true, ws_port: 8766 }, null) === 'open'
+    && monitorFeedAction({ monitor_mode: true, ws_port: 8766 }, 8766) === 'keep'
+    && monitorFeedAction({ monitor_mode: true, ws_port: 8767 }, 8766) === 'open'
+    && monitorFeedAction({ monitor_mode: false, ws_port: 8766 }, 8766) === 'close'
+    && monitorFeedAction({ is_running: true, ws_port: 8765 }, null) === 'keep',
+    'read-only feed opens on the foreign port, follows port changes, and closes outside Monitor Mode');
+  assert(typeof monitorFeedText === 'function'
+    && monitorFeedText('{"text":"hola","style":"default"}') === 'hola'
+    && monitorFeedText('{"type":"hello","app":"liveaudio","proto":1}') === ''
+    && monitorFeedText('{"type":"theme","tokens":{}}') === ''
+    && monitorFeedText('not json') === '',
+    'read-only feed shows subtitle text and ignores hello, theme and malformed frames');
+  assert(htmlContent.includes('id="monitor-banner"'), 'Monitor Mode banner element exists');
+  assert(appSource.includes('new WebSocket(') && appSource.includes('currentStatus.monitor_mode'),
+    'desktop opens a read-only WebSocket feed and guards the toggle in Monitor Mode');
   assert(typeof runtimeSettings.audioStateKey === 'function'
     && runtimeSettings.audioStateKey({ is_running: true, audio_state: 'standby' }) === 'audio_standby'
     && runtimeSettings.audioStateKey({ is_running: true, audio_state: 'reconnecting' }) === 'audio_reconnecting'
@@ -479,6 +520,21 @@ async function runTests() {
   const i18nPath = path.join(__dirname, 'src', 'i18n.js');
   assert(fs.existsSync(i18nPath), 'i18n.js exists');
   const { t, setLanguage, getLanguage, getProfilePresetData, PROFILE_I18N, applyTranslations } = await import('./src/i18n.js');
+
+  const monitorKeys = ['btn_monitor', 'status_monitor', 'monitor_banner', 'monitor_pid_unknown', 'toast_config_saved_deferred'];
+  for (const lang of ['es', 'en']) {
+    setLanguage(lang);
+    assert(monitorKeys.every((key) => t(key) && t(key) !== key), `Monitor Mode copy exists in ${lang}`);
+    const banner = typeof runtimeSettings.monitorBannerText === 'function'
+      ? runtimeSettings.monitorBannerText({ monitor_mode: true, foreign_service_pid: 4242 }, t)
+      : '';
+    assert(banner.includes('4242') && !banner.includes('OpenCohost'),
+      `Monitor Mode banner names the owner PID without assuming the owner app (${lang})`);
+    assert(runtimeSettings.monitorBannerText({ monitor_mode: true, foreign_service_pid: null }, t)
+      .includes(t('monitor_pid_unknown'))
+      && runtimeSettings.monitorBannerText({ monitor_mode: false }, t) === '',
+    `Monitor Mode banner handles an unknown PID and is empty outside Monitor Mode (${lang})`);
+  }
 
   setLanguage('es');
   assert(getLanguage() === 'es', 'language setter activates Spanish');
@@ -555,10 +611,14 @@ async function runTests() {
     '../../liveaudio/core/*.py': 'liveaudio/core',
     '../../liveaudio/service/*.py': 'liveaudio/service',
     '../../liveaudio/utils/*.py': 'liveaudio/utils',
-    '../../packaging/vendor/uv.exe': 'packaging/vendor/uv.exe',
   };
   assert(JSON.stringify(tauriConf.bundle.resources) === JSON.stringify(expectedResourceMap),
-    'Tauri maps the bundled uv executable, third-party notice, and direct runtime files');
+    'Tauri maps the third-party notice and direct runtime files');
+  const platformConf = (name) => JSON.parse(fs.readFileSync(path.join(__dirname, 'src-tauri', name), 'utf8'));
+  assert(platformConf('tauri.windows.conf.json').bundle.resources['../../packaging/vendor/uv.exe'] === 'packaging/vendor/uv.exe',
+    'Windows bundle maps the vendored uv.exe');
+  assert(platformConf('tauri.linux.conf.json').bundle.resources['../../packaging/vendor/uv'] === 'packaging/vendor/uv',
+    'Linux bundle maps the vendored uv binary');
   assert(htmlContent.includes('id="btn-runtime-repair"'), 'ASR runtime repair action exists');
   assert(htmlContent.includes('id="btn-runtime-cancel"'), 'ASR setup cancellation action exists');
   assert(jsContent.includes("listen('runtime_setup_progress'"), 'Runtime setup progress is forwarded to the UI');

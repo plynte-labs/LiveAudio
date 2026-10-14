@@ -58,7 +58,7 @@ A read-only audit (2026-10-14; 2 bug-hunt + 2 parity agents, parent-verified key
 - [ ] T7 — Monitor Mode: owner-bound headless service (port of `conductor/tracks/service-backend_20260903/proposal_monitor_mode.md`, draft never implemented in Python). Owner rules 2026-10-14: spawner is the sole lifecycle owner; desktop opened while a service runs connects instead of starting another; no stop/restart of a foreign service; settings saved with "applies on next start" (Passive Config Persistence); closing the desktop leaves the service; if the owner dies while the desktop is open, the desktop starts its own service. Replaces the stashed `--autostart-service`; keeps the stashed `tauri.localhost` origin. Engram: `architecture/monitor-mode-service-ownership`.
   - [x] T7a — Service ownership core: `service.lock` becomes the service lock (taken by whoever runs the pipeline: desktop `start_service` and CLI `serve`; content `{"pid": N}` like Python `lock.py`), with a holder-alive query; desktop launch no longer exits when the lock is held. Pure JSON-lines stdout (move `println!` in `liveaudio-network/src/server.rs` to tracing). `tauri.localhost` origin from the stash with its tests.
   - [x] T7b — CLI headless parity: configured audio device, `ResilientCapture`, real `devices`, honest `doctor` (moved from T6).
-  - [ ] T7c — Desktop Monitor Mode UI/state: detect live holder at startup and before Start; status shows service owned by another process, Start disabled, read-only WS feed, deferred-settings banner, close leaves service, takeover when the holder dies.
+  - [x] T7c — Desktop Monitor Mode UI/state: detect live holder at startup and before Start; status shows service owned by another process, Start disabled, read-only WS feed, deferred-settings banner, close leaves service, takeover when the holder dies.
   - [x] T7d — Installer ships `liveaudio-cli.exe` next to `liveaudio-desktop.exe`.
   - [ ] T7e — OpenCohost side (other repo, NOT authorized yet): resolve installed `liveaudio-cli.exe` and spawn `serve --parent-pid`.
 
@@ -130,5 +130,16 @@ A read-only audit (2026-10-14; 2 bug-hunt + 2 parity agents, parent-verified key
   - Checks: cli 14, audio 34/7/8, workspace 242 passed 0 failed; fmt clean cli/core. Parent spot check: cli 14 passed, desktop 58 passed.
   - Risks: `serve` with no mic now runs in Standby with no JSON signal to OpenCohost; stale persisted device id → reconnect/standby instead of silent default mic; `devices` output format changed. CLI installs no tracing subscriber (ResilientCapture tracing warnings dropped). Not hardware-tested.
 
+  - T7b commit: `93e5789` feat(cli): give the headless service desktop capture parity.
+- T7c (delegated writer, model fable). `AppState.foreign_service` via `refresh_foreign_service` (ownership = `state.service_lock.is_some()`, not PID compare); detection at launch (`watch_foreign_service` task in `.setup()`), before every Start (refused acquire enters Monitor Mode), and a 3 s poll only while monitoring. DTO adds `monitor_mode`, `foreign_service_pid`; `ws_port` = holder's recorded port or config port.
+  - Port discovery: lock JSON extended to `{"pid": N, "ws_port": P}` (pid first; Python never parses content) via `ServiceLock::record_ws_port`, called by CLI `serve` after bind.
+  - L1 fixed on Windows: holder probe reads byte 0 (fails with `ERROR_LOCK_VIOLATION` when held) instead of taking the lock (stress test RED 516/2000 spurious failures → GREEN x3). Non-Windows keeps the try-lock probe (mitigated by the 3 s monitor-only poll + retry). Parent note: during an owner's metadata rewrite (`set_len(0)` → write) a probe may read 0 bytes and see "free"; takeover then fails to acquire and returns to Monitor Mode (benign).
+  - Takeover: poll sees no holder → `start_service_guarded` with `retry_once_if_already_running` (1 s). Close in Monitor Mode is a no-op for the foreign service (tested).
+  - Frontend: disabled toggle "running in another process", "Monitor" pill, PID banner (never claims OpenCohost), read-only feed via webview `WebSocket('ws://127.0.0.1:<ws_port>')`, deferred-save/reset notice (es/en).
+  - RED: core stress (behavioral) + ws_port (compile); 6 desktop tests (compile); frontend 7 assertions + TypeError. GREEN all.
+  - Checks: desktop 64, core lib 42, cli 14, workspace 250 passed 0 failed; frontend 310 passed 0 failed after the parent fixed a T5 regression (frontend test still expected `uv.exe` in base `tauri.conf.json`; now asserts Windows/Linux platform configs). Parent missed running `node test_frontend.js` in T5 — corrected here.
+  - Parent spot check: core `service_lock` 6 passed; desktop 64 passed. Risk medium (539 lines).
+  - Manual test (owner): `liveaudio-cli serve --parent-pid <shell pid>` → open desktop → Monitor UI, PID banner, feed, deferred save → close/reopen desktop keeps CLI → kill shell → desktop takes over within ~3 s. Not GUI-exercised; not tested on Linux.
+
 ## Next step
-T7c desktop Monitor Mode UI + takeover (mind T7a L1 probe race).
+T6 minor fixes (maxLines, tolerant config load). T7e awaits owner authorization (OpenCohost repo).

@@ -10,7 +10,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::dto::AsrProgressDto;
 use liveaudio_core::config::LiveAudioConfig;
-use liveaudio_core::service_lock::ServiceLock;
+use liveaudio_core::service_lock::{ServiceLock, ServiceLockHolder};
 use liveaudio_core::sink::CompositeSink;
 use liveaudio_core::supervisor::ProcessSupervisor;
 
@@ -44,6 +44,8 @@ pub struct AppState {
     pub audio_state: Arc<RwLock<liveaudio_audio::AudioSourceStatus>>,
     /// Service lock held while this desktop runs the pipeline (released on stop).
     pub service_lock: Arc<Mutex<Option<ServiceLock>>>,
+    /// Live holder of the service lock when another process runs the service (Monitor Mode).
+    pub foreign_service: Arc<RwLock<Option<ServiceLockHolder>>>,
 }
 
 impl Default for AppState {
@@ -80,6 +82,7 @@ impl AppState {
             previous_transcript: Arc::new(RwLock::new(None)),
             audio_state: Arc::new(RwLock::new(liveaudio_audio::AudioSourceStatus::Stopped)),
             service_lock: Arc::new(Mutex::new(None)),
+            foreign_service: Arc::new(RwLock::new(None)),
         }
     }
 

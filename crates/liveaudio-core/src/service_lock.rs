@@ -23,6 +23,8 @@ pub struct ServiceLock {
 pub struct ServiceLockHolder {
     /// PID from the lock metadata; `None` when it is missing or unreadable.
     pub pid: Option<u32>,
+    /// WebSocket port the holder bound, once it recorded one (Python owners never do).
+    pub ws_port: Option<u16>,
 }
 
 impl ServiceLock {
@@ -40,14 +42,20 @@ impl ServiceLock {
             return Ok(None);
         }
         let mut lock = Self { file };
-        lock.write_pid(std::process::id())?;
+        lock.write_metadata("")?;
         Ok(Some(lock))
     }
 
-    fn write_pid(&mut self, pid: u32) -> io::Result<()> {
+    /// Records the bound WebSocket port so monitors find a holder that fell back to another port.
+    pub fn record_ws_port(&mut self, port: u16) -> io::Result<()> {
+        self.write_metadata(&format!(", \"ws_port\": {port}"))
+    }
+
+    /// Rewrites `{"pid": N<extra>}`; the pid stays first (Python `lock.py` format).
+    fn write_metadata(&mut self, extra: &str) -> io::Result<()> {
         self.file.set_len(0)?;
         self.file.seek(SeekFrom::Start(0))?;
-        write!(self.file, "{{\"pid\": {pid}}}")?;
+        write!(self.file, "{{\"pid\": {}{extra}}}", std::process::id())?;
         self.file.flush()
     }
 }
@@ -66,24 +74,25 @@ pub fn service_lock_holder(dir: &Path) -> io::Result<Option<ServiceLockHolder>> 
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
     };
-    if try_lock_first_byte(&file)? {
-        // Nobody holds it: release the probe lock (pid metadata, if any, is stale).
-        unlock_first_byte(&file);
+    if !first_byte_is_locked(&mut file)? {
+        // Nobody holds it: pid metadata, if any, is stale.
         return Ok(None);
     }
+    let metadata = read_metadata(&mut file).unwrap_or_default();
+    let field = |key: &str| metadata.get(key).and_then(serde_json::Value::as_u64);
     Ok(Some(ServiceLockHolder {
-        pid: read_pid(&mut file),
+        pid: field("pid").and_then(|pid| u32::try_from(pid).ok()),
+        ws_port: field("ws_port").and_then(|port| u16::try_from(port).ok()),
     }))
 }
 
-/// Reads the holder's PID. Byte 0 is the locked byte (unreadable on Windows while held) and is
-/// always `{` in the `{"pid": N}` format, so the JSON is rebuilt from offset 1.
-fn read_pid(file: &mut File) -> Option<u32> {
+/// Reads the holder's metadata. Byte 0 is the locked byte (unreadable on Windows while held) and
+/// is always `{` in the `{"pid": N}` format, so the JSON is rebuilt from offset 1.
+fn read_metadata(file: &mut File) -> Option<serde_json::Value> {
     let mut rest = String::new();
     file.seek(SeekFrom::Start(1)).ok()?;
     file.read_to_string(&mut rest).ok()?;
-    let value: serde_json::Value = serde_json::from_str(&format!("{{{rest}")).ok()?;
-    u32::try_from(value.get("pid")?.as_u64()?).ok()
+    serde_json::from_str(&format!("{{{rest}")).ok()
 }
 
 /// Locks byte 0 like Python `msvcrt.locking(..., 1)`, so the two implementations exclude
@@ -120,6 +129,19 @@ fn try_lock_first_byte(file: &File) -> io::Result<bool> {
     }
 }
 
+/// Probes without taking the lock, so a concurrent owner's acquire never fails because of it:
+/// reading a byte another handle locked fails with `ERROR_LOCK_VIOLATION`.
+#[cfg(windows)]
+fn first_byte_is_locked(file: &mut File) -> io::Result<bool> {
+    use windows_sys::Win32::Foundation::ERROR_LOCK_VIOLATION;
+
+    match file.read(&mut [0u8; 1]) {
+        Ok(_) => Ok(false),
+        Err(error) if error.raw_os_error() == Some(ERROR_LOCK_VIOLATION as i32) => Ok(true),
+        Err(error) => Err(error),
+    }
+}
+
 #[cfg(windows)]
 fn unlock_first_byte(file: &File) {
     use std::os::windows::io::AsRawHandle;
@@ -146,6 +168,17 @@ fn try_lock_first_byte(file: &File) -> io::Result<bool> {
 #[cfg(not(windows))]
 fn unlock_first_byte(file: &File) {
     let _ = file.unlock();
+}
+
+/// Advisory locks leave reads unaffected, so the probe briefly takes the lock (T7a finding L1:
+/// a concurrent acquire can spuriously fail; callers poll sparingly and retry once).
+#[cfg(not(windows))]
+fn first_byte_is_locked(file: &mut File) -> io::Result<bool> {
+    if try_lock_first_byte(file)? {
+        unlock_first_byte(file);
+        return Ok(false);
+    }
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -211,7 +244,8 @@ mod tests {
         assert_eq!(
             service_lock_holder(&home).expect("query"),
             Some(ServiceLockHolder {
-                pid: Some(std::process::id())
+                pid: Some(std::process::id()),
+                ws_port: None
             })
         );
         assert!(
@@ -225,6 +259,58 @@ mod tests {
             None,
             "a pid file without a live lock holder is stale"
         );
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn holder_query_reports_the_recorded_websocket_port_after_the_pid() {
+        let home = isolated_home();
+        let mut lock = ServiceLock::try_acquire(&home)
+            .expect("lock file opens")
+            .expect("owner acquires the lock");
+        lock.record_ws_port(8766).expect("record port");
+        assert_eq!(
+            service_lock_holder(&home).expect("query"),
+            Some(ServiceLockHolder {
+                pid: Some(std::process::id()),
+                ws_port: Some(8766)
+            })
+        );
+        drop(lock);
+        let content = std::fs::read_to_string(home.join(SERVICE_LOCK_NAME)).expect("read lock");
+        assert_eq!(
+            content,
+            format!("{{\"pid\": {}, \"ws_port\": 8766}}", std::process::id()),
+            "pid stays first so Python-style readers keep working"
+        );
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// The holder probe must never take the lock itself (T7a finding L1): a concurrent owner's
+    /// acquire would otherwise spuriously see "already running".
+    #[cfg(windows)]
+    #[test]
+    fn holder_query_never_makes_a_concurrent_acquire_fail() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+
+        let home = isolated_home();
+        drop(ServiceLock::try_acquire(&home).unwrap().unwrap());
+        let done = Arc::new(AtomicBool::new(false));
+        let probe = {
+            let (home, done) = (home.clone(), done.clone());
+            std::thread::spawn(move || {
+                while !done.load(Ordering::Relaxed) {
+                    let _ = service_lock_holder(&home);
+                }
+            })
+        };
+        let failures = (0..2000)
+            .filter(|_| ServiceLock::try_acquire(&home).unwrap().is_none())
+            .count();
+        done.store(true, Ordering::Relaxed);
+        probe.join().unwrap();
+        assert_eq!(failures, 0, "probe contended with a free-lock acquire");
         let _ = std::fs::remove_dir_all(home);
     }
 
@@ -245,7 +331,8 @@ mod tests {
         assert_eq!(
             service_lock_holder(&home).expect("query"),
             Some(ServiceLockHolder {
-                pid: Some(std::process::id())
+                pid: Some(std::process::id()),
+                ws_port: None
             })
         );
         drop(_lock);
