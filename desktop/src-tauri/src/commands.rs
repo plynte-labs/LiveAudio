@@ -509,6 +509,41 @@ async fn rollback_failed_start_before_audio(
     error
 }
 
+/// Reuses the running OBS WebSocket or binds a new one on the configured port.
+/// Returns the server and whether this call created it; a bind failure rolls back
+/// the "starting" state like the other pre-audio startup failures.
+pub(crate) async fn ensure_startup_websocket(
+    state: &AppState,
+    config: &LiveAudioConfig,
+) -> Result<(WsServer, bool), String> {
+    let mut ws_guard = state.ws_server.lock().await;
+    if let Some(ref existing) = *ws_guard {
+        return Ok((existing.clone(), false));
+    }
+    let mut ws = WsServer::new(WsServerConfig {
+        base_port: config.ws_port,
+        backlog_policy: BacklogPolicy::from_config(&config.subtitle_backlog_policy),
+        max_live_delay_sec: config.subtitle_max_live_delay_sec as f32,
+        ..Default::default()
+    });
+    let effective_port = match NetworkServer::start(&mut ws, config.ws_port).await {
+        Ok(port) => port,
+        Err(error) => {
+            drop(ws_guard);
+            return Err(rollback_failed_start_before_audio(
+                state,
+                false,
+                format!("Failed to bind OBS WebSocket: {}", error),
+            )
+            .await);
+        }
+    };
+    state.active_port.store(effective_port, Ordering::SeqCst);
+    tracing::info!("Servidor WebSocket iniciado en puerto {}", effective_port);
+    *ws_guard = Some(ws.clone());
+    Ok((ws, true))
+}
+
 pub(crate) async fn stop_active_websocket(state: &AppState) -> Result<(), String> {
     let server = state.ws_server.lock().await.take();
     state.active_port.store(0, Ordering::SeqCst);
@@ -878,24 +913,13 @@ async fn start_service_locked(
     *state.session_error.write().await = None;
 
     // 1. WebSocket Server: ensure started on configured port
-    let (ws_server, ws_created_here) = {
-        let mut ws_guard = state.ws_server.lock().await;
-        if let Some(ref existing) = *ws_guard {
-            (existing.clone(), false)
-        } else {
-            let mut ws = WsServer::new(WsServerConfig {
-                base_port: config.ws_port,
-                backlog_policy: BacklogPolicy::from_config(&config.subtitle_backlog_policy),
-                max_live_delay_sec: config.subtitle_max_live_delay_sec as f32,
-                ..Default::default()
-            });
-            let effective_port = NetworkServer::start(&mut ws, config.ws_port)
-                .await
-                .map_err(|error| format!("Failed to bind OBS WebSocket: {}", error))?;
-            state.active_port.store(effective_port, Ordering::SeqCst);
-            tracing::info!("Servidor WebSocket iniciado en puerto {}", effective_port);
-            *ws_guard = Some(ws.clone());
-            (ws, true)
+    let (ws_server, ws_created_here) = match ensure_startup_websocket(state, &config).await {
+        Ok(started) => started,
+        Err(err_msg) => {
+            if let Ok(status) = get_service_status_internal(state).await {
+                let _ = app.emit("service_status_changed", &status);
+            }
+            return Err(err_msg);
         }
     };
 
@@ -1599,12 +1623,31 @@ async fn stop_service_locked(
         let _ = app.emit("service_status_changed", &stopping_status);
     }
 
+    let shutdown = shutdown_service_resources(state).await;
+    let status = get_service_status_internal(state).await?;
+    let _ = app.emit("service_status_changed", &status);
+    shutdown?;
+
+    tracing::info!("Transcription service stopped cleanly via Tauri IPC command");
+    Ok(status)
+}
+
+/// Stops the service for application exit, aborting any in-flight startup first.
+pub(crate) async fn stop_service_for_exit(app: &AppHandle, state: &AppState) {
+    if let Some(token) = state.startup_cancel_token.lock().await.as_ref() {
+        token.cancel();
+    }
+    let _transition_guard = state.transition_lock.lock().await;
+    if let Err(error) = stop_service_locked(app, state).await {
+        tracing::warn!("Service did not stop cleanly on exit: {}", error);
+    }
+}
+
+/// Releases every service resource (capture tasks, session sinks, ASR worker, WebSocket).
+/// Every cleanup step runs even when an earlier one fails; the first failure is returned.
+pub(crate) async fn shutdown_service_resources(state: &AppState) -> Result<(), String> {
     state.is_running.store(false, Ordering::SeqCst);
     state.vad_onset.store(false, Ordering::SeqCst);
-    {
-        let mut asr = state.asr_state.write().await;
-        *asr = "stopped".to_string();
-    }
     {
         let mut start_guard = state.start_time.write().await;
         *start_guard = None;
@@ -1664,14 +1707,13 @@ async fn stop_service_locked(
         shutdown_error.get_or_insert(error);
     }
 
-    if let Some(error) = shutdown_error {
-        return Err(error);
-    }
-    let status = get_service_status_internal(state).await?;
-    let _ = app.emit("service_status_changed", &status);
-
-    tracing::info!("Transcription service stopped cleanly via Tauri IPC command");
-    Ok(status)
+    // Report "stopped" only once every resource was actually released.
+    let (asr_state, result) = match shutdown_error {
+        Some(error) => ("error: stop_failed", Err(error)),
+        None => ("stopped", Ok(())),
+    };
+    *state.asr_state.write().await = asr_state.to_string();
+    result
 }
 
 /// Restart the LiveAudio transcription service.

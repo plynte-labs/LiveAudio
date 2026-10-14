@@ -59,13 +59,14 @@ impl RespawnTracker {
         }
     }
 
-    /// Record a new crash/failure. Returns the required backoff duration, or errors if threshold exceeded.
+    /// Record a new crash/failure. Returns the required backoff duration, or errors once the
+    /// failure count in the window reaches the ceiling (Python parity: fatal on the 3rd of 3).
     pub fn record_failure(&mut self) -> Result<Duration, SupervisorError> {
         self.prune();
         self.failure_timestamps.push_back(Instant::now());
 
         let count = self.failure_timestamps.len();
-        if count > self.max_failures {
+        if count >= self.max_failures {
             return Err(SupervisorError::MaxFailuresExceeded {
                 count,
                 window_sec: self.window.as_secs_f64(),

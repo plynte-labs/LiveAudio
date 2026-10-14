@@ -2,7 +2,7 @@
 
 //! Integration tests verifying ProcessSupervisor with simulated/mock Python workers:
 //! - Clean startup and ready handshake
-//! - Crash detection and bounded respawn with exponential backoff (max 3 failures in 300s window)
+//! - Crash detection and bounded respawn with exponential backoff (fatal on the 3rd failure in a 300s window)
 //! - Watchdog timeout and kill on unresponsiveness
 //! - Graceful shutdown leaving 0 orphan processes
 //! - Idempotent double-shutdown guarantees
@@ -358,7 +358,7 @@ time.sleep(30)
 
 #[tokio::test]
 async fn test_mock_worker_max_failures_exceeded_fails_fast() {
-    // Respawn policy: verify that > 3 failures in 300s window fails fast
+    // Respawn policy: the 3rd failure in the 300s window fails fast
     let mut tracker = liveaudio_core::supervisor::RespawnTracker::new(
         3,
         Duration::from_secs(300),
@@ -370,13 +370,11 @@ async fn test_mock_worker_max_failures_exceeded_fails_fast() {
     assert!(tracker.record_failure().is_ok());
     // 2nd failure
     assert!(tracker.record_failure().is_ok());
-    // 3rd failure
-    assert!(tracker.record_failure().is_ok());
-    // 4th failure -> exceeded!
+    // 3rd failure -> ceiling reached!
     let err = tracker.record_failure().unwrap_err();
     assert!(matches!(
         err,
-        SupervisorError::MaxFailuresExceeded { count: 4, .. }
+        SupervisorError::MaxFailuresExceeded { count: 3, .. }
     ));
 }
 
@@ -433,4 +431,78 @@ async fn test_graceful_shutdown_zero_orphans_and_idempotence() {
     );
 
     let _ = std::fs::remove_dir_all(&tmp_dir);
+}
+
+#[tokio::test]
+async fn failed_respawn_handshake_retries_and_escalates_to_failed() {
+    // Run 1 becomes ready then crashes; every later run dies before the ready
+    // handshake, so each respawn attempt fails inside `spawn_and_handshake`.
+    let (tmp_dir, _script_path) = create_mock_worker_script();
+    let script_path = tmp_dir.join("failing_respawn_worker.py");
+    let count_path = tmp_dir.join("runs.txt");
+    let script = format!(
+        r#"import json, os, sys, time
+count_path = r"{}"
+run = int(open(count_path).read()) + 1 if os.path.exists(count_path) else 1
+open(count_path, "w").write(str(run))
+if run > 1:
+    sys.exit(3)
+print(json.dumps({{"event":"ready", "payload":{{"device":"cpu"}}}}), flush=True)
+time.sleep(0.1)
+sys.exit(77)
+"#,
+        count_path.display()
+    );
+    std::fs::write(&script_path, script).unwrap();
+
+    let mut config = WorkerProcessConfig::default();
+    config.name = "failing-respawn-worker".to_string();
+    config.command = "python".to_string();
+    config.args = vec!["-u".into(), script_path.to_string_lossy().into_owned()];
+    config.ready_timeout = Duration::from_secs(5);
+    config.watchdog_interval = Duration::from_secs(10);
+    config.watchdog_timeout = Duration::from_secs(30);
+    config.base_backoff = Duration::from_millis(20);
+    config.max_backoff = Duration::from_millis(40);
+    config.max_failures = 3;
+    config.failure_window = Duration::from_secs(300);
+    config.auto_respawn = true;
+
+    let mut supervisor = ProcessSupervisor::new(config, std::process::id(), 0, None).unwrap();
+    let mut events = supervisor.event_bus().subscribe();
+    supervisor
+        .start()
+        .await
+        .expect("first worker becomes ready");
+
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let event = events.recv().await.expect("event bus stays open");
+            if event.payload.get("state").and_then(|s| s.as_str()) == Some("failed") {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("failed respawns must escalate to the Failed state");
+
+    assert!(
+        !supervisor.is_running().await,
+        "a dead worker must not remain registered as the active child"
+    );
+    let runs: u32 = std::fs::read_to_string(&count_path)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert_eq!(
+        runs, 3,
+        "the 3rd failure in the window is fatal: initial run plus two failed respawns"
+    );
+
+    supervisor
+        .stop(Duration::from_secs(1))
+        .await
+        .expect("stop after failure");
+    let _ = std::fs::remove_dir_all(tmp_dir);
 }

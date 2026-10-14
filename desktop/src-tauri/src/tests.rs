@@ -5,7 +5,7 @@
 use crate::commands::{
     admit_worker_event_generation, asr_progress_from_worker_event,
     asr_progress_update_for_worker_event, desktop_runtime_preflight_error,
-    get_service_status_internal, is_text_blacklisted, persist_config_and_apply, profile_presets, stop_active_websocket,
+    ensure_startup_websocket, get_service_status_internal, is_text_blacklisted, persist_config_and_apply, profile_presets, shutdown_service_resources, stop_active_websocket,
     trim_boundary_overlap, trim_boundary_overlap_with_max, worker_attempt_is_current,
 };
 use crate::dto::*;
@@ -634,6 +634,68 @@ async fn stopping_runtime_websocket_releases_port_for_rebind() {
     NetworkServer::stop(&mut replacement)
         .await
         .expect("stop replacement");
+}
+
+#[tokio::test]
+async fn websocket_bind_failure_during_start_rolls_back_starting_state() {
+    // The fallback range clamps to the single top port, so occupying it makes the bind fail.
+    let _occupied = std::net::TcpListener::bind(("127.0.0.1", u16::MAX));
+    let mut config = LiveAudioConfig::default();
+    config.ws_port = u16::MAX;
+    let state = AppState::new(config.clone());
+    *state.asr_state.write().await = "starting".to_string();
+    *state.active_config.write().await = Some(config.clone());
+
+    let error = match ensure_startup_websocket(&state, &config).await {
+        Ok(_) => panic!("occupied port range must fail the bind"),
+        Err(error) => error,
+    };
+
+    assert!(error.contains("Failed to bind OBS WebSocket"), "{error}");
+    assert_eq!(*state.asr_state.read().await, "stopped");
+    assert!(state.active_config.read().await.is_none());
+    assert!(state.ws_server.lock().await.is_none());
+    let status = get_service_status_internal(&state).await.unwrap();
+    assert!(!status.is_running);
+}
+
+#[tokio::test]
+async fn failed_shutdown_reports_error_state_and_still_releases_websocket() {
+    let state = AppState::default();
+    state.is_running.store(true, Ordering::SeqCst);
+    *state.asr_state.write().await = "stopping".to_string();
+    // A second owner makes the ASR worker stop step fail deterministically.
+    let supervisor = Arc::new(
+        ProcessSupervisor::new(WorkerProcessConfig::default(), std::process::id(), 0, None)
+            .expect("create supervisor"),
+    );
+    let _extra_owner = supervisor.clone();
+    *state.supervisor.lock().await = Some(supervisor);
+    let mut ws = WsServer::new(WsServerConfig {
+        base_port: 0,
+        ..Default::default()
+    });
+    let bound = NetworkServer::start(&mut ws, 0)
+        .await
+        .expect("bind ephemeral");
+    state.active_port.store(bound, Ordering::SeqCst);
+    *state.ws_server.lock().await = Some(ws);
+
+    let error = shutdown_service_resources(&state)
+        .await
+        .expect_err("a shared supervisor must fail the shutdown");
+
+    assert!(error.contains("active owners"), "{error}");
+    assert!(!state.is_running.load(Ordering::SeqCst));
+    let asr_state = state.asr_state.read().await.clone();
+    assert!(
+        asr_state.starts_with("error"),
+        "a failed cleanup must not report a clean stop, got {asr_state}"
+    );
+    assert!(
+        state.ws_server.lock().await.is_none(),
+        "later cleanup steps still run after a failure"
+    );
 }
 
 #[tokio::test]
@@ -1392,3 +1454,25 @@ async fn test_multi_chunk_overlap_streaming_simulation() {
 
 
 
+
+#[test]
+fn instance_lock_admits_a_single_owner_until_released() {
+    let home = isolated_test_home();
+    let first = crate::try_acquire_instance_lock(&home)
+        .expect("lock file opens")
+        .expect("first instance acquires the lock");
+    assert!(
+        crate::try_acquire_instance_lock(&home)
+            .expect("lock file opens")
+            .is_none(),
+        "a second instance must not acquire a held lock"
+    );
+    drop(first);
+    assert!(
+        crate::try_acquire_instance_lock(&home)
+            .expect("lock file opens")
+            .is_some(),
+        "the lock is released when its owner exits"
+    );
+    let _ = std::fs::remove_dir_all(home);
+}

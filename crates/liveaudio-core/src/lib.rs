@@ -72,17 +72,11 @@ mod tests {
             .expect("2nd failure should be allowed");
         assert_eq!(d2, Duration::from_secs(2));
 
-        // 3rd failure: 4.0s
-        let d3 = tracker
-            .record_failure()
-            .expect("3rd failure should be allowed");
-        assert_eq!(d3, Duration::from_secs(4));
-
-        // 4th failure: exceeds max 3 in 5 min -> fails fast
-        let d4 = tracker.record_failure();
+        // 3rd failure: reaches max 3 in 5 min -> fails fast (Python parity)
+        let d3 = tracker.record_failure();
         assert!(matches!(
-            d4,
-            Err(SupervisorError::MaxFailuresExceeded { .. })
+            d3,
+            Err(SupervisorError::MaxFailuresExceeded { count: 3, .. })
         ));
     }
 

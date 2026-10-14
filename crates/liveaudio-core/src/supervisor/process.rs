@@ -988,7 +988,7 @@ impl ProcessSupervisor {
             let handle = tokio::spawn(async move {
                 let mut current_exit_notify = exit_notify;
 
-                loop {
+                'supervise: loop {
                     tokio::select! {
                         _ = cancel_token.cancelled() => {
                             break;
@@ -1000,64 +1000,70 @@ impl ProcessSupervisor {
 
                             // Unexpected crash or watchdog termination
                             tracing::warn!("Supervised worker exited unexpectedly. Evaluating respawn policy...");
-                            let backoff_res = {
-                                let mut tracker = respawn_tracker.lock().await;
-                                tracker.record_failure()
-                            };
+                            // The dead worker must not stay registered as the active child.
+                            *active_child.lock().await = None;
 
-                            let backoff = match backoff_res {
-                                Ok(d) => d,
-                                Err(err) => {
-                                    tracing::error!("Respawn policy threshold exceeded: {}", err);
+                            // Each failed respawn handshake counts as another failure, so the
+                            // loop retries with backoff until a worker is ready or the policy
+                            // ceiling escalates to Failed.
+                            loop {
+                                let backoff_res = {
+                                    let mut tracker = respawn_tracker.lock().await;
+                                    tracker.record_failure()
+                                };
+
+                                let backoff = match backoff_res {
+                                    Ok(d) => d,
+                                    Err(err) => {
+                                        tracing::error!("Respawn policy threshold exceeded: {}", err);
+                                        let mut sm = state_machine.lock().await;
+                                        sm.transition_to(HealthState::Failed, Some("Max crash limit reached"));
+                                        break 'supervise;
+                                    }
+                                };
+
+                                {
                                     let mut sm = state_machine.lock().await;
-                                    sm.transition_to(HealthState::Failed, Some("Max crash limit reached"));
-                                    let mut guard = active_child.lock().await;
-                                    *guard = None;
-                                    break;
+                                    sm.record_failure();
+                                    sm.transition_to(
+                                        HealthState::Degraded,
+                                        Some(&format!("Worker crashed, backoff {:?}", backoff)),
+                                    );
                                 }
-                            };
 
-                            {
-                                let mut sm = state_machine.lock().await;
-                                sm.record_failure();
-                                sm.transition_to(
-                                    HealthState::Degraded,
-                                    Some(&format!("Worker crashed, backoff {:?}", backoff)),
-                                );
-                            }
-
-                            tracing::info!("Backing off for {:?} before respawning worker...", backoff);
-                            tokio::select! {
-                                _ = cancel_token.cancelled() => break,
-                                _ = tokio::time::sleep(backoff) => {}
-                            }
-
-                            if is_shutting_down.load(Ordering::SeqCst) {
-                                break;
-                            }
-
-                            // Respawn
-                            match Self::spawn_and_handshake(
-                                &config,
-                                &job_object,
-                                &event_bus,
-                                &state_machine,
-                                service_pid,
-                                parent_pid,
-                                &worker_event_tx,
-                                worker_attempt.fetch_add(1, Ordering::SeqCst) + 1,
-                                None,
-                            ).await {
-                                Ok(new_child) => {
-                                    current_exit_notify = new_child.exit_notify.clone();
-                                    restart_count.fetch_add(1, Ordering::SeqCst);
-                                    let mut guard = active_child.lock().await;
-                                    *guard = Some(new_child);
-                                    tracing::info!("Worker respawned successfully");
+                                tracing::info!("Backing off for {:?} before respawning worker...", backoff);
+                                tokio::select! {
+                                    _ = cancel_token.cancelled() => break 'supervise,
+                                    _ = tokio::time::sleep(backoff) => {}
                                 }
-                                Err(e) => {
-                                    tracing::error!("Failed to respawn worker: {}", e);
-                                    // Count this as another failure on next tick
+
+                                if is_shutting_down.load(Ordering::SeqCst) {
+                                    break 'supervise;
+                                }
+
+                                // Respawn
+                                match Self::spawn_and_handshake(
+                                    &config,
+                                    &job_object,
+                                    &event_bus,
+                                    &state_machine,
+                                    service_pid,
+                                    parent_pid,
+                                    &worker_event_tx,
+                                    worker_attempt.fetch_add(1, Ordering::SeqCst) + 1,
+                                    None,
+                                ).await {
+                                    Ok(new_child) => {
+                                        current_exit_notify = new_child.exit_notify.clone();
+                                        restart_count.fetch_add(1, Ordering::SeqCst);
+                                        let mut guard = active_child.lock().await;
+                                        *guard = Some(new_child);
+                                        tracing::info!("Worker respawned successfully");
+                                        break;
+                                    }
+                                    Err(e) => {
+                                        tracing::error!("Failed to respawn worker: {}", e);
+                                    }
                                 }
                             }
                         }
