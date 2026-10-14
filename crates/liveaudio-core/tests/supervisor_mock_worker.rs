@@ -89,6 +89,26 @@ elif mode == "crash_counter":
             elif cmd == "shutdown":
                 sys.exit(0)
 
+elif mode in ("decode_hang", "decode_progress"):
+    sys.stdout.write(json.dumps({"event": "ready", "payload": {"device": "cpu"}}) + "\n")
+    sys.stdout.flush()
+    pongs = 0
+    for line in sys.stdin:
+        try:
+            msg = json.loads(line.strip())
+        except Exception:
+            continue
+        if msg.get("cmd") == "ping":
+            pongs += 1
+            # decode_hang: one decode that never finishes; decode_progress: a new
+            # utterance starts decoding on every pong, so no single decode is stuck.
+            utt = "utt_1" if mode == "decode_hang" else "utt_%d" % pongs
+            sys.stdout.write(json.dumps({"event": "pong", "payload": {
+                "state": "transcribing", "active_utterance_id": utt}}) + "\n")
+            sys.stdout.flush()
+        elif msg.get("cmd") == "shutdown":
+            sys.exit(0)
+
 elif mode == "normal":
     for line in sys.stdin:
         line = line.strip()
@@ -505,4 +525,72 @@ sys.exit(77)
         .await
         .expect("stop after failure");
     let _ = std::fs::remove_dir_all(tmp_dir);
+}
+
+fn decode_deadline_config(script_path: &std::path::Path, mode: &str) -> WorkerProcessConfig {
+    let mut config = WorkerProcessConfig::default();
+    config.name = format!("test-{mode}-worker");
+    config.command = "python".to_string();
+    config.args = vec![
+        "-u".to_string(),
+        script_path.to_str().unwrap().to_string(),
+        mode.to_string(),
+    ];
+    config.ready_timeout = Duration::from_secs(5);
+    config.watchdog_interval = Duration::from_millis(100);
+    config.watchdog_timeout = Duration::from_secs(5);
+    config.decode_timeout = Some(Duration::from_millis(500));
+    config.auto_respawn = false;
+    config
+}
+
+#[tokio::test]
+async fn decode_exceeding_the_deadline_kills_a_worker_that_still_answers_pings() {
+    let (tmp_dir, script_path) = create_mock_worker_script();
+    let config = decode_deadline_config(&script_path, "decode_hang");
+    let mut supervisor = ProcessSupervisor::new(config, std::process::id(), 0, None)
+        .expect("supervisor creation should succeed");
+    supervisor
+        .start()
+        .await
+        .expect("worker startup should succeed");
+    let pid = supervisor.child_pid().await.expect("child PID must be set");
+
+    // Pings keep being answered, so only the decode deadline can stop this worker.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert!(
+        !is_parent_alive(pid),
+        "a decode stuck past its deadline must be treated as a worker failure"
+    );
+
+    supervisor
+        .stop(Duration::from_secs(1))
+        .await
+        .expect("cleanup should succeed");
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+}
+
+#[tokio::test]
+async fn decodes_that_finish_within_the_deadline_keep_the_worker_alive() {
+    let (tmp_dir, script_path) = create_mock_worker_script();
+    let config = decode_deadline_config(&script_path, "decode_progress");
+    let mut supervisor = ProcessSupervisor::new(config, std::process::id(), 0, None)
+        .expect("supervisor creation should succeed");
+    supervisor
+        .start()
+        .await
+        .expect("worker startup should succeed");
+    let pid = supervisor.child_pid().await.expect("child PID must be set");
+
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert!(
+        is_parent_alive(pid),
+        "a busy but progressing worker must not be killed"
+    );
+
+    supervisor
+        .stop(Duration::from_secs(1))
+        .await
+        .expect("cleanup should succeed");
+    let _ = std::fs::remove_dir_all(&tmp_dir);
 }

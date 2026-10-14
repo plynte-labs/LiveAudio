@@ -21,6 +21,9 @@ use liveaudio_audio::{AudioChunkReceiver, AudioStreamConfig, CpalAudioSource};
 use liveaudio_core::acoustic_events::{
     AcousticEventLifecycle, AcousticSpeechEndReason, AcousticSpeechEvent,
 };
+use liveaudio_core::asr::worker::{
+    presentation_text, transcript_text_from_result, worker_init_payload,
+};
 use liveaudio_core::config::{get_data_home, get_hf_home, load_config};
 use liveaudio_core::job_object::JobObject;
 use liveaudio_core::runtime::{preflight_asr_runtime, setup_managed_runtime, AsrBackend};
@@ -709,13 +712,13 @@ async fn run_service(
         &config.whisper_context_prompt_es
     };
 
-    worker_config.init_payload = Some(serde_json::json!({
-        "model_name": clean_model_name,
-        "device": config.device,
-        "language": clean_lang,
-        "initial_prompt": if prompt.is_empty() { None } else { Some(prompt) },
-        "auto_cpu_fallback": true,
-    }));
+    worker_config.init_payload = Some(worker_init_payload(
+        &config,
+        &clean_model_name,
+        &clean_lang,
+        Some(prompt.as_str()).filter(|prompt| !prompt.is_empty()),
+    ));
+    worker_config.decode_timeout = Some(Duration::from_secs(config.asr_decode_timeout_sec.into()));
 
     emitter.emit_asr_state("starting", Some("starting"), Some(1));
     eprintln!(
@@ -789,7 +792,7 @@ async fn run_service(
                                 match event_name {
                                     "transcription_result" => {
                                         if let Some(payload) = val.get("payload") {
-                                            let text = payload.get("text").and_then(|t| t.as_str()).unwrap_or("").trim();
+                                            let text = transcript_text_from_result(payload);
                                             let utt_id = payload.get("utterance_id").and_then(|u| u.as_str()).unwrap_or("utt");
                                             let inference_sec = payload.get("inference_sec").and_then(|d| d.as_f64())
                                                 .or_else(|| payload.get("latency_sec").and_then(|d| d.as_f64())).unwrap_or(0.0);
@@ -800,7 +803,7 @@ async fn run_service(
 
                                                 let wire_msg = subtitle_from_worker_result(
                                                     utt_id.to_string(),
-                                                    text.to_string(),
+                                                    presentation_text(&text),
                                                     active_style.clone(),
                                                     inference_sec,
                                                     timing,
@@ -843,6 +846,7 @@ async fn run_service(
     let cancel_audio = cancel_token.clone();
     let supervisor_audio = supervisor_arc.clone();
     let lang_clone = clean_lang.clone();
+    let decode_timeout_ms = u64::from(config.asr_decode_timeout_sec) * 1000;
 
     let pre_buffer_capacity = vad.config().pre_buffer_chunks().max(1);
     let max_samples = (16000.0 * config.max_chunk_duration.ceil()) as usize;
@@ -920,6 +924,7 @@ async fn run_service(
                                                     "channels": 1,
                                                     "duration_ms": duration_ms,
                                                     "language": lang_clone,
+                                                    "timeout_ms": decode_timeout_ms,
                                                 }
                                             });
                                             let utterance_id = format!("utt_{}", utterance_seq);

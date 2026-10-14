@@ -62,6 +62,31 @@ async fn handle_job_assignment(
     Ok(())
 }
 
+/// Tracks the decode the worker reports in its pong and returns true once that same
+/// decode has been running longer than `limit`. A new utterance restarts the clock.
+fn decode_deadline_exceeded(
+    decoding: &mut Option<(String, Instant)>,
+    pong: &serde_json::Value,
+    limit: Duration,
+) -> bool {
+    let payload = pong.get("payload");
+    let active = payload
+        .filter(|p| p.get("state").and_then(|s| s.as_str()) == Some("transcribing"))
+        .and_then(|p| p.get("active_utterance_id"))
+        .and_then(|id| id.as_str());
+    let Some(id) = active else {
+        *decoding = None;
+        return false;
+    };
+    match decoding {
+        Some((current, started)) if current == id => started.elapsed() > limit,
+        _ => {
+            *decoding = Some((id.to_string(), Instant::now()));
+            false
+        }
+    }
+}
+
 async fn wait_for_child_exit(exited: &AtomicBool, exit_notify: &Notify) {
     while !exited.load(Ordering::SeqCst) {
         // notify_one stores a permit, so an exit between the state check and
@@ -253,6 +278,9 @@ pub struct WorkerProcessConfig {
     pub max_backoff: Duration,
     pub auto_respawn: bool,
     pub init_payload: Option<serde_json::Value>,
+    /// Longest a single decode may run, as reported by the worker's pong state,
+    /// before the worker is treated as failed. `None` disables the deadline.
+    pub decode_timeout: Option<Duration>,
 }
 
 impl WorkerProcessConfig {
@@ -465,6 +493,7 @@ impl WorkerProcessConfig {
             max_backoff: Duration::from_secs_f64(RESPAWN_BACKOFF_MAX_SEC),
             auto_respawn: true,
             init_payload: None,
+            decode_timeout: None,
         }
     }
 }
@@ -497,6 +526,7 @@ impl Default for WorkerProcessConfig {
             max_backoff: Duration::from_secs_f64(RESPAWN_BACKOFF_MAX_SEC),
             auto_respawn: true,
             init_payload: None,
+            decode_timeout: None,
         }
     }
 }
@@ -752,8 +782,13 @@ impl ProcessSupervisor {
         let event_bus_stdout = event_bus.clone();
         let child_name_stdout = config.name.clone();
         let worker_event_tx_stdout = worker_event_tx.clone();
+        let decode_timeout = config.decode_timeout;
+        let decode_kill = kill_notify.clone();
 
         tokio::spawn(async move {
+            // The worker answers pings from its reader thread while decoding, so the
+            // ping watchdog cannot see a hung decode; the pong state can.
+            let mut decoding: Option<(String, Instant)> = None;
             let mut reader = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = reader.next_line().await {
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) {
@@ -774,6 +809,16 @@ impl ProcessSupervisor {
                             }
                             "pong" => {
                                 last_pong_clone.store(now_millis(), Ordering::SeqCst);
+                                if let Some(limit) = decode_timeout {
+                                    if decode_deadline_exceeded(&mut decoding, &val, limit) {
+                                        tracing::error!(
+                                            "ASR decode exceeded its {:?} deadline; treating worker PID {} as failed",
+                                            limit,
+                                            pid
+                                        );
+                                        decode_kill.notify_one();
+                                    }
+                                }
                             }
                             "status" => {
                                 if let Some(map) = val.as_object() {

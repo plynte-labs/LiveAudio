@@ -848,6 +848,47 @@ async fn continuous_session_reuses_session_directory_on_restart() {
     let _ = std::fs::remove_dir_all(home);
 }
 
+#[test]
+fn resumed_session_continues_cue_numbers_and_timeline_origin() {
+    let home = isolated_test_home();
+    let session = home.join("session");
+    std::fs::create_dir_all(&session).expect("session dir");
+    let earlier = std::time::Instant::now();
+
+    let (origin, counter) = crate::commands::session_timeline(Some(&session), Some(earlier), false);
+    assert_eq!(counter, 0, "a new session numbers cues from 1");
+    assert!(origin >= earlier, "a new session starts a new timeline");
+
+    std::fs::write(
+        session.join("subtitles.vtt"),
+        [
+            "WEBVTT",
+            "",
+            "4",
+            "00:00:01.000 --> 00:00:02.000",
+            "hola",
+            "",
+            "#cue:4",
+            "",
+        ]
+        .join("\n"),
+    )
+    .expect("existing cues");
+    let (origin, counter) = crate::commands::session_timeline(Some(&session), Some(earlier), true);
+    assert_eq!(
+        counter, 4,
+        "a resumed session continues after the last written cue"
+    );
+    assert_eq!(
+        origin, earlier,
+        "a resumed session keeps its timeline origin"
+    );
+
+    let (_, counter) = crate::commands::session_timeline(None, None, false);
+    assert_eq!(counter, 0);
+    let _ = std::fs::remove_dir_all(home);
+}
+
 #[tokio::test]
 async fn transcript_and_vtt_flags_independently_control_session_sinks() {
     let home = isolated_test_home();

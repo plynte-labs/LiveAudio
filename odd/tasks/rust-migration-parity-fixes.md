@@ -39,7 +39,9 @@ A read-only audit (2026-10-14; 2 bug-hunt + 2 parity agents, parent-verified key
   - RNNoise clamps out-of-range input/output instead of failing capture.
 - [x] T3 — Audio resilience parity (route: delegated)
   - Auto-reconnect on device loss (3 s retry), standby when no input device with hot-plug detection, capture watchdog; reuse Python semantics from `liveaudio/core/audio.py`.
-- [ ] T4 — ASR request and transcript output (route: delegated)
+- [ ] T1b — Focus existing window on second launch (route: delegated, after T4 to keep one writer)
+  - Owner decision 2026-10-14: second instance must bring the running window to front. Authorized to download `tauri-plugin-single-instance` (version compatible with the workspace Tauri 2). Keep the `service.lock` guard from T1 unless the plugin makes it redundant for the desktop; explain.
+- [x] T4 — ASR request and transcript output (route: delegated)
   - Enforce `asr_decode_timeout_sec` (forward `timeout_ms` and/or Rust-side deadline).
   - Forward `cpu_threads` in the worker init payload.
   - VTT cues numbered sequentially; cue timing from audio timeline, not emit time.
@@ -80,5 +82,16 @@ A read-only audit (2026-10-14; 2 bug-hunt + 2 parity agents, parent-verified key
   - Parent spot check: `cargo test -p liveaudio-audio --offline --locked --lib resilient`: 9 passed; `node test_frontend.js`: 296 passed, 0 failed. Risk assessment: medium (681 lines).
   - Not exercised: real hot-plug/unplug, cpal removal signaling, Tauri task wiring at runtime. Notes: desktop `capture_failed` branches now unreachable (left in place); standby polls cpal device enumeration every 1 s from an async task (blocking call, minor). Running count: ~1,250.
 
+  - T3 commit: `b7b8b9b` feat(audio): reconnect, standby and stall watchdog for capture.
+- T4 (delegated writer, model fable; interrupted once by an API rate limit with no persisted edits, then resumed). All 4 items confirmed and fixed; Python worker untouched.
+  - Decode deadline: worker declares `timeout_ms` but never reads it, and answers pings from its reader thread while decoding. Supervisor now tracks `payload.state`/`payload.active_utterance_id` from pongs (verified in `asr_worker.py:841-850`) and fires the existing `kill_notify` when one utterance stays "transcribing" past `asr_decode_timeout_sec`; exit goes through the T1 respawn loop. Deviation: Python was fatal on first breach; Rust treats it as a respawnable failure (in-flight utterance lost). `timeout_ms` also forwarded (inert).
+  - `cpu_threads` forwarded via shared `worker_init_payload()` (only `InitPayload`-declared keys; tested); desktop and CLI deduplicated.
+  - VTT cues 1..N per session, resume from existing `subtitles.vtt`; start/end from capture timeline (SpeechStart minus pre-roll). Evicted-timing fallback: emit time minus duration (Python skipped the cue).
+  - Text hygiene: per-segment sanitize, drop `no_speech_prob > 0.6` or <=2 chars, fallback to sanitized text; 600-char cap on presentation (UI/OBS) only; sinks keep full text (Python parity).
+  - RED: deadline kill test, 5 asr::worker tests, last_cue_counter (0 vs 7), capture offset (None vs 12.5), resumed session (0 vs 4). GREEN all.
+  - Checks: core all ok; desktop 49; workspace 220 passed 0 failed; fmt clean on core/network/cli and own desktop lines.
+  - Parent spot check: `--test supervisor_mock_worker decode`: 2 passed; `--lib asr::worker`: 5 passed. Risk medium (576 lines).
+  - Not covered: desktop pipeline wiring inside async closures (compiles; helpers tested). Risk: slow CPU + long chunks vs 15 s default can escalate to Failed after 3 kills. UI `SubtitleCueDto.id` still timestamp (out of scope). Running count ~1,830.
+
 ## Next step
-T4 ASR request and transcript output.
+T1b focus existing window (plugin download authorized), then T5.

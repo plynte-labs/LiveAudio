@@ -2,12 +2,15 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use liveaudio_audio::{AudioChunkReceiver, AudioStreamConfig, CpalAudioSource, ResilientCapture};
 use liveaudio_core::acoustic_events::{
     AcousticEventLifecycle, AcousticSpeechEndReason, AcousticSpeechEvent,
+};
+use liveaudio_core::asr::worker::{
+    presentation_text, transcript_text_from_result, worker_init_payload,
 };
 use liveaudio_core::asr::AsrTranscriptionResponse;
 use liveaudio_core::config::{get_data_home, save_config as save_config_core, LiveAudioConfig};
@@ -17,7 +20,8 @@ use liveaudio_core::runtime::{
     provision_runtime_with_uv_cancellable, AsrBackend, RuntimeError, RuntimeSetupProgress,
 };
 use liveaudio_core::sink::{
-    CompositeSink, JsonlSink, SinkError, SinkStats, TranscriptionCue, TranscriptionSink, WebVttSink,
+    last_cue_counter, CompositeSink, JsonlSink, SinkError, SinkStats, TranscriptionCue,
+    TranscriptionSink, WebVttSink,
 };
 use liveaudio_core::supervisor::{ProcessSupervisor, WorkerProcessConfig};
 use liveaudio_network::{
@@ -608,6 +612,20 @@ pub(crate) fn create_session_sinks(
     Ok((Some(Arc::new(CompositeSink::new(sinks))), Some(canonical)))
 }
 
+/// Timeline origin and last written cue number for a session. A resumed continuous
+/// session keeps both, so cue numbers and capture offsets continue (`engine.py`).
+pub(crate) fn session_timeline(
+    session_path: Option<&Path>,
+    previous_origin: Option<Instant>,
+    resumed: bool,
+) -> (Instant, u64) {
+    let origin = previous_origin
+        .filter(|_| resumed)
+        .unwrap_or_else(Instant::now);
+    let last_cue = session_path.map_or(0, |path| last_cue_counter(&path.join("subtitles.vtt")));
+    (origin, last_cue)
+}
+
 pub(super) fn session_reuse_path<'a>(
     config: &LiveAudioConfig,
     previous_path: Option<&'a Path>,
@@ -885,13 +903,13 @@ async fn start_service_locked(
     }
 
     let mut worker_config = WorkerProcessConfig::discover_asr_worker();
-    worker_config.init_payload = Some(serde_json::json!({
-        "model_name": clean_model_name,
-        "device": config.device,
-        "language": clean_lang,
-        "initial_prompt": if prompt.is_empty() { None } else { Some(prompt) },
-        "auto_cpu_fallback": true,
-    }));
+    worker_config.init_payload = Some(worker_init_payload(
+        &config,
+        &clean_model_name,
+        &clean_lang,
+        Some(prompt.as_str()).filter(|prompt| !prompt.is_empty()),
+    ));
+    worker_config.decode_timeout = Some(Duration::from_secs(config.asr_decode_timeout_sec.into()));
     if let Err(error) = preflight_asr_runtime(
         std::path::Path::new(&worker_config.command),
         worker_config.working_dir.as_deref(),
@@ -1049,7 +1067,6 @@ async fn start_service_locked(
     let max_live_delay_sec = config.subtitle_max_live_delay_sec;
     let catchup_interval_sec = config.subtitle_catchup_interval_sec;
     let session_language = clean_lang.clone();
-    let session_started = Instant::now();
     let initial_worker_attempt = initial_worker_attempt.max(1);
 
     let event_task = tokio::spawn(async move {
@@ -1112,12 +1129,16 @@ async fn start_service_locked(
                                     }
                                     "transcription_result" => {
                                         if let Some(payload) = val.get("payload") {
-                                            let text = payload.get("text").and_then(|t| t.as_str()).unwrap_or("").trim();
+                                            let transcript_text = transcript_text_from_result(payload);
+                                            let text = transcript_text.as_str();
                                             let dur_sec = payload.get("duration_sec").and_then(|d| d.as_f64()).unwrap_or(3.0);
                                             let utt_id = payload.get("utterance_id").and_then(|u| u.as_str()).unwrap_or("utt");
                                             let inference_sec = payload.get("inference_sec").and_then(|d| d.as_f64())
                                                 .or_else(|| payload.get("latency_sec").and_then(|d| d.as_f64())).unwrap_or(0.0);
-                                            let timing = pending_events.lock().unwrap().complete(utt_id, inference_sec);
+                                            let (capture_offset_sec, timing) = {
+                                                let mut pending = pending_events.lock().unwrap();
+                                                (pending.capture_offset_sec(utt_id), pending.complete(utt_id, inference_sec))
+                                            };
 
                                             if !text.is_empty() {
                                                 let blacklist = state_events.config.read().await.blacklist.clone();
@@ -1148,10 +1169,17 @@ async fn start_service_locked(
                                                                 latency_sec: inference_sec as f32,
                                                                 segments: Vec::new(),
                                                             };
+                                                            // Cues sit on the capture timeline; emit time is only a
+                                                            // fallback when the utterance was not tracked.
+                                                            let start_sec = match capture_offset_sec {
+                                                                Some(offset) => offset,
+                                                                None => state_events.session_origin.read().await
+                                                                    .map_or(0.0, |origin| (origin.elapsed().as_secs_f64() - dur_sec).max(0.0)),
+                                                            };
                                                             let cue = TranscriptionCue::new(
-                                                                session_started.elapsed().as_millis().max(1) as u64,
-                                                                session_started.elapsed().as_secs_f64(),
-                                                                session_started.elapsed().as_secs_f64() + dur_sec,
+                                                                state_events.session_cue_counter.fetch_add(1, Ordering::SeqCst) + 1,
+                                                                start_sec,
+                                                                start_sec + dur_sec,
                                                                 text_to_emit.clone(),
                                                                 raw_response,
                                                             );
@@ -1171,7 +1199,7 @@ async fn start_service_locked(
                                                             id: now_ms,
                                                             start: 0.0,
                                                             end: dur_sec,
-                                                            text: text_to_emit.clone(),
+                                                            text: presentation_text(&text_to_emit),
                                                             style: active_style.clone(),
                                                             timestamp_ms: now_ms,
                                                         };
@@ -1317,6 +1345,13 @@ async fn start_service_locked(
             return Err(err_msg);
         }
     };
+    let resumed =
+        previous_session_path.is_some() && previous_session_path == session_path.as_deref();
+    let previous_origin = *state.session_origin.read().await;
+    let (session_origin, last_cue) =
+        session_timeline(session_path.as_deref(), previous_origin, resumed);
+    *state.session_origin.write().await = Some(session_origin);
+    state.session_cue_counter.store(last_cue, Ordering::SeqCst);
     *state.session_sink.lock().await = session_sink;
     *state.session_path.write().await = session_path;
 
@@ -1327,6 +1362,7 @@ async fn start_service_locked(
     let supervisor_audio = supervisor_arc.clone();
     let ws_audio = ws_server.clone();
     let acoustic_events_enabled = config.acoustic_events_enabled;
+    let decode_timeout_ms = u64::from(config.asr_decode_timeout_sec) * 1000;
 
     let pre_buffer_capacity = vad.config().pre_buffer_chunks().max(1);
     let max_samples = (16000.0 * config.max_chunk_duration.ceil()) as usize;
@@ -1340,6 +1376,7 @@ async fn start_service_locked(
         let mut pre_roll_chunks: VecDeque<Vec<f32>> =
             VecDeque::with_capacity(pre_buffer_capacity + 1);
         let mut is_in_utterance = false;
+        let mut utterance_started_at = Instant::now();
         let mut utterance_seq = 0u64;
         let mut acoustic_lifecycle = AcousticEventLifecycle::new();
         let mut close_reason = AcousticSpeechEndReason::ServiceStopped;
@@ -1398,6 +1435,9 @@ async fn start_service_locked(
                                             utterance_samples.extend_from_slice(&pre);
                                         }
                                         utterance_samples.extend_from_slice(frame);
+                                        // Pre-roll audio was captured before this frame was evaluated.
+                                        let buffered = Duration::from_secs_f64(utterance_samples.len() as f64 / 16000.0);
+                                        utterance_started_at = Instant::now().checked_sub(buffered).unwrap_or_else(Instant::now);
                                     }
                                     VadTransition::SpeechEnd { duration_ms, .. } => {
                                         if is_in_utterance {
@@ -1449,13 +1489,21 @@ async fn start_service_locked(
                                                         "duration_ms": duration_ms,
                                                         "language": clean_lang,
                                                         "context_prompt": context_prompt,
+                                                        "timeout_ms": decode_timeout_ms,
                                                     }
                                                 });
 
                                                 let utterance_id = format!("utt_{}", utterance_seq);
                                                 let created_at_sec = SystemTime::now().duration_since(UNIX_EPOCH)
                                                     .map(|d| d.as_secs_f64()).unwrap_or(0.0);
-                                                pending_utterances.lock().unwrap().track(utterance_id.clone(), created_at_sec);
+                                                let capture_offset_sec = utterance_started_at
+                                                    .saturating_duration_since(session_origin)
+                                                    .as_secs_f64();
+                                                pending_utterances.lock().unwrap().track_with_capture_offset(
+                                                    utterance_id.clone(),
+                                                    created_at_sec,
+                                                    capture_offset_sec,
+                                                );
 
                                                 if let Err(e) = send_audio_command_until_cancelled(
                                                     &supervisor_audio,

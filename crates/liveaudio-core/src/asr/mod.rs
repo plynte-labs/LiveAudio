@@ -3,6 +3,7 @@
 pub mod error;
 pub mod traits;
 pub mod types;
+pub mod worker;
 
 pub use error::AsrError;
 pub use traits::{AsrBackend, AsrBoxFuture};

@@ -254,3 +254,15 @@ fn test_pending_utterance_timing_is_correlated_and_bounded() {
     assert!(completed.processed_at_sec >= completed.created_at_sec);
     assert_eq!(tracker.len(), 1);
 }
+
+#[test]
+fn pending_utterance_tracker_keeps_capture_offsets_until_completion() {
+    let mut tracker = PendingUtteranceTracker::new(4);
+    tracker.track_with_capture_offset("utt_1", 1.0, 12.5);
+    tracker.track("utt_2", 2.0);
+
+    assert_eq!(tracker.capture_offset_sec("utt_1"), Some(12.5));
+    assert_eq!(tracker.capture_offset_sec("utt_2"), None);
+    assert!(tracker.complete("utt_1", 0.0).is_some());
+    assert_eq!(tracker.capture_offset_sec("utt_1"), None);
+}
