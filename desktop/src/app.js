@@ -1713,7 +1713,7 @@ async function initApp() {
 
   // Load Initial / Recent System Logs
   try {
-    const recentLogs = await invoke('get_recent_logs', { max_lines: 40 });
+    const recentLogs = await invoke('get_recent_logs', { maxLines: 40 });
     if (Array.isArray(recentLogs) && recentLogs.length > 0) {
       if (elements.loggerConsole) elements.loggerConsole.innerHTML = '';
       for (const line of recentLogs) {

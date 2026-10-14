@@ -159,6 +159,15 @@ async function runTests() {
 
   assert(jsContent.includes('window.__TAURI__.core.invoke'), 'Tauri core invoke call handled');
   assert(jsContent.includes('window.__TAURI__.event.listen'), 'Tauri event listener handled');
+  // Tauri 2 maps command arguments from camelCase in JS to snake_case in Rust;
+  // a snake_case key is silently ignored by the backend.
+  const snakeInvokeKeys = [...jsContent.matchAll(/invoke\('\w+',\s*\{([^}]*)\}/g)]
+    .flatMap(([, body]) => body.split(',').map((entry) => entry.split(':')[0].trim()))
+    .filter((key) => key.includes('_'));
+  assert(snakeInvokeKeys.length === 0,
+    `invoke arguments use camelCase keys (found: ${snakeInvokeKeys.join(', ') || 'none'})`);
+  assert(jsContent.includes("invoke('get_recent_logs', { maxLines: 40 })"),
+    'get_recent_logs passes maxLines in camelCase');
   assert(jsContent.includes('get_config'), 'get_config command invoked');
   assert(jsContent.includes('save_config'), 'save_config command invoked');
   assert(jsContent.includes('get_audio_devices'), 'get_audio_devices command invoked');

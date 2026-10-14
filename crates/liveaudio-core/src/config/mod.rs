@@ -745,8 +745,25 @@ pub fn load_from_path(path: &Path) -> io::Result<LiveAudioConfig> {
     let mut content = String::new();
     file.read_to_string(&mut content)?;
 
-    serde_json::from_str(&content)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))
+    let invalid = |e: serde_json::Error| io::Error::new(io::ErrorKind::InvalidData, e.to_string());
+    let serde_json::Value::Object(mut fields) = serde_json::from_str(&content).map_err(invalid)?
+    else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "config root is not a JSON object",
+        ));
+    };
+    // Per-key tolerance (Python parity): a value that fails to deserialize on its
+    // own falls back to that key's serde default; unknown keys land in `extra`.
+    fields.retain(|key, value| {
+        let single = serde_json::Map::from_iter([(key.clone(), value.clone())]);
+        let ok = serde_json::from_value::<LiveAudioConfig>(single.into()).is_ok();
+        if !ok {
+            tracing::warn!(key = %key, "Invalid config value; using default for this key");
+        }
+        ok
+    });
+    serde_json::from_value(fields.into()).map_err(invalid)
 }
 
 /// Atomically saves config to an arbitrary path using a sibling temporary file.
@@ -1028,5 +1045,65 @@ mod tests {
         assert_eq!(loaded.output_dir, config.output_dir);
 
         let _ = std::fs::remove_dir_all(&unicode_dir);
+    }
+
+    fn load_json(name: &str, json: &str) -> io::Result<LiveAudioConfig> {
+        let dir = std::env::temp_dir().join(format!(
+            "liveaudio-cfg-tolerant-{}-{}",
+            name,
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(&path, json).unwrap();
+        let res = load_from_path(&path);
+        let _ = std::fs::remove_dir_all(&dir);
+        res
+    }
+
+    #[test]
+    fn wrong_typed_value_falls_back_for_that_key_only() {
+        let cfg = load_json(
+            "wrong-type",
+            r#"{"silence_timeout": "0.8", "model_size": "medium", "ws_port": 9001,
+                "custom_addon": {"on": true}}"#,
+        )
+        .expect("tolerant load");
+        assert_eq!(cfg.silence_timeout, default_silence_timeout());
+        assert_eq!(cfg.model_size, "medium");
+        assert_eq!(cfg.ws_port, 9001);
+        assert_eq!(
+            cfg.extra.get("custom_addon"),
+            Some(&serde_json::json!({"on": true}))
+        );
+    }
+
+    #[test]
+    fn null_nan_like_and_bool_numbers_fall_back_per_key() {
+        let cfg = load_json(
+            "null-nan-bool",
+            r#"{"max_chunk_duration": null, "vad_threshold": "NaN", "cpu_threads": true,
+                "device": "cuda", "obs_enabled": false}"#,
+        )
+        .expect("tolerant load");
+        assert_eq!(cfg.max_chunk_duration, default_max_chunk_duration());
+        assert_eq!(cfg.vad_threshold, default_vad_threshold());
+        assert_eq!(cfg.cpu_threads, default_cpu_threads());
+        assert_eq!(cfg.device, "cuda");
+        assert!(!cfg.obs_enabled);
+    }
+
+    #[test]
+    fn out_of_range_ws_port_falls_back_to_default() {
+        let cfg =
+            load_json("ws-port", r#"{"ws_port": 70000, "language": "en"}"#).expect("tolerant load");
+        assert_eq!(cfg.ws_port, 8765);
+        assert_eq!(cfg.language.as_deref(), Some("en"));
+    }
+
+    #[test]
+    fn non_object_json_is_still_an_error() {
+        assert!(load_json("array", "[1, 2]").is_err());
+        assert!(load_json("garbage", "{not json").is_err());
     }
 }

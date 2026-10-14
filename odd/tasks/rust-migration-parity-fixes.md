@@ -49,7 +49,7 @@ A read-only audit (2026-10-14; 2 bug-hunt + 2 parity agents, parent-verified key
 - [x] T5 — Distribution (route: delegated)
   - OBS overlay resolved from `resource_dir()` first; URL percent-encoded; existence checked.
   - `uv` resolution works on Linux (no hard-coded `uv.exe`; vendored `uv` with PATH fallback); Linux bundle target: AppImage only (owner decision 2026-10-14). Linux package must be built on Linux (no cross-build from Windows); building it is outside this task.
-- [ ] T6 — Minor fixes (route: delegated)
+- [x] T6 — Minor fixes (route: delegated)
   - `get_recent_logs` arg `maxLines`.
   - Per-key tolerant config load (wrong type falls back to default for that key).
   - No `println!` in library code that pollutes CLI JSON stdout.
@@ -141,5 +141,11 @@ A read-only audit (2026-10-14; 2 bug-hunt + 2 parity agents, parent-verified key
   - Parent spot check: core `service_lock` 6 passed; desktop 64 passed. Risk medium (539 lines).
   - Manual test (owner): `liveaudio-cli serve --parent-pid <shell pid>` → open desktop → Monitor UI, PID banner, feed, deferred save → close/reopen desktop keeps CLI → kill shell → desktop takes over within ~3 s. Not GUI-exercised; not tested on Linux.
 
+  - T7c commit: `05f361a` feat(desktop): add Monitor Mode for services owned by another process.
+- T6 (delegated writer, model fable; CLI items were done in T7b). `get_recent_logs` now `{ maxLines: 40 }` (tauri-macros 2.7.0 `wrapper.rs:51` default `ArgumentCase::Camel`); only snake_case invoke key in app.js; new frontend test fails on any `_` key in single-line invoke literals. Tolerant config load: parse to Value, keep each key that deserializes alone, drop failing keys with a warning (field default applies), unknown keys preserved in `extra`; non-object/malformed JSON keeps the previous error path.
+  - RED: frontend 2 failed (max_lines); core 3 failed (InvalidData). GREEN all.
+  - Checks: core 46/1/8/9, desktop 64, workspace 254 passed 0 failed; frontend 312 passed 0 failed; fmt core clean. Parent spot check: core `config` 16 passed; frontend 312 passed.
+  - Risks: rejected values only replaced in memory until normalize/save; `"0.8"` strings fall back instead of coercing (Python coerced); bare `NaN` literal still invalid JSON → defaults.
+
 ## Next step
-T6 minor fixes (maxLines, tolerant config load). T7e awaits owner authorization (OpenCohost repo).
+All LiveAudio tasks done. T7e (OpenCohost repo) awaits owner authorization. Manual checks pending: T1b second launch focus, T7c Monitor Mode script, real NSIS/AppImage builds, hardware hot-plug.
