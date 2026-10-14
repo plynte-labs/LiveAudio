@@ -36,6 +36,7 @@ pub struct AppState {
     pub runtime_setup_token: Arc<Mutex<Option<CancellationToken>>>,
     pub startup_cancel_token: Arc<Mutex<Option<CancellationToken>>>,
     pub previous_transcript: Arc<RwLock<Option<String>>>,
+    pub audio_state: Arc<RwLock<liveaudio_audio::AudioSourceStatus>>,
 }
 
 impl Default for AppState {
@@ -68,6 +69,7 @@ impl AppState {
             runtime_setup_token: Arc::new(Mutex::new(None)),
             startup_cancel_token: Arc::new(Mutex::new(None)),
             previous_transcript: Arc::new(RwLock::new(None)),
+            audio_state: Arc::new(RwLock::new(liveaudio_audio::AudioSourceStatus::Stopped)),
         }
     }
 

@@ -4,7 +4,7 @@
  * LiveAudio Tauri Desktop Frontend Application Logic
  */
 
-import { bindProfileSelection, bindTabNavigation, hardwareStatusLabel, persistAndApplyRuntimeConfig, sessionFailureLabel } from './runtime-settings.js';
+import { audioStateKey, bindProfileSelection, bindTabNavigation, hardwareStatusLabel, persistAndApplyRuntimeConfig, sessionFailureLabel } from './runtime-settings.js';
 import { initLanguage, setLanguage, getLanguage, t, applyTranslations, getProfilePresetData, PROFILE_I18N } from './i18n.js';
 
 // IPC Bridge
@@ -561,7 +561,8 @@ function updateStatusUI(status) {
   elements.pillWsText.textContent = `WS: ${status.ws_port} (${status.ws_clients} ${t('ws_clients_suffix')})`;
 
   // Hardware Pill
-  const hwLabel = hardwareStatusLabel(status);
+  const audioKey = audioStateKey(status);
+  const hwLabel = audioKey ? `${hardwareStatusLabel(status)} | ${t(audioKey)}` : hardwareStatusLabel(status);
   elements.pillHw.textContent = hwLabel;
   elements.pillHw.title = hwLabel;
   if (elements.sessionPath) {

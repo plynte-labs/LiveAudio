@@ -447,6 +447,12 @@ async function runTests() {
     && runtimeSettings.hardwareStatusLabel({ is_running: true, model_size: 'base', device: 'cpu', active_device: 'USB mic' })
       .includes('USB mic'),
     'runtime hardware status shows the selected audio input');
+  assert(typeof runtimeSettings.audioStateKey === 'function'
+    && runtimeSettings.audioStateKey({ is_running: true, audio_state: 'standby' }) === 'audio_standby'
+    && runtimeSettings.audioStateKey({ is_running: true, audio_state: 'reconnecting' }) === 'audio_reconnecting'
+    && runtimeSettings.audioStateKey({ is_running: true, audio_state: 'capturing' }) === ''
+    && runtimeSettings.audioStateKey({ is_running: false, audio_state: 'standby' }) === '',
+    'audio standby and reconnect states are surfaced only while the service runs');
   assert(typeof runtimeSettings.sessionFailureLabel === 'function'
     && runtimeSettings.sessionFailureLabel({ session_error: 'Session output failed: 1 write(s), 0 rejected' })
       .includes('1 write'),
@@ -479,6 +485,12 @@ async function runTests() {
   assert(t('tab_setup') === 'Inicio' && t('tab_files') === 'Archivos', 'Spanish settings navigation labels exist');
   assert(t('btn_start') === 'Iniciar Transcripción', 'Spanish translation for btn_start');
   assert(t('status_stopped') === 'Detenido', 'Spanish translation for status_stopped');
+  assert(t('audio_standby') === 'Esperando micrófono' && t('audio_reconnecting') === 'Reconectando audio…',
+    'Spanish audio capture state labels exist');
+  setLanguage('en');
+  assert(t('audio_standby') === 'Waiting for microphone' && t('audio_reconnecting') === 'Reconnecting audio…',
+    'English audio capture state labels exist');
+  setLanguage('es');
   const ariaLabelElement = {
     attributes: { 'data-i18n-aria-label': 'settings_tabs_label' },
     getAttribute(name) { return this.attributes[name]; },

@@ -111,6 +111,13 @@ export function hardwareStatusLabel(status) {
   return `${runtimeLabel}: ${status.model_size.split(' ')[0]} | ${status.device.toUpperCase()} | ${status.active_device || 'Default input'}`;
 }
 
+/** i18n key for a live audio capture state worth surfacing, or '' while capturing or stopped. */
+export function audioStateKey(status) {
+  return status.is_running && ['standby', 'reconnecting'].includes(status.audio_state)
+    ? `audio_${status.audio_state}`
+    : '';
+}
+
 export function sessionFailureLabel(status) {
   return status.session_error || '';
 }

@@ -10,7 +10,7 @@ use crate::commands::{
 };
 use crate::dto::*;
 use crate::state::AppState;
-use liveaudio_audio::{AudioChunk, AudioChunkReceiver};
+use liveaudio_audio::{AudioChunk, AudioChunkReceiver, AudioSourceStatus};
 use liveaudio_core::acoustic_events::{AcousticEventLifecycle, AcousticSpeechEndReason};
 use liveaudio_core::config::LiveAudioConfig;
 use liveaudio_core::runtime::RuntimeError;
@@ -1475,4 +1475,21 @@ fn instance_lock_admits_a_single_owner_until_released() {
         "the lock is released when its owner exits"
     );
     let _ = std::fs::remove_dir_all(home);
+}
+
+#[tokio::test]
+async fn service_status_reports_audio_capture_state_only_while_running() {
+    let state = AppState::default();
+    *state.audio_state.write().await = AudioSourceStatus::Standby;
+    state.is_running.store(true, Ordering::SeqCst);
+    let running = get_service_status_internal(&state).await.unwrap();
+    assert_eq!(running.audio_state, AudioSourceStatus::Standby);
+    assert_eq!(
+        serde_json::to_value(&running).unwrap()["audio_state"],
+        "standby"
+    );
+
+    state.is_running.store(false, Ordering::SeqCst);
+    let stopped = get_service_status_internal(&state).await.unwrap();
+    assert_eq!(stopped.audio_state, AudioSourceStatus::Stopped);
 }

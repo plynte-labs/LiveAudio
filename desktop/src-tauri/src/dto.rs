@@ -29,6 +29,8 @@ pub struct ServiceStatusDto {
     pub session_path: Option<String>,
     pub session_error: Option<String>,
     pub asr_progress: Option<AsrProgressDto>,
+    /// Audio capture state: capturing, standby (no input device) or reconnecting.
+    pub audio_state: liveaudio_audio::AudioSourceStatus,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

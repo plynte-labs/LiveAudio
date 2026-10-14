@@ -5,8 +5,7 @@ use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use liveaudio_audio::traits::AudioSource;
-use liveaudio_audio::{AudioChunkReceiver, AudioStreamConfig, CpalAudioSource};
+use liveaudio_audio::{AudioChunkReceiver, AudioStreamConfig, CpalAudioSource, ResilientCapture};
 use liveaudio_core::acoustic_events::{
     AcousticEventLifecycle, AcousticSpeechEndReason, AcousticSpeechEvent,
 };
@@ -797,6 +796,11 @@ pub async fn get_service_status_internal(state: &AppState) -> Result<ServiceStat
         },
         session_error,
         asr_progress: state.asr_progress.read().await.clone(),
+        audio_state: if is_running {
+            *state.audio_state.read().await
+        } else {
+            liveaudio_audio::AudioSourceStatus::Stopped
+        },
     })
 }
 
@@ -1233,9 +1237,15 @@ async fn start_service_locked(
         ring_buffer_capacity: 500,
     };
 
-    let mut audio_source = CpalAudioSource::new().with_rnnoise_enabled(config.rnnoise_enabled);
-    let mut audio_rx = match audio_source.start(&stream_config).await {
-        Ok(receiver) => receiver,
+    let audio_source = CpalAudioSource::new().with_rnnoise_enabled(config.rnnoise_enabled);
+    let (mut audio_capture, mut audio_rx) = match ResilientCapture::start(
+        audio_source,
+        stream_config,
+        liveaudio_audio::get_input_device_count,
+    )
+    .await
+    {
+        Ok(started) => started,
         Err(error) => {
             drop(supervisor_arc);
             let err_msg = rollback_failed_audio_start(
@@ -1268,7 +1278,7 @@ async fn start_service_locked(
     let mut vad = match SileroVad::new(vad_cfg) {
         Ok(vad) => vad,
         Err(error) => {
-            let _ = audio_source.stop().await;
+            audio_capture.stop().await;
             drop(supervisor_arc);
             let err_msg = rollback_failed_audio_start(
                 state,
@@ -1291,7 +1301,7 @@ async fn start_service_locked(
     let (session_sink, session_path) = match create_session_sinks(&config, previous_session_path) {
         Ok(result) => result,
         Err(error) => {
-            let _ = audio_source.stop().await;
+            audio_capture.stop().await;
             drop(supervisor_arc);
             let err_msg = rollback_failed_audio_start(
                 state,
@@ -1321,6 +1331,10 @@ async fn start_service_locked(
     let pre_buffer_capacity = vad.config().pre_buffer_chunks().max(1);
     let max_samples = (16000.0 * config.max_chunk_duration.ceil()) as usize;
 
+    let mut audio_state_rx = audio_capture.state();
+    let initial_audio_state = *audio_state_rx.borrow_and_update();
+    *state.audio_state.write().await = initial_audio_state;
+
     let audio_task = tokio::spawn(async move {
         let mut utterance_samples: Vec<f32> = Vec::with_capacity(max_samples.max(16000 * 5));
         let mut pre_roll_chunks: VecDeque<Vec<f32>> =
@@ -1333,6 +1347,13 @@ async fn start_service_locked(
         'capture: loop {
             tokio::select! {
                 _ = cancel_audio.cancelled() => break,
+                Ok(()) = audio_state_rx.changed() => {
+                    let audio_state = *audio_state_rx.borrow_and_update();
+                    *state_audio.audio_state.write().await = audio_state;
+                    if let Ok(current_status) = get_service_status_internal(&state_audio).await {
+                        let _ = app_audio.emit("service_status_changed", &current_status);
+                    }
+                }
                 chunk_opt = audio_rx.recv() => {
                     let chunk = match chunk_opt {
                         Some(c) => {
@@ -1480,7 +1501,7 @@ async fn start_service_locked(
             acoustic_events_enabled,
             close_reason,
         );
-        let _ = audio_source.stop().await;
+        audio_capture.stop().await;
     });
 
     state.background_tasks.lock().await.push(event_task);

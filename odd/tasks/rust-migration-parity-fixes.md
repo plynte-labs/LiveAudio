@@ -37,7 +37,7 @@ A read-only audit (2026-10-14; 2 bug-hunt + 2 parity agents, parent-verified key
 - [x] T2 — Audio identity and RNNoise robustness (route: delegated)
   - `normalize_device_name` no longer merges distinct devices that differ only in parenthesized text.
   - RNNoise clamps out-of-range input/output instead of failing capture.
-- [ ] T3 — Audio resilience parity (route: delegated)
+- [x] T3 — Audio resilience parity (route: delegated)
   - Auto-reconnect on device loss (3 s retry), standby when no input device with hot-plug detection, capture watchdog; reuse Python semantics from `liveaudio/core/audio.py`.
 - [ ] T4 — ASR request and transcript output (route: delegated)
   - Enforce `asr_decode_timeout_sec` (forward `timeout_ms` and/or Rust-side deadline).
@@ -51,6 +51,7 @@ A read-only audit (2026-10-14; 2 bug-hunt + 2 parity agents, parent-verified key
   - `get_recent_logs` arg `maxLines`.
   - Per-key tolerant config load (wrong type falls back to default for that key).
   - No `println!` in library code that pollutes CLI JSON stdout.
+  - CLI moves to `ResilientCapture` (added after T3; ~3-line change).
   - CLI honors configured audio device; `devices` lists real devices; `doctor` reports only tested facts.
 
 ## Progress and evidence
@@ -70,5 +71,14 @@ A read-only audit (2026-10-14; 2 bug-hunt + 2 parity agents, parent-verified key
   - RED: 3 behavioral failures (normalize unit test, dedup pipeline test, overdriven RNNoise input). GREEN after fix.
   - Checks: liveaudio-audio 25/7/8 passed; workspace 0 failed (writer); fmt clean. Parent spot check `cargo test -p liveaudio-audio --offline --locked`: all ok. Running count: T1 471 + T2 ~102.
 
+  - T2 commit: `5f6ff74` fix(audio): keep distinct devices and clamp RNNoise range.
+- T3 (delegated writer, model fable; writer trigger: 11 files). New `crates/liveaudio-audio/src/resilient.rs` (`ResilientCapture`) wraps any `AudioSource`, keeps one downstream receiver across losses; states Capturing/Standby/Reconnecting/Stopped via `watch`. Wired in desktop only; CLI deferred to T6.
+  - Python timings ported from `liveaudio/core/audio.py`: reconnect 3 s (589-597), standby poll 1 s (518, 586), watchdog tick 500 ms / grace 3 s / limit 5 s (545-560), standby vs reconnect after loss (583-597). Selected device retried by same id, no default fallback (Python parity).
+  - Deliberate deviation: watchdog disabled for loopback (WASAPI loopback is silent while nothing plays). Kept unless owner objects.
+  - UI: `audio_state` in status DTO; pill shows waiting-for-microphone / reconnecting (es+en i18n).
+  - RED: 6 behavioral failures against a stub (standby, reconnect 3 s, retry cadence, standby after loss, watchdog, stop in standby/reconnect); loopback exemption RED by guard removal; desktop DTO compile-only RED; frontend 3 failed. GREEN: resilient 9 passed (5 repeated runs), audio 34/7/8, desktop 48, workspace 0 failed, frontend 296 passed; fmt clean on touched lines.
+  - Parent spot check: `cargo test -p liveaudio-audio --offline --locked --lib resilient`: 9 passed; `node test_frontend.js`: 296 passed, 0 failed. Risk assessment: medium (681 lines).
+  - Not exercised: real hot-plug/unplug, cpal removal signaling, Tauri task wiring at runtime. Notes: desktop `capture_failed` branches now unreachable (left in place); standby polls cpal device enumeration every 1 s from an async task (blocking call, minor). Running count: ~1,250.
+
 ## Next step
-T3 audio resilience parity.
+T4 ASR request and transcript output.

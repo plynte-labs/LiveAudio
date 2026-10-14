@@ -5,6 +5,7 @@ pub mod device;
 pub mod error;
 pub mod mock;
 pub mod resampler;
+pub mod resilient;
 pub mod ring_buffer;
 pub mod rnnoise;
 pub mod traits;
@@ -17,6 +18,7 @@ pub use mock::MockAudioSource;
 pub use resampler::{
     convert_i16_to_mono_f32, convert_u16_to_mono_f32, mix_multichannel_to_mono, AudioResampler,
 };
+pub use resilient::ResilientCapture;
 pub use ring_buffer::{
     create_audio_ring_buffer, AudioRingConsumer, AudioRingProducer, RingBufferMetrics,
     RingBufferStats,
