@@ -60,7 +60,14 @@ A read-only audit (2026-10-14; 2 bug-hunt + 2 parity agents, parent-verified key
   - [x] T7b — CLI headless parity: configured audio device, `ResilientCapture`, real `devices`, honest `doctor` (moved from T6).
   - [x] T7c — Desktop Monitor Mode UI/state: detect live holder at startup and before Start; status shows service owned by another process, Start disabled, read-only WS feed, deferred-settings banner, close leaves service, takeover when the holder dies.
   - [x] T7d — Installer ships `liveaudio-cli.exe` next to `liveaudio-desktop.exe`.
-  - [ ] T7e — OpenCohost side (other repo, NOT authorized yet): resolve installed `liveaudio-cli.exe` and spawn `serve --parent-pid`.
+  - [ ] T7e — OpenCohost side: resolve installed `liveaudio-cli.exe` and spawn `serve --parent-pid`. Owner is handling it in a separate OpenCohost session (2026-10-14), editing `feat/laya-integration` in place without commit (option A) because the desktop-autostart code there is uncommitted. Keep `stash@{0}` (`opencohost-parity`) until T7e is validated end to end: it is the only copy of the `--autostart-service` implementation. End-to-end test requires reinstalling LiveAudio from develop with `liveaudio-cli.exe` bundled (owner).
+
+- [ ] T8 — Remaining audit findings (verified 2026-10-14 against 2bd370f by a read-only Sonnet agent; parent re-verified #1 and #20; numbers refer to that verification).
+  - [x] T8a — WebSocket broadcast correctness: #1 shared retry buffer duplicates/reorders cues for healthy clients (`server.rs:238-283`); #7 client_count wraps after `stop()`; #8 handshake timeout, accept-error backoff (client cap only if trivial).
+  - [ ] T8b — Worker/CLI lifecycle: #3 CLI shutdown never calls `stop_internal`, `send_command` has no timeout; #2 child not killed when stop aborts a respawn handshake (`kill_on_drop`); #4+#26 ready timeout during first-run model download counts as a crash (progress-aware timeout / stalled state); #10 emitter must not panic on a broken stdout.
+  - [x] T8c — Config parity: #20 Rust flips `transcription_purpose` subtitles→transcription for 15<max_chunk<=60 (introduced in bulk migration `355cb8b`, no stated intent) — follow Python: keep purpose, clamp; #21 missing `max_chunk_duration` default 30.0 for transcription/combined.
+  - [ ] T8d — Hardening/privacy/packaging: #5 uv/python discovery trusts cwd before PATH; #23 diagnostics export unscrubbed paths/URLs (Python regex parity); #18 NSIS legacy predicate time bomb at 1.6.0; #17 capability scope `["main","*"]` → `main`, drop unused `allow-emit` (CSP deferred: needs GUI verification, see below); #12 resampler `rate==0` guard; #15 strip `-->` from VTT cue text; #19 hard-coded Spanish log line.
+  - Won't fix / deferred with reason: #6 `restart_child` and #16 cancelled token are latent (no callers; document single-use supervisor); #22 browsers lowercase Origin; #13 PreBuffer is bounded (claim false); #9 health tmp race, #14 probe timeout / non-staged setup-runtime, #24 JSONL schema differs from Python, #25 sink toggles at session start (consistent with Passive Config Persistence), #11 payload scrubbing — low risk. CSP (`csp: null` + `withGlobalTauri`): a wrong CSP silently breaks the webview (IPC, ws:// feed), so it needs a GUI-verified pass; deferred.
 
 ## Progress and evidence
 - Audit evidence: Engram `audit/rust-migration-completeness`; scope decisions: `audit/rust-migration-scope-decisions`, `audit/rust-migration-scope-decisions-audio`.
@@ -147,5 +154,13 @@ A read-only audit (2026-10-14; 2 bug-hunt + 2 parity agents, parent-verified key
   - Checks: core 46/1/8/9, desktop 64, workspace 254 passed 0 failed; frontend 312 passed 0 failed; fmt core clean. Parent spot check: core `config` 16 passed; frontend 312 passed.
   - Risks: rejected values only replaced in memory until normalize/save; `"0.8"` strings fall back instead of coercing (Python coerced); bare `NaN` literal still invalid JSON → defaults.
 
+  - T6 commit: `2bd370f` fix(config): tolerate invalid keys and pass camelCase log args.
+- T8a + T8c (one delegated writer, model fable; interrupted once by an API rate limit with no persisted edits, then resumed).
+  - T8a: per-client retry queues (`RetryState`, cap `max_retry_buffer`) replace the shared buffer — healthy clients get each payload once, a slow client gets its backlog in order before newer cues; queues dropped on disconnect/stop; metrics summed. Deliberately not Python's global gate (it stalls healthy OBS clients). Saturating client-count decrement. `WsServerConfig.handshake_timeout` (5 s, counted as rejected) and 100 ms shutdown-aware accept-error backoff. Client cap skipped.
+  - T8c: subtitles→transcription flip removed from `normalize()`; `max_chunk_bounds(purpose)` = (60, 30) transcription/combined, (15, 5.0) subtitles; non-finite → purpose default; half-even rounding like Python `round(x, 1)`; missing/invalid key on load gets the purpose default. Limit: direct serde deserialization (not via `load_from_path`) still defaults to 5.0.
+  - RED: client count wrap (usize::MAX), silent TCP peer never dropped, broadcast duplicate/reorder; normalize keeps purpose, half-even, non-finite, missing-duration default. GREEN all.
+  - Checks: network all suites, core 50 lib + integration, desktop 64, workspace 0 failed; fmt clean. Pre-existing clippy deny in `job_object/mod.rs:73` blocks clippy on core (untouched). Parent spot check: `server_lifecycle` 13 passed; core `config` 20 passed.
+  - Open: desktop UI (`app.js:1186`) still sets purpose=transcription when the max-chunk slider exceeds 15 s (only UI path to long chunks; left as-is). Accept-error backoff untested (no fault injection). Handshake timeout test uses real time.
+
 ## Next step
-All LiveAudio tasks done. T7e (OpenCohost repo) awaits owner authorization. Manual checks pending: T1b second launch focus, T7c Monitor Mode script, real NSIS/AppImage builds, hardware hot-plug.
+T8b worker/CLI lifecycle. T7e in progress in a separate OpenCohost session (owner). Manual checks pending: T1b second launch focus, T7c Monitor Mode script, real NSIS/AppImage builds, hardware hot-plug.

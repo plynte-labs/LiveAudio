@@ -283,6 +283,20 @@ fn default_max_chunk_duration() -> f64 {
 fn default_transcription_purpose() -> String {
     "subtitles".to_string()
 }
+
+/// Python parity (`utils/config.py`): the purpose sets the `max_chunk_duration` ceiling and its
+/// default. Returns `(ceiling, default)`. Unknown purposes behave as subtitles.
+fn max_chunk_bounds(purpose: &str) -> (f64, f64) {
+    match purpose {
+        "transcription" | "combined" => (60.0, 30.0),
+        _ => (15.0, default_max_chunk_duration()),
+    }
+}
+
+/// Rounds to one decimal with half-to-even ties on the exact binary value, as Python's `round(x, 1)`.
+fn round_to_tenth(value: f64) -> f64 {
+    format!("{value:.1}").parse().unwrap_or(value)
+}
 fn default_asr_decode_timeout_sec() -> u32 {
     ASR_DECODE_TIMEOUT_DEFAULT_SEC
 }
@@ -433,25 +447,18 @@ impl LiveAudioConfig {
             updated = true;
         }
 
-        // max_chunk_duration
-        if self.max_chunk_duration > 15.0
-            && self.max_chunk_duration <= 60.0
-            && self.transcription_purpose == "subtitles"
-        {
-            self.transcription_purpose = "transcription".to_string();
-            updated = true;
-        }
-        let max_allowed = if self.transcription_purpose == "transcription"
-            || self.transcription_purpose == "combined"
-        {
-            60.0
+        // max_chunk_duration: the purpose sets the ceiling; the purpose itself is never changed here.
+        let (max_allowed, purpose_default) = max_chunk_bounds(&self.transcription_purpose);
+        let duration = if self.max_chunk_duration.is_finite() {
+            self.max_chunk_duration.clamp(1.0, max_allowed)
         } else {
-            15.0
+            purpose_default
         };
-        let clamped_duration =
-            (self.max_chunk_duration.clamp(1.0, max_allowed) * 10.0).round() / 10.0;
-        if (self.max_chunk_duration - clamped_duration).abs() > f64::EPSILON {
-            self.max_chunk_duration = clamped_duration;
+        let rounded_duration = round_to_tenth(duration);
+        if self.max_chunk_duration.is_nan()
+            || (self.max_chunk_duration - rounded_duration).abs() > f64::EPSILON
+        {
+            self.max_chunk_duration = rounded_duration;
             updated = true;
         }
 
@@ -763,6 +770,18 @@ pub fn load_from_path(path: &Path) -> io::Result<LiveAudioConfig> {
         }
         ok
     });
+    // Python parity: a missing or invalid max_chunk_duration takes the default of the purpose.
+    // Invalid keys were just removed above, so absence here means absent or invalid.
+    if !fields.contains_key("max_chunk_duration") {
+        let purpose = fields
+            .get("transcription_purpose")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        fields.insert(
+            "max_chunk_duration".to_string(),
+            serde_json::json!(max_chunk_bounds(purpose).1),
+        );
+    }
     serde_json::from_value(fields.into()).map_err(invalid)
 }
 
@@ -1059,6 +1078,60 @@ mod tests {
         let res = load_from_path(&path);
         let _ = std::fs::remove_dir_all(&dir);
         res
+    }
+
+    #[test]
+    fn normalize_keeps_subtitles_purpose_and_clamps_duration_to_its_ceiling() {
+        let mut cfg = LiveAudioConfig::default();
+        cfg.max_chunk_duration = 30.0;
+        cfg.normalize();
+        assert_eq!(cfg.transcription_purpose, "subtitles");
+        assert_eq!(cfg.max_chunk_duration, 15.0);
+    }
+
+    #[test]
+    fn normalize_rounds_half_to_even_like_python() {
+        let mut cfg = LiveAudioConfig::default();
+        cfg.max_chunk_duration = 12.25;
+        cfg.normalize();
+        assert_eq!(cfg.max_chunk_duration, 12.2);
+    }
+
+    #[test]
+    fn normalize_replaces_non_finite_duration_with_purpose_default() {
+        let mut cfg = LiveAudioConfig::default();
+        cfg.transcription_purpose = "transcription".into();
+        cfg.max_chunk_duration = f64::NAN;
+        cfg.normalize();
+        assert_eq!(cfg.max_chunk_duration, 30.0);
+    }
+
+    #[test]
+    fn missing_or_invalid_duration_takes_the_purpose_default_on_load() {
+        let missing = load_json(
+            "duration-missing",
+            r#"{"transcription_purpose": "transcription"}"#,
+        )
+        .expect("tolerant load");
+        assert_eq!(missing.max_chunk_duration, 30.0);
+
+        let invalid = load_json(
+            "duration-null",
+            r#"{"transcription_purpose": "combined", "max_chunk_duration": null}"#,
+        )
+        .expect("tolerant load");
+        assert_eq!(invalid.max_chunk_duration, 30.0);
+
+        let subtitles = load_json("duration-subtitles", r#"{"max_chunk_duration": "x"}"#)
+            .expect("tolerant load");
+        assert_eq!(subtitles.max_chunk_duration, 5.0);
+
+        let explicit = load_json(
+            "duration-explicit",
+            r#"{"transcription_purpose": "transcription", "max_chunk_duration": 5.0}"#,
+        )
+        .expect("tolerant load");
+        assert_eq!(explicit.max_chunk_duration, 5.0);
     }
 
     #[test]
