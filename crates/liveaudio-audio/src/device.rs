@@ -7,29 +7,15 @@ use std::collections::HashSet;
 
 /// Clean and normalize device name for deduplication.
 ///
-/// Strips parenthesized host API suffixes and non-alphanumeric noise to merge
-/// identical physical devices exposed under slightly different labels.
+/// Lowercases and drops punctuation and extra whitespace so label noise for the
+/// same device merges. Parenthesized text is kept: on Windows it usually carries
+/// the distinguishing hardware name (e.g. "Microphone (USB Audio Device)").
 pub fn normalize_device_name(name: &str) -> String {
-    let mut cleaned = String::with_capacity(name.len());
-    let mut depth = 0usize;
-
-    for ch in name.chars() {
-        if ch == '(' || ch == '[' {
-            depth += 1;
-            continue;
-        }
-        if ch == ')' || ch == ']' {
-            depth = depth.saturating_sub(1);
-            continue;
-        }
-        if depth == 0 {
-            if ch.is_alphanumeric() || ch.is_whitespace() {
-                cleaned.push(ch.to_ascii_lowercase());
-            }
-        }
-    }
-
-    // Collapse multiple whitespace
+    let cleaned: String = name
+        .chars()
+        .filter(|ch| ch.is_alphanumeric() || ch.is_whitespace())
+        .flat_map(char::to_lowercase)
+        .collect();
     cleaned.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
@@ -160,11 +146,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_normalize_device_name_removes_parenthesized_noise() {
-        let name1 = "Microphone (Realtek High Definition Audio)";
-        let name2 = "Microphone (Realtek Audio)";
-        assert_eq!(normalize_device_name(name1), "microphone");
-        assert_eq!(normalize_device_name(name2), "microphone");
+    fn test_normalize_device_name_keeps_distinguishing_parenthesized_text() {
+        assert_eq!(
+            normalize_device_name("Microphone (Realtek(R) Audio)"),
+            "microphone realtekr audio"
+        );
+        assert_ne!(
+            normalize_device_name("Microphone (Realtek High Definition Audio)"),
+            normalize_device_name("Microphone (Realtek Audio)")
+        );
     }
 
     #[test]

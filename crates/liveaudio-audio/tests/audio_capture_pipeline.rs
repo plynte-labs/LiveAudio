@@ -159,13 +159,19 @@ fn test_ring_buffer_overflow_drop_oldest_never_blocks() {
 
 #[test]
 fn test_device_normalization_dedup() {
-    assert_eq!(
-        normalize_device_name("Headphones (Realtek(R) Audio)"),
-        normalize_device_name("Headphones (Realtek Audio)")
+    // Distinct hardware usually differs only inside the parenthesized part on Windows.
+    assert_ne!(
+        normalize_device_name("Microphone (Realtek(R) Audio)"),
+        normalize_device_name("Microphone (USB Audio Device)")
     );
-    assert_eq!(
+    assert_ne!(
         normalize_device_name("Microphone Array [Intel Smart Sound]"),
         normalize_device_name("Microphone Array (Intel)")
+    );
+    // Label noise (case, punctuation, spacing) still merges the same device.
+    assert_eq!(
+        normalize_device_name("Headphones (Realtek(R) Audio)"),
+        normalize_device_name("headphones  (realtek(r) audio)")
     );
 }
 

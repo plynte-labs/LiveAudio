@@ -67,13 +67,9 @@ impl RnnoiseProcessor {
                 "RNNoise requires mono 16 kHz chunks of exactly 512 samples".to_string(),
             ));
         }
-        if chunk
-            .samples
-            .iter()
-            .any(|sample| !sample.is_finite() || !(-1.0..=1.0).contains(sample))
-        {
+        if chunk.samples.iter().any(|sample| !sample.is_finite()) {
             return Err(AudioError::InvalidParameter(
-                "RNNoise input samples must be finite and within [-1, 1]".to_string(),
+                "RNNoise input samples must be finite".to_string(),
             ));
         }
 
@@ -84,6 +80,8 @@ impl RnnoiseProcessor {
 
         let mut output = Vec::with_capacity(MAX_OUTPUT_CHUNKS_PER_CALL);
         for sample in chunk.samples {
+            // Float devices and loopback can peak above full scale; clip like PCM would.
+            let sample = sample.clamp(-1.0, 1.0);
             let previous = self.previous_input.unwrap_or(sample);
             for step in 1..=3 {
                 let fraction = step as f32 / 3.0;
@@ -166,11 +164,12 @@ impl RnnoiseProcessor {
             .take(self.pending_output_samples)
         {
             let normalized = output_frame[sample] / PCM_SCALE;
-            if !normalized.is_finite() || !(-1.0..=1.0).contains(&normalized) {
+            if !normalized.is_finite() {
                 return Err(AudioError::BackendError(
-                    "RNNoise produced a non-finite or out-of-range sample".to_string(),
+                    "RNNoise produced a non-finite sample".to_string(),
                 ));
             }
+            let normalized = normalized.clamp(-1.0, 1.0);
             self.output_staging[self.output_staging_len] = normalized;
             self.output_staging_len += 1;
             self.output_samples_emitted += 1;

@@ -24,7 +24,7 @@ A read-only audit (2026-10-14; 2 bug-hunt + 2 parity agents, parent-verified key
 - TDD: enabled, source: user global CLAUDE.md "Strict TDD Mode: enabled". RED → GREEN → REFACTOR.
 - Runners: `cargo test --workspace --offline --locked`; targeted `cargo test -p <crate> --offline --locked <filter>`; `node test_frontend.js` from `desktop/` on frontend changes; `cargo fmt --check` after normalization.
 - RDD: off (global), verified via `gentle-ai review mode status`. No native review.
-- Delivery: direct work-unit commits on `develop`; forecast ~1,500-2,500 authored lines total (heuristic only). PR slicing deferred to owner.
+- Delivery: direct work-unit commits on `develop` (owner instruction, 2026-10-14); forecast ~1,500-2,500 authored lines total (heuristic only). Running count: T1 471. No PRs requested; slicing applies only if the owner opens PRs.
 
 ## Tasks
 - [x] T1 — Supervisor and lifecycle (route: delegated, writer trigger)
@@ -34,7 +34,7 @@ A read-only audit (2026-10-14; 2 bug-hunt + 2 parity agents, parent-verified key
   - `stop_service_locked` emits status on cleanup failure and does not report "stopped" while resources may be live.
   - Graceful service stop on app exit/window close (Tauri `RunEvent::ExitRequested`).
   - Single-instance lock for the desktop app (prefer existing deps/stdlib; Tauri single-instance plugin only if justified).
-- [ ] T2 — Audio identity and RNNoise robustness (route: delegated)
+- [x] T2 — Audio identity and RNNoise robustness (route: delegated)
   - `normalize_device_name` no longer merges distinct devices that differ only in parenthesized text.
   - RNNoise clamps out-of-range input/output instead of failing capture.
 - [ ] T3 — Audio resilience parity (route: delegated)
@@ -62,6 +62,13 @@ A read-only audit (2026-10-14; 2 bug-hunt + 2 parity agents, parent-verified key
   - Parent spot check: `cargo test -p liveaudio-core --offline --locked --test supervisor_mock_worker`: 7 passed, 0 failed. Lock verified not to collide with the Python worker (InstanceLock only taken in `liveaudio/service/__init__.py:main`).
   - Not exercised: RunEvent::ExitRequested graceful stop (needs GUI runtime). Second instance exits with a log line, no window focus (single-instance plugin not available offline). CLI takes no instance lock.
   - Review assessment: risk medium (executable_change), RDD off → writer self-verification + parent spot check.
+  - Commit: `92f0cac` fix(supervisor): recover from failed respawns and harden desktop lifecycle.
+
+- T2 (delegated writer, model fable). Both items confirmed and fixed in liveaudio-audio only.
+  - Device dedup now keeps parenthesized text (lowercase, punctuation/whitespace noise merged). Device IDs unchanged (raw name), saved `audio_device.id` remains compatible; previously hidden devices now appear. Python `_normalize_device_name` has the same bug (out of scope, legacy).
+  - RNNoise clamps finite out-of-range input/output to [-1, 1]; NaN/inf still rejected.
+  - RED: 3 behavioral failures (normalize unit test, dedup pipeline test, overdriven RNNoise input). GREEN after fix.
+  - Checks: liveaudio-audio 25/7/8 passed; workspace 0 failed (writer); fmt clean. Parent spot check `cargo test -p liveaudio-audio --offline --locked`: all ok. Running count: T1 471 + T2 ~102.
 
 ## Next step
-T2 audio identity and RNNoise robustness.
+T3 audio resilience parity.
