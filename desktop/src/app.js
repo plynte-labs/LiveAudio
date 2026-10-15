@@ -412,6 +412,39 @@ function updateComputeDeviceReactivity(device) {
   }
 }
 
+// Asks before closing while this window owns a running session. Monitor Mode and idle windows
+// close without a prompt. Confirm re-enters close, so the ExitRequested stop runs exactly once.
+let closeConfirmed = false;
+let closePromptOpen = false;
+function setupCloseGuard(appWindow) {
+  if (!appWindow || typeof appWindow.onCloseRequested !== 'function') return;
+  appWindow.onCloseRequested(async (event) => {
+    if (closeConfirmed) return;
+    if (!currentStatus.is_running || currentStatus.monitor_mode) return;
+    event.preventDefault();
+    if (closePromptOpen) return;
+    closePromptOpen = true;
+    try {
+      const ok = await showConfirmModal({
+        title: t('close_confirm_title'),
+        message: t('close_confirm_message'),
+        detail: t('close_confirm_detail'),
+        confirmText: t('close_confirm_action'),
+        isDanger: true,
+      });
+      if (ok) {
+        closeConfirmed = true;
+        await appWindow.close();
+      }
+    } catch (err) {
+      closeConfirmed = false;
+      console.warn('Close error:', err);
+    } finally {
+      closePromptOpen = false;
+    }
+  });
+}
+
 // Custom Frameless Window Controls Integration
 function setupWindowControls() {
   const getAppWindow = () => {
@@ -424,6 +457,7 @@ function setupWindowControls() {
   };
 
   const appWindow = getAppWindow();
+  setupCloseGuard(appWindow);
 
   if (elements.winBtnMinimize) {
     elements.winBtnMinimize.addEventListener('click', async () => {

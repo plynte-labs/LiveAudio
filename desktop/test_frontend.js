@@ -852,6 +852,23 @@ async function runTests() {
     'English test subtitle text is localized');
   setLanguage('es');
 
+  // Close guard: confirm before closing while this window owns a running session
+  assert(/onCloseRequested\(async \(event\) =>/.test(appSource) && /event\.preventDefault\(\);/.test(appSource),
+    'Window close is intercepted with onCloseRequested so an owned session can be confirmed first');
+  assert(appSource.includes('!currentStatus.is_running || currentStatus.monitor_mode'),
+    'Close guard prompts only for a session this window owns, not Monitor Mode');
+  assert(/if \(closeConfirmed[\s\S]*?return;/.test(appSource) && /closeConfirmed = true;\s*await appWindow\.close\(\)/.test(appSource),
+    'Confirmed close re-enters close without prompting again');
+  assert(/if \(ok\) \{[\s\S]*?closeConfirmed = true/.test(appSource) && !appSource.includes('appWindow.destroy'),
+    'Cancel keeps the window open and confirm reuses the graceful close path');
+  setLanguage('es');
+  assert(t('close_confirm_title') === 'Cerrar LiveAudio' && t('close_confirm_action') === 'Detener y cerrar',
+    'Spanish close confirmation copy is localized');
+  setLanguage('en');
+  assert(t('close_confirm_title') === 'Close LiveAudio' && t('close_confirm_action') === 'Stop and close',
+    'English close confirmation copy is localized');
+  setLanguage('es');
+
   // Verify robust state synchronization, serialized queue, keyboard navigation and bounds clamping
   assert(appSource.includes('savedConfig = structuredClone(newConfig);'),
     'savedConfig baseline is synchronized on blacklist and prompt additions');
