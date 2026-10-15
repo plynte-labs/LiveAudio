@@ -63,6 +63,8 @@ pub struct WsServerConfig {
     pub max_retry_buffer: usize,
     pub replay_buffer_capacity: usize,
     pub health_file_path: Option<PathBuf>,
+    /// Maximum time a TCP peer may take to complete the WebSocket handshake.
+    pub handshake_timeout: Duration,
 }
 
 impl Default for WsServerConfig {
@@ -76,8 +78,49 @@ impl Default for WsServerConfig {
             max_retry_buffer: MAX_RETRY_BUFFER,
             replay_buffer_capacity: REPLAY_BUFFER_MAX,
             health_file_path: None,
+            handshake_timeout: Duration::from_secs(5),
         }
     }
+}
+
+/// Per-client queues of payloads a full client queue could not take yet, oldest first.
+#[derive(Default)]
+struct RetryState {
+    queues: HashMap<u64, RetryBuffer>,
+    /// Drops from queues already released by a disconnect, so `retry_drops` stays cumulative.
+    retired_drops: usize,
+}
+
+impl RetryState {
+    fn publish(&self, metrics: &NetworkMetrics) {
+        let buffered: usize = self.queues.values().map(RetryBuffer::len).sum();
+        let dropped: usize = self.retired_drops
+            + self
+                .queues
+                .values()
+                .map(RetryBuffer::dropped_count)
+                .sum::<usize>();
+        metrics.retry_buffer_size.store(buffered, Ordering::SeqCst);
+        metrics.retry_drops.store(dropped as u64, Ordering::SeqCst);
+    }
+
+    fn forget(&mut self, client_id: u64) {
+        if let Some(queue) = self.queues.remove(&client_id) {
+            self.retired_drops += queue.dropped_count();
+        }
+    }
+}
+
+/// Pause between accept attempts after an error, so a persistent failure cannot spin the loop.
+const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(100);
+
+/// Decrements the live client count without wrapping below zero (`stop()` resets it).
+fn decrement_client_count(metrics: &NetworkMetrics) {
+    let _ = metrics
+        .client_count
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+            Some(n.saturating_sub(1))
+        });
 }
 
 struct WsServerInner {
@@ -88,7 +131,7 @@ struct WsServerInner {
     pending_replay: Mutex<WireReplayBuffer>,
     replay_notify: Notify,
     replay_delivery_lock: tokio::sync::Mutex<()>,
-    retry_buffer: Mutex<RetryBuffer>,
+    retry: Mutex<RetryState>,
     metrics: Arc<NetworkMetrics>,
     next_client_id: AtomicU64,
     start_instant: Instant,
@@ -114,7 +157,6 @@ impl WsServer {
     pub fn new(config: WsServerConfig) -> Self {
         let health_writer = config.health_file_path.as_ref().map(HealthFileWriter::new);
         let replay_cap = config.replay_buffer_capacity;
-        let retry_cap = config.max_retry_buffer;
 
         let inner = WsServerInner {
             config,
@@ -124,7 +166,7 @@ impl WsServer {
             pending_replay: Mutex::new(WireReplayBuffer::new(replay_cap)),
             replay_notify: Notify::new(),
             replay_delivery_lock: tokio::sync::Mutex::new(()),
-            retry_buffer: Mutex::new(RetryBuffer::new(retry_cap)),
+            retry: Mutex::new(RetryState::default()),
             metrics: Arc::new(NetworkMetrics::new()),
             next_client_id: AtomicU64::new(1),
             start_instant: Instant::now(),
@@ -235,48 +277,47 @@ impl WsServer {
     }
 
     /// Broadcast raw JSON text to all connected clients, applying retry buffering on backpressure.
+    ///
+    /// Each client has its own retry queue. A client that cannot take a payload keeps it there
+    /// and receives it, in order, before anything newer. Healthy clients are never held back by
+    /// a slow one, and no client receives the same payload twice.
     pub fn broadcast_raw(&self, payload: &str) -> Result<(), NetworkError> {
         let clients = self.inner.clients.read().unwrap();
-        let mut had_backpressure = false;
+        let mut state = self.inner.retry.lock().unwrap();
+        let max_queue = self.inner.config.max_retry_buffer;
+        let mut backpressure = 0u64;
 
-        for (_id, tx) in clients.iter() {
-            match tx.try_send(payload.to_string()) {
-                Ok(_) => {}
-                Err(mpsc::error::TrySendError::Full(_)) => {
-                    had_backpressure = true;
-                    self.inner
-                        .metrics
-                        .backpressure_events
-                        .fetch_add(1, Ordering::SeqCst);
+        for (id, tx) in clients.iter() {
+            let queue = state
+                .queues
+                .entry(*id)
+                .or_insert_with(|| RetryBuffer::new(max_queue));
+
+            while let Some(next) = queue.front().cloned() {
+                match tx.try_send(next) {
+                    Ok(()) => {
+                        queue.pop_front();
+                    }
+                    Err(_) => break,
                 }
-                Err(mpsc::error::TrySendError::Closed(_)) => {}
+            }
+
+            let delivered = queue.is_empty() && tx.try_send(payload.to_string()).is_ok();
+            if !delivered {
+                queue.push(payload.to_string());
+                backpressure += 1;
             }
         }
 
-        if had_backpressure {
-            let mut retry = self.inner.retry_buffer.lock().unwrap();
-            retry.push(payload.to_string());
+        if backpressure > 0 {
             self.inner
                 .metrics
-                .retry_buffer_size
-                .store(retry.len(), Ordering::SeqCst);
-            self.inner
-                .metrics
-                .retry_drops
-                .store(retry.dropped_count() as u64, Ordering::SeqCst);
-        } else {
-            // Attempt to drain pending retry buffer if transport is clear
-            let mut retry = self.inner.retry_buffer.lock().unwrap();
-            while let Some(buffered) = retry.pop_front() {
-                for (_id, tx) in clients.iter() {
-                    let _ = tx.try_send(buffered.clone());
-                }
-            }
-            self.inner
-                .metrics
-                .retry_buffer_size
-                .store(0, Ordering::SeqCst);
+                .backpressure_events
+                .fetch_add(backpressure, Ordering::SeqCst);
         }
+        state.publish(&self.inner.metrics);
+        drop(state);
+        drop(clients);
 
         self.inner
             .metrics
@@ -396,6 +437,11 @@ impl NetworkServer for WsServer {
             }
 
             self.inner.metrics.client_count.store(0, Ordering::SeqCst);
+            {
+                let mut state = self.inner.retry.lock().unwrap();
+                state.queues.clear();
+                state.publish(&self.inner.metrics);
+            }
             if let Some(task) = self.inner.accept_task.lock().await.take() {
                 task.await.map_err(|error| {
                     NetworkError::IoError(std::io::Error::new(ErrorKind::Other, error.to_string()))
@@ -482,6 +528,10 @@ async fn run_accept_loop(listener: TcpListener, effective_port: u16, inner: Arc<
                     }
                     Err(err) => {
                         tracing::error!("[WebSocket] Error en listener.accept: {}", err);
+                        tokio::select! {
+                            _ = inner.shutdown_token.cancelled() => break,
+                            _ = tokio::time::sleep(ACCEPT_ERROR_BACKOFF) => {}
+                        }
                     }
                 }
             }
@@ -521,10 +571,6 @@ async fn handle_connection(
                 "[WebSocket] Conexion rechazada por Origin no permitido: {}",
                 received
             );
-            println!(
-                "[WebSocket] Conexion rechazada por Origin no permitido: {}",
-                received
-            );
             let err_resp = Response::builder()
                 .status(StatusCode::FORBIDDEN)
                 .body(Some(format!("Origen no permitido: {}\n", err)))
@@ -534,14 +580,27 @@ async fn handle_connection(
         Ok(resp)
     };
 
-    let ws_stream = match tokio_tungstenite::accept_hdr_async(stream, callback).await {
-        Ok(ws) => ws,
-        Err(e) => {
+    let handshake = tokio::time::timeout(
+        inner.config.handshake_timeout,
+        tokio_tungstenite::accept_hdr_async(stream, callback),
+    )
+    .await;
+    let ws_stream = match handshake {
+        Ok(Ok(ws)) => ws,
+        Ok(Err(e)) => {
             inner
                 .metrics
                 .rejected_clients
                 .fetch_add(1, Ordering::SeqCst);
             tracing::debug!("[WebSocket] Handshake rechazado o fallido: {}", e);
+            return;
+        }
+        Err(_) => {
+            inner
+                .metrics
+                .rejected_clients
+                .fetch_add(1, Ordering::SeqCst);
+            tracing::debug!("[WebSocket] Handshake sin completar; cerrando conexion");
             return;
         }
     };
@@ -560,7 +619,6 @@ async fn handle_connection(
         peer_addr,
         count
     );
-    println!("[WebSocket] Cliente conectado: {}", peer_addr);
 
     let (mut ws_sink, mut ws_stream) = ws_stream.split();
 
@@ -569,7 +627,7 @@ async fn handle_connection(
     if let Ok(hello_json) = serde_json::to_string(&hello) {
         if let Err(e) = ws_sink.send(Message::text(hello_json)).await {
             tracing::warn!("[WebSocket] Error enviando hello frame: {}", e);
-            inner.metrics.client_count.fetch_sub(1, Ordering::SeqCst);
+            decrement_client_count(&inner.metrics);
             return;
         }
     }
@@ -586,7 +644,10 @@ async fn handle_connection(
     };
 
     let mut next_replay_at = tokio::time::Instant::now();
-    for cue_msg in replayed_cues {
+    for mut cue_msg in replayed_cues {
+        // History re-sent to a new connection is a replay even if it first went out live, so
+        // consumers that open a socket per session (OpenCohost PTT) can drop it.
+        cue_msg.is_replay = true;
         tokio::select! {
             _ = inner.shutdown_token.cancelled() => break,
             _ = tokio::time::sleep_until(next_replay_at) => {}
@@ -608,7 +669,8 @@ async fn handle_connection(
             })))
             .await;
         inner.clients.write().unwrap().remove(&client_id);
-        inner.metrics.client_count.fetch_sub(1, Ordering::SeqCst);
+        inner.retry.lock().unwrap().forget(client_id);
+        decrement_client_count(&inner.metrics);
         return;
     }
 
@@ -662,14 +724,18 @@ async fn handle_connection(
         let mut clients = inner.clients.write().unwrap();
         clients.remove(&client_id);
     }
-    inner.metrics.client_count.fetch_sub(1, Ordering::SeqCst);
+    {
+        let mut state = inner.retry.lock().unwrap();
+        state.forget(client_id);
+        state.publish(&inner.metrics);
+    }
+    decrement_client_count(&inner.metrics);
     let remaining = inner.metrics.client_count.load(Ordering::SeqCst);
     tracing::info!(
         "[WebSocket] Cliente desconectado: {} (restantes: {})",
         peer_addr,
         remaining
     );
-    println!("[WebSocket] Cliente desconectado: {}", peer_addr);
 
     let _ = inner.health_writer.as_ref().map(|w| {
         let rep = inner
@@ -677,6 +743,64 @@ async fn handle_connection(
             .snapshot(Some(effective_port), inner.start_instant);
         let _ = w.write_atomic(&rep);
     });
+}
+
+#[cfg(test)]
+mod broadcast_order_tests {
+    use super::*;
+
+    fn drain(rx: &mut mpsc::Receiver<String>) -> Vec<String> {
+        let mut out = Vec::new();
+        while let Ok(msg) = rx.try_recv() {
+            out.push(msg);
+        }
+        out
+    }
+
+    #[test]
+    fn a_backpressured_client_does_not_make_healthy_clients_receive_duplicates_or_reordered_cues() {
+        let server = WsServer::default();
+        let (slow_tx, mut slow_rx) = mpsc::channel(2);
+        slow_tx.try_send("filler".to_string()).unwrap();
+        slow_tx.try_send("filler".to_string()).unwrap();
+        let (healthy_tx, mut healthy_rx) = mpsc::channel(64);
+        {
+            let mut clients = server.inner.clients.write().unwrap();
+            clients.insert(1, slow_tx);
+            clients.insert(2, healthy_tx);
+        }
+
+        server.broadcast_raw("p1").unwrap();
+        assert_eq!(drain(&mut healthy_rx), vec!["p1"]);
+        assert_eq!(
+            drain(&mut slow_rx),
+            vec!["filler", "filler"],
+            "the full queue got nothing new"
+        );
+        assert_eq!(
+            server
+                .inner
+                .metrics
+                .retry_buffer_size
+                .load(Ordering::SeqCst),
+            1
+        );
+
+        server.broadcast_raw("p2").unwrap();
+
+        // The slow client gets its missed payload first, then the live one, each exactly once.
+        assert_eq!(drain(&mut slow_rx), vec!["p1", "p2"]);
+        // The healthy client only gets the new payload: it already had p1.
+        assert_eq!(drain(&mut healthy_rx), vec!["p2"]);
+        assert_eq!(
+            server
+                .inner
+                .metrics
+                .retry_buffer_size
+                .load(Ordering::SeqCst),
+            0
+        );
+    }
 }
 
 #[cfg(test)]

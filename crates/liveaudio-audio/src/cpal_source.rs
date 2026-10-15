@@ -288,12 +288,12 @@ impl AudioSource for CpalAudioSource {
 
             let chunk_size = config.chunk_size;
             let target_sample_rate = config.sample_rate;
+            let mut resampler =
+                AudioResampler::new(hw_sample_rate, target_sample_rate, chunk_size)?;
 
             let worker = std::thread::Builder::new()
                 .name("liveaudio-dsp-consumer".to_string())
                 .spawn(move || {
-                    let mut resampler =
-                        AudioResampler::new(hw_sample_rate, target_sample_rate, chunk_size);
                     let mut read_buf = vec![0.0f32; 4096 * (hw_channels as usize)];
                     let mut mono_buf = Vec::with_capacity(4096);
                     let mut processing_failed = false;

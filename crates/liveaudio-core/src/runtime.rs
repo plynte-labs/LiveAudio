@@ -187,19 +187,18 @@ pub fn discover_uv_in(bundle_roots: &[PathBuf], path_candidates: &[PathBuf]) -> 
         .find(|path| path.is_file())
 }
 
+/// Bundled uv is looked up only beside the exe. The current directory and the exe's parent are
+/// never searched, and relative PATH entries are ignored, so a planted `uv` cannot run first.
 pub fn find_uv_executable() -> Option<PathBuf> {
-    let mut roots = Vec::new();
-    if let Ok(executable) = std::env::current_exe() {
-        if let Some(parent) = executable.parent() {
-            roots.push(parent.to_path_buf());
-            roots.push(parent.join(".."));
-        }
-    }
-    if let Ok(cwd) = std::env::current_dir() {
-        roots.push(cwd);
-    }
+    let roots = std::env::current_exe()
+        .ok()
+        .and_then(|executable| executable.parent().map(Path::to_path_buf))
+        .into_iter()
+        .collect::<Vec<_>>();
+    let binary = if cfg!(windows) { "uv.exe" } else { "uv" };
     let path_candidates = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
-        .map(|directory| directory.join(if cfg!(windows) { "uv.exe" } else { "uv" }))
+        .filter(|directory| directory.is_absolute())
+        .map(|directory| directory.join(binary))
         .collect::<Vec<_>>();
     discover_uv_in(&roots, &path_candidates)
 }

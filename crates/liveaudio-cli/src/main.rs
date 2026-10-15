@@ -16,14 +16,19 @@ use tokio::time::sleep;
 
 const THIRD_PARTY_NOTICES: &str = include_str!("../../../THIRD_PARTY_NOTICES.md");
 
-use liveaudio_audio::traits::AudioSource;
-use liveaudio_audio::{AudioChunkReceiver, AudioStreamConfig, CpalAudioSource};
+use liveaudio_audio::{
+    AudioChunkReceiver, AudioDeviceInfo, AudioStreamConfig, CpalAudioSource, ResilientCapture,
+};
 use liveaudio_core::acoustic_events::{
     AcousticEventLifecycle, AcousticSpeechEndReason, AcousticSpeechEvent,
 };
-use liveaudio_core::config::{get_data_home, get_hf_home, load_config};
+use liveaudio_core::asr::worker::{
+    presentation_text, transcript_text_from_result, worker_init_payload,
+};
+use liveaudio_core::config::{get_data_home, get_hf_home, load_config, LiveAudioConfig};
 use liveaudio_core::job_object::JobObject;
 use liveaudio_core::runtime::{preflight_asr_runtime, setup_managed_runtime, AsrBackend};
+use liveaudio_core::service_lock::ServiceLock;
 use liveaudio_core::supervisor::{
     is_parent_alive, HealthEmitter, ProcessSupervisor, SupervisorError, WorkerProcessConfig,
 };
@@ -51,6 +56,74 @@ fn resolve_cli_onnx_runtime_path(
             .join("resources")
     };
     Ok(cpu_runtime_library_path(resource_dir)?)
+}
+
+/// Capture settings for `serve`: the persisted device, same as the desktop service.
+fn cli_stream_config(config: &LiveAudioConfig) -> AudioStreamConfig {
+    AudioStreamConfig {
+        device_id: config.capture_device_id(),
+        sample_rate: 16000,
+        channels: 1,
+        chunk_size: 512,
+        ring_buffer_capacity: 500,
+    }
+}
+
+/// `devices` output: the ids `audio_device.id` accepts, as the desktop lists them.
+fn device_list_lines(enumerated: &[AudioDeviceInfo]) -> Vec<String> {
+    let mut entries = vec![("default_microphone", "Default system microphone", true)];
+    if cfg!(windows) {
+        entries.push((
+            "default_loopback",
+            "System audio / speakers (WASAPI loopback)",
+            false,
+        ));
+    }
+    entries.extend(
+        enumerated
+            .iter()
+            .map(|device| (device.id.as_str(), device.name.as_str(), device.is_default)),
+    );
+    entries
+        .into_iter()
+        .map(|(id, name, is_default)| {
+            let marker = if is_default { " [DEFAULT]" } else { "" };
+            format!("  [{id}] {name}{marker}")
+        })
+        .collect()
+}
+
+fn job_object_status(is_windows: bool, probe: impl FnOnce() -> std::io::Result<()>) -> String {
+    if !is_windows {
+        return "Windows Job Object: NOT APPLICABLE (non-Windows platform)".to_string();
+    }
+    match probe() {
+        Ok(()) => "Windows Job Object: AVAILABLE (created with kill-on-close)".to_string(),
+        Err(error) => format!("Windows Job Object: UNAVAILABLE ({error})"),
+    }
+}
+
+/// Writes, reads back and removes a file under a non-ASCII directory in `root`.
+fn unicode_path_status(root: &Path) -> String {
+    let dir = root.join(format!(
+        "liveaudio doctor accénts 🎙️ {}",
+        std::process::id()
+    ));
+    let check = || -> std::io::Result<()> {
+        std::fs::create_dir(&dir)?;
+        let file = dir.join("prueba ñ.txt");
+        std::fs::write(&file, "ok")?;
+        if std::fs::read_to_string(&file)? != "ok" {
+            return Err(std::io::Error::other("read-back mismatch"));
+        }
+        Ok(())
+    };
+    let result = check();
+    let _ = std::fs::remove_dir_all(&dir);
+    match result {
+        Ok(()) => format!("Unicode Path Support: VERIFIED ({})", root.display()),
+        Err(error) => format!("Unicode Path Support: FAILED ({}: {error})", root.display()),
+    }
 }
 
 fn observe_and_publish_acoustic_transition(
@@ -490,6 +563,47 @@ mod acoustic_event_adapter_tests {
     }
 }
 
+/// Takes the service lock for this pipeline; the error is a Python-compatible `ServiceError` code.
+fn acquire_service_lock(dir: &Path) -> Result<ServiceLock, &'static str> {
+    match ServiceLock::try_acquire(dir) {
+        Ok(Some(lock)) => Ok(lock),
+        Ok(None) => Err("service-already-running"),
+        Err(_) => Err("service-lock-unwritable"),
+    }
+}
+
+#[cfg(test)]
+mod service_lock_tests {
+    use super::acquire_service_lock;
+
+    #[test]
+    fn serve_refuses_to_start_while_another_owner_holds_the_service_lock() {
+        let home = std::env::temp_dir().join(format!(
+            "liveaudio-cli-service-lock-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&home);
+        let foreign = liveaudio_core::ServiceLock::try_acquire(&home)
+            .expect("lock file opens")
+            .expect("foreign owner holds the service lock");
+        assert_eq!(
+            acquire_service_lock(&home).err(),
+            Some("service-already-running")
+        );
+        drop(foreign);
+        let own = acquire_service_lock(&home).expect("free lock is acquired");
+        assert_eq!(
+            liveaudio_core::service_lock_holder(&home).expect("query"),
+            Some(liveaudio_core::ServiceLockHolder {
+                pid: Some(std::process::id()),
+                ws_port: None
+            })
+        );
+        drop(own);
+        let _ = std::fs::remove_dir_all(home);
+    }
+}
+
 fn parse_setup_runtime_args(args: &[String]) -> Result<Option<AsrBackend>, String> {
     if args.first().map(String::as_str) != Some("setup-runtime") {
         return Ok(None);
@@ -629,12 +743,27 @@ async fn run_service(
     parent_pid: u32,
     port_override: Option<u16>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let current_pid = std::process::id();
+    // 1. Health Emitter (Arc for multi-task sharing)
+    let emitter = Arc::new(HealthEmitter::new(current_pid, parent_pid, None));
+
+    // Held for the whole service lifetime: one pipeline per data home (desktop or CLI).
+    let mut service_lock = match acquire_service_lock(&get_data_home()) {
+        Ok(lock) => lock,
+        Err(code) => {
+            let mut payload = serde_json::Map::new();
+            payload.insert("code".to_string(), serde_json::json!(code));
+            emitter.emit(ServiceEventType::Fatal, payload);
+            eprintln!("LiveAudio service not started: {code}");
+            std::process::exit(2);
+        }
+    };
+
     let executable = std::env::current_exe()?;
     let development_resource_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packaging");
     let runtime_path = resolve_cli_onnx_runtime_path(&executable, &development_resource_dir)?;
     initialize_onnx_runtime(runtime_path)?;
 
-    let current_pid = std::process::id();
     let config = load_config().unwrap_or_default();
     let effective_base_port = port_override.unwrap_or(config.ws_port);
 
@@ -646,8 +775,6 @@ async fn run_service(
     )
     .await?;
 
-    // 1. Health Emitter (Arc for multi-task sharing)
-    let emitter = Arc::new(HealthEmitter::new(current_pid, parent_pid, None));
     emitter.emit_service_state("starting");
 
     eprintln!("============================================================");
@@ -687,6 +814,10 @@ async fn run_service(
 
     // Emit ws_port event immediately over stdout JSON-lines for OpenCohost discovery
     emitter.emit_ws_port(effective_base_port, effective_port);
+    // Desktop monitors read the bound port from the lock (it may differ after port fallback).
+    if let Err(error) = service_lock.record_ws_port(effective_port) {
+        eprintln!("Could not record the WebSocket port in the service lock: {error}");
+    }
 
     // 3. Faster-Whisper Supervised Worker
     let clean_model_name = config
@@ -709,13 +840,13 @@ async fn run_service(
         &config.whisper_context_prompt_es
     };
 
-    worker_config.init_payload = Some(serde_json::json!({
-        "model_name": clean_model_name,
-        "device": config.device,
-        "language": clean_lang,
-        "initial_prompt": if prompt.is_empty() { None } else { Some(prompt) },
-        "auto_cpu_fallback": true,
-    }));
+    worker_config.init_payload = Some(worker_init_payload(
+        &config,
+        &clean_model_name,
+        &clean_lang,
+        Some(prompt.as_str()).filter(|prompt| !prompt.is_empty()),
+    ));
+    worker_config.decode_timeout = Some(Duration::from_secs(config.asr_decode_timeout_sec.into()));
 
     emitter.emit_asr_state("starting", Some("starting"), Some(1));
     eprintln!(
@@ -735,17 +866,24 @@ async fn run_service(
 
     let supervisor_arc = Arc::new(supervisor);
 
-    // 4. Audio Capture (CPAL)
-    let stream_config = AudioStreamConfig {
-        device_id: None,
-        sample_rate: 16000,
-        channels: 1,
-        chunk_size: 512,
-        ring_buffer_capacity: 500,
-    };
-    let mut audio_source = CpalAudioSource::new().with_rnnoise_enabled(config.rnnoise_enabled);
-    let mut audio_rx = audio_source.start(&stream_config).await?;
-    eprintln!("🎙️ Audio capture active on default microphone (16kHz mono)");
+    // 4. Audio Capture (CPAL), supervised: standby, reconnect and stall watchdog.
+    let stream_config = cli_stream_config(&config);
+    let device_label = stream_config
+        .device_id
+        .clone()
+        .unwrap_or_else(|| "default microphone".to_string());
+    let audio_source = CpalAudioSource::new().with_rnnoise_enabled(config.rnnoise_enabled);
+    let (mut audio_capture, mut audio_rx) = ResilientCapture::start(
+        audio_source,
+        stream_config,
+        liveaudio_audio::get_input_device_count,
+    )
+    .await?;
+    let mut audio_state_rx = audio_capture.state();
+    eprintln!(
+        "🎙️ Audio capture on {device_label} (16kHz mono): {:?}",
+        *audio_state_rx.borrow_and_update()
+    );
 
     // 5. Silero VAD (ONNX)
     let vad_cfg = VadConfig {
@@ -789,7 +927,7 @@ async fn run_service(
                                 match event_name {
                                     "transcription_result" => {
                                         if let Some(payload) = val.get("payload") {
-                                            let text = payload.get("text").and_then(|t| t.as_str()).unwrap_or("").trim();
+                                            let text = transcript_text_from_result(payload);
                                             let utt_id = payload.get("utterance_id").and_then(|u| u.as_str()).unwrap_or("utt");
                                             let inference_sec = payload.get("inference_sec").and_then(|d| d.as_f64())
                                                 .or_else(|| payload.get("latency_sec").and_then(|d| d.as_f64())).unwrap_or(0.0);
@@ -800,7 +938,7 @@ async fn run_service(
 
                                                 let wire_msg = subtitle_from_worker_result(
                                                     utt_id.to_string(),
-                                                    text.to_string(),
+                                                    presentation_text(&text),
                                                     active_style.clone(),
                                                     inference_sec,
                                                     timing,
@@ -843,6 +981,7 @@ async fn run_service(
     let cancel_audio = cancel_token.clone();
     let supervisor_audio = supervisor_arc.clone();
     let lang_clone = clean_lang.clone();
+    let decode_timeout_ms = u64::from(config.asr_decode_timeout_sec) * 1000;
 
     let pre_buffer_capacity = vad.config().pre_buffer_chunks().max(1);
     let max_samples = (16000.0 * config.max_chunk_duration.ceil()) as usize;
@@ -861,6 +1000,10 @@ async fn run_service(
         'capture: loop {
             tokio::select! {
                 _ = cancel_audio.cancelled() => break,
+                Ok(()) = audio_state_rx.changed() => {
+                    // No service event type fits capture state; stdout stays JSON-lines only.
+                    eprintln!("Audio capture state: {:?}", *audio_state_rx.borrow_and_update());
+                }
                 chunk_opt = audio_rx.recv() => {
                     let chunk = match chunk_opt {
                         Some(c) => {
@@ -920,6 +1063,7 @@ async fn run_service(
                                                     "channels": 1,
                                                     "duration_ms": duration_ms,
                                                     "language": lang_clone,
+                                                    "timeout_ms": decode_timeout_ms,
                                                 }
                                             });
                                             let utterance_id = format!("utt_{}", utterance_seq);
@@ -965,7 +1109,7 @@ async fn run_service(
             acoustic_events_enabled,
             close_reason,
         );
-        let _ = audio_source.stop().await;
+        audio_capture.stop().await;
     });
 
     // Parent PID Watchdog
@@ -1000,25 +1144,36 @@ async fn run_service(
     cancel_token.cancel();
     audio_task.await?;
     emitter.emit_service_state("stopping");
-    emitter.emit(ServiceEventType::Stopped, serde_json::Map::new());
 
-    // Clean shutdown of child supervisor
-    let shutdown_cmd = serde_json::json!({
-        "version": 1,
-        "cmd": "shutdown",
-        "payload": { "grace_timeout_ms": 1500 }
-    });
-    let _ = supervisor_arc.send_command(&shutdown_cmd).await;
-    supervisor_arc.cancellation_token().cancel();
+    // Only a confirmed worker exit is reported as stopped.
+    match shut_down_worker(&supervisor_arc).await {
+        Ok(()) => {
+            emitter.emit(ServiceEventType::Stopped, serde_json::Map::new());
+            eprintln!("LiveAudio service shutdown completed: worker stopped.");
+            Ok(())
+        }
+        Err(error) => {
+            eprintln!("LiveAudio service shutdown incomplete: {error}");
+            Err(error.into())
+        }
+    }
+}
 
-    eprintln!("LiveAudio service shutdown completed cleanly. 0 orphan processes.");
-    Ok(())
+/// Longest the CLI waits for the worker to exit after asking it to shut down.
+const WORKER_SHUTDOWN_GRACE: Duration = Duration::from_millis(1500);
+
+/// Stops the worker through the supervisor's bounded stop: the shutdown request is queued
+/// under the grace deadline, then the worker is force-killed and reaped if it does not exit.
+async fn shut_down_worker(supervisor: &ProcessSupervisor) -> Result<(), SupervisorError> {
+    supervisor.stop_internal(WORKER_SHUTDOWN_GRACE).await
 }
 
 async fn list_devices() -> Result<(), Box<dyn std::error::Error>> {
-    println!("=== Audio Input Devices ===");
-    println!("  [0] Default System Microphone (16000Hz, 1ch) [DEFAULT]");
-    println!("  [1] Audio del sistema / Altavoces (WASAPI Loopback)");
+    let enumerated = liveaudio_audio::enumerate_cpal_devices()?;
+    println!("=== Audio Input Devices (id for audio_device.id) ===");
+    for line in device_list_lines(&enumerated) {
+        println!("{line}");
+    }
     Ok(())
 }
 
@@ -1027,11 +1182,10 @@ async fn run_doctor() -> Result<(), Box<dyn std::error::Error>> {
     println!("OS: {}", std::env::consts::OS);
     println!("Architecture: {}", std::env::consts::ARCH);
 
-    // Test Windows Job Object creation
-    match JobObject::create() {
-        Ok(_) => println!("Windows Job Object: AVAILABLE (0 zombie child guarantees)"),
-        Err(e) => println!("Windows Job Object: UNAVAILABLE ({})", e),
-    }
+    println!(
+        "{}",
+        job_object_status(cfg!(windows), || JobObject::create().map(drop))
+    );
 
     // Python Worker Discovery
     let py_path = WorkerProcessConfig::find_python_executable();
@@ -1047,12 +1201,7 @@ async fn run_doctor() -> Result<(), Box<dyn std::error::Error>> {
     println!("App Data Home: {}", data_home.display());
     println!("HuggingFace Cache (HF_HOME): {}", hf_cache.display());
 
-    // Unicode / Space Path Validation
-    let test_space_path = data_home.join("test spaces & accénts 🎙️");
-    println!(
-        "Unicode Path Support: VERIFIED ({})",
-        test_space_path.display()
-    );
+    println!("{}", unicode_path_status(&std::env::temp_dir()));
 
     // Candidate port range
     let ports = candidate_ports(8765, None);
@@ -1060,4 +1209,102 @@ async fn run_doctor() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Diagnostics complete.");
     Ok(())
+}
+
+#[cfg(test)]
+mod headless_parity_tests {
+    use super::*;
+    use liveaudio_audio::AudioDeviceInfo;
+    use liveaudio_core::LiveAudioConfig;
+
+    #[test]
+    fn serve_capture_uses_the_persisted_audio_device() {
+        let config = LiveAudioConfig {
+            audio_device: Some(serde_json::json!({ "id": "loopback:Speakers" })),
+            ..LiveAudioConfig::default()
+        };
+        let stream = cli_stream_config(&config);
+        assert_eq!(stream.device_id.as_deref(), Some("loopback:Speakers"));
+        assert_eq!((stream.sample_rate, stream.channels), (16000, 1));
+        assert_eq!(
+            cli_stream_config(&LiveAudioConfig::default()).device_id,
+            None
+        );
+    }
+
+    #[test]
+    fn devices_lists_selectable_ids_from_the_enumerator() {
+        let enumerated = vec![
+            AudioDeviceInfo::new("Mic (USB)", "Mic (USB)", true, 1, vec![48000], false),
+            AudioDeviceInfo::new("loopback:Speakers", "Speakers", false, 2, vec![48000], true),
+        ];
+        let lines = device_list_lines(&enumerated);
+        assert!(lines.iter().any(|l| l.contains("[default_microphone]")));
+        assert_eq!(
+            lines.iter().any(|l| l.contains("[default_loopback]")),
+            cfg!(windows)
+        );
+        assert!(lines
+            .iter()
+            .any(|l| l.contains("[Mic (USB)]") && l.ends_with("[DEFAULT]")));
+        assert!(lines.iter().any(|l| l.contains("[loopback:Speakers]")));
+        assert!(!lines.iter().any(|l| l.contains("[0]") || l.contains("[1]")));
+    }
+
+    #[test]
+    fn doctor_reports_job_object_only_where_it_applies() {
+        assert!(job_object_status(false, || Ok(())).contains("NOT APPLICABLE"));
+        assert!(job_object_status(true, || Ok(())).contains("AVAILABLE"));
+        let failed = job_object_status(true, || Err(std::io::Error::other("denied")));
+        assert!(failed.contains("UNAVAILABLE") && failed.contains("denied"));
+    }
+
+    #[test]
+    fn doctor_unicode_path_check_really_writes_and_cleans_up() {
+        let root = std::env::temp_dir().join(format!("liveaudio-doctor-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("root");
+        let line = unicode_path_status(&root);
+        assert!(line.contains("VERIFIED"), "{line}");
+        assert_eq!(std::fs::read_dir(&root).expect("read root").count(), 0);
+
+        let not_a_dir = root.join("plain-file");
+        std::fs::write(&not_a_dir, b"x").expect("file");
+        assert!(unicode_path_status(&not_a_dir).contains("FAILED"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+#[cfg(test)]
+mod shutdown_tests {
+    use super::*;
+    use std::time::Instant;
+
+    #[tokio::test]
+    async fn shutdown_stops_a_worker_that_ignores_the_shutdown_command() {
+        let mut config = WorkerProcessConfig::default();
+        config.name = "cli-shutdown-worker".to_string();
+        config.command = "python".to_string();
+        config.args = vec![
+            "-u".to_string(),
+            "-c".to_string(),
+            "import json,time; print(json.dumps({'event':'ready'}), flush=True); time.sleep(60)"
+                .to_string(),
+        ];
+        config.ready_timeout = Duration::from_secs(5);
+        config.auto_respawn = false;
+        let mut supervisor = ProcessSupervisor::new(config, std::process::id(), 0, None)
+            .expect("supervisor creation");
+        supervisor
+            .start_internal()
+            .await
+            .expect("mock worker ready handshake");
+        let pid = supervisor.child_pid().await.expect("worker pid");
+
+        let started = Instant::now();
+        shut_down_worker(&supervisor)
+            .await
+            .expect("shutdown must stop the worker within its bound");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(!is_parent_alive(pid), "shutdown must reap the worker");
+    }
 }

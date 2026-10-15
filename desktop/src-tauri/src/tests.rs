@@ -3,14 +3,17 @@
 //! Unit tests for LiveAudio Tauri Desktop backend.
 
 use crate::commands::{
-    admit_worker_event_generation, asr_progress_from_worker_event,
+    acquire_service_lock, admit_worker_event_generation, asr_progress_from_worker_event,
     asr_progress_update_for_worker_event, desktop_runtime_preflight_error,
-    get_service_status_internal, is_text_blacklisted, persist_config_and_apply, profile_presets, stop_active_websocket,
+    ensure_startup_websocket, get_service_status_internal, is_text_blacklisted,
+    persist_config_and_apply, poll_foreign_service, profile_presets, refresh_foreign_service,
+    retry_once_if_already_running, shutdown_service_resources, stop_active_websocket,
     trim_boundary_overlap, trim_boundary_overlap_with_max, worker_attempt_is_current,
+    ForeignServicePoll,
 };
 use crate::dto::*;
 use crate::state::AppState;
-use liveaudio_audio::{AudioChunk, AudioChunkReceiver};
+use liveaudio_audio::{AudioChunk, AudioChunkReceiver, AudioSourceStatus};
 use liveaudio_core::acoustic_events::{AcousticEventLifecycle, AcousticSpeechEndReason};
 use liveaudio_core::config::LiveAudioConfig;
 use liveaudio_core::runtime::RuntimeError;
@@ -637,6 +640,68 @@ async fn stopping_runtime_websocket_releases_port_for_rebind() {
 }
 
 #[tokio::test]
+async fn websocket_bind_failure_during_start_rolls_back_starting_state() {
+    // The fallback range clamps to the single top port, so occupying it makes the bind fail.
+    let _occupied = std::net::TcpListener::bind(("127.0.0.1", u16::MAX));
+    let mut config = LiveAudioConfig::default();
+    config.ws_port = u16::MAX;
+    let state = AppState::new(config.clone());
+    *state.asr_state.write().await = "starting".to_string();
+    *state.active_config.write().await = Some(config.clone());
+
+    let error = match ensure_startup_websocket(&state, &config).await {
+        Ok(_) => panic!("occupied port range must fail the bind"),
+        Err(error) => error,
+    };
+
+    assert!(error.contains("Failed to bind OBS WebSocket"), "{error}");
+    assert_eq!(*state.asr_state.read().await, "stopped");
+    assert!(state.active_config.read().await.is_none());
+    assert!(state.ws_server.lock().await.is_none());
+    let status = get_service_status_internal(&state).await.unwrap();
+    assert!(!status.is_running);
+}
+
+#[tokio::test]
+async fn failed_shutdown_reports_error_state_and_still_releases_websocket() {
+    let state = AppState::default();
+    state.is_running.store(true, Ordering::SeqCst);
+    *state.asr_state.write().await = "stopping".to_string();
+    // A second owner makes the ASR worker stop step fail deterministically.
+    let supervisor = Arc::new(
+        ProcessSupervisor::new(WorkerProcessConfig::default(), std::process::id(), 0, None)
+            .expect("create supervisor"),
+    );
+    let _extra_owner = supervisor.clone();
+    *state.supervisor.lock().await = Some(supervisor);
+    let mut ws = WsServer::new(WsServerConfig {
+        base_port: 0,
+        ..Default::default()
+    });
+    let bound = NetworkServer::start(&mut ws, 0)
+        .await
+        .expect("bind ephemeral");
+    state.active_port.store(bound, Ordering::SeqCst);
+    *state.ws_server.lock().await = Some(ws);
+
+    let error = shutdown_service_resources(&state)
+        .await
+        .expect_err("a shared supervisor must fail the shutdown");
+
+    assert!(error.contains("active owners"), "{error}");
+    assert!(!state.is_running.load(Ordering::SeqCst));
+    let asr_state = state.asr_state.read().await.clone();
+    assert!(
+        asr_state.starts_with("error"),
+        "a failed cleanup must not report a clean stop, got {asr_state}"
+    );
+    assert!(
+        state.ws_server.lock().await.is_none(),
+        "later cleanup steps still run after a failure"
+    );
+}
+
+#[tokio::test]
 async fn session_writers_follow_opt_in_flags_and_stay_under_output_root() {
     let home = isolated_test_home();
     let mut config = LiveAudioConfig::default();
@@ -783,6 +848,47 @@ async fn continuous_session_reuses_session_directory_on_restart() {
         restart_path, rotated,
         "non-continuous sessions rotate directories on restart"
     );
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[test]
+fn resumed_session_continues_cue_numbers_and_timeline_origin() {
+    let home = isolated_test_home();
+    let session = home.join("session");
+    std::fs::create_dir_all(&session).expect("session dir");
+    let earlier = std::time::Instant::now();
+
+    let (origin, counter) = crate::commands::session_timeline(Some(&session), Some(earlier), false);
+    assert_eq!(counter, 0, "a new session numbers cues from 1");
+    assert!(origin >= earlier, "a new session starts a new timeline");
+
+    std::fs::write(
+        session.join("subtitles.vtt"),
+        [
+            "WEBVTT",
+            "",
+            "4",
+            "00:00:01.000 --> 00:00:02.000",
+            "hola",
+            "",
+            "#cue:4",
+            "",
+        ]
+        .join("\n"),
+    )
+    .expect("existing cues");
+    let (origin, counter) = crate::commands::session_timeline(Some(&session), Some(earlier), true);
+    assert_eq!(
+        counter, 4,
+        "a resumed session continues after the last written cue"
+    );
+    assert_eq!(
+        origin, earlier,
+        "a resumed session keeps its timeline origin"
+    );
+
+    let (_, counter) = crate::commands::session_timeline(None, None, false);
+    assert_eq!(counter, 0);
     let _ = std::fs::remove_dir_all(home);
 }
 
@@ -1392,3 +1498,327 @@ async fn test_multi_chunk_overlap_streaming_simulation() {
 
 
 
+
+#[tokio::test]
+async fn start_fails_cleanly_while_another_process_holds_the_service_lock() {
+    let home = isolated_test_home();
+    let foreign = liveaudio_core::ServiceLock::try_acquire(&home)
+        .expect("lock file opens")
+        .expect("foreign owner holds the service lock");
+    let state = AppState::default();
+
+    let error = acquire_service_lock(&state, &home)
+        .await
+        .expect_err("a second pipeline must not start");
+    assert!(error.contains("service-already-running"), "{error}");
+    assert!(
+        error.contains(&std::process::id().to_string()),
+        "names the holder pid: {error}"
+    );
+    assert!(state.service_lock.lock().await.is_none());
+
+    drop(foreign);
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[tokio::test]
+async fn live_foreign_owner_puts_the_desktop_in_monitor_mode_on_its_bound_port() {
+    let home = isolated_test_home();
+    let mut foreign = liveaudio_core::ServiceLock::try_acquire(&home)
+        .expect("lock file opens")
+        .expect("foreign owner holds the service lock");
+    foreign.record_ws_port(8799).expect("record port");
+    let state = AppState::default();
+
+    assert!(refresh_foreign_service(&state, &home).await.is_some());
+    let status = get_service_status_internal(&state).await.unwrap();
+    assert!(status.monitor_mode && !status.is_running);
+    assert_eq!(status.foreign_service_pid, Some(std::process::id()));
+    assert_eq!(
+        status.ws_port, 8799,
+        "the feed must follow the holder's fallback port"
+    );
+
+    drop(foreign);
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[tokio::test]
+async fn start_refused_by_a_foreign_owner_enters_monitor_mode() {
+    let home = isolated_test_home();
+    let foreign = liveaudio_core::ServiceLock::try_acquire(&home)
+        .expect("lock file opens")
+        .expect("foreign owner holds the service lock");
+    let state = AppState::default();
+
+    acquire_service_lock(&state, &home)
+        .await
+        .expect_err("a second pipeline must not start");
+    let status = get_service_status_internal(&state).await.unwrap();
+    assert!(status.monitor_mode);
+
+    drop(foreign);
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[tokio::test]
+async fn own_service_lock_is_never_reported_as_a_foreign_service() {
+    let home = isolated_test_home();
+    let state = AppState::default();
+    acquire_service_lock(&state, &home)
+        .await
+        .expect("free lock is acquired");
+
+    assert_eq!(refresh_foreign_service(&state, &home).await, None);
+    let status = get_service_status_internal(&state).await.unwrap();
+    assert!(!status.monitor_mode);
+
+    shutdown_service_resources(&state).await.unwrap();
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[tokio::test]
+async fn monitor_poll_reports_release_only_after_the_foreign_owner_exits() {
+    let home = isolated_test_home();
+    let state = AppState::default();
+    assert_eq!(
+        poll_foreign_service(&state, &home).await,
+        ForeignServicePoll::NotMonitoring,
+        "no probe while this desktop is not monitoring"
+    );
+
+    let foreign = liveaudio_core::ServiceLock::try_acquire(&home)
+        .expect("lock file opens")
+        .expect("foreign owner holds the service lock");
+    refresh_foreign_service(&state, &home).await;
+    assert_eq!(
+        poll_foreign_service(&state, &home).await,
+        ForeignServicePoll::Monitoring
+    );
+
+    drop(foreign);
+    assert_eq!(
+        poll_foreign_service(&state, &home).await,
+        ForeignServicePoll::Released
+    );
+    let status = get_service_status_internal(&state).await.unwrap();
+    assert!(!status.monitor_mode);
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[tokio::test]
+async fn closing_a_monitoring_desktop_leaves_the_foreign_service_untouched() {
+    let home = isolated_test_home();
+    let foreign = liveaudio_core::ServiceLock::try_acquire(&home)
+        .expect("lock file opens")
+        .expect("foreign owner holds the service lock");
+    let state = AppState::default();
+    refresh_foreign_service(&state, &home).await;
+
+    shutdown_service_resources(&state).await.unwrap();
+    assert!(liveaudio_core::service_lock_holder(&home)
+        .expect("query")
+        .is_some());
+    assert!(
+        liveaudio_core::ServiceLock::try_acquire(&home)
+            .expect("open")
+            .is_none(),
+        "the foreign owner still holds its lock"
+    );
+
+    drop(foreign);
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[tokio::test]
+async fn takeover_start_retries_once_after_a_spurious_already_running() {
+    let attempts = std::sync::atomic::AtomicUsize::new(0);
+    let result = retry_once_if_already_running(std::time::Duration::ZERO, || async {
+        match attempts.fetch_add(1, Ordering::SeqCst) {
+            0 => Err("service-already-running: probe race".to_string()),
+            _ => Ok("started"),
+        }
+    })
+    .await;
+    assert_eq!(result, Ok("started"));
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+
+    let other = std::sync::atomic::AtomicUsize::new(0);
+    let failed: Result<(), String> =
+        retry_once_if_already_running(std::time::Duration::ZERO, || async {
+            other.fetch_add(1, Ordering::SeqCst);
+            Err("ASR runtime preparation failed".to_string())
+        })
+        .await;
+    assert!(failed.is_err());
+    assert_eq!(
+        other.load(Ordering::SeqCst),
+        1,
+        "other failures are not retried"
+    );
+}
+
+#[tokio::test]
+async fn desktop_holds_the_service_lock_while_running_and_releases_it_on_stop() {
+    let home = isolated_test_home();
+    let state = AppState::default();
+
+    acquire_service_lock(&state, &home)
+        .await
+        .expect("free lock is acquired");
+    assert_eq!(
+        liveaudio_core::service_lock_holder(&home).expect("query"),
+        Some(liveaudio_core::ServiceLockHolder {
+            pid: Some(std::process::id()),
+            ws_port: None
+        })
+    );
+
+    shutdown_service_resources(&state)
+        .await
+        .expect("idle shutdown succeeds");
+    assert_eq!(
+        liveaudio_core::service_lock_holder(&home).expect("query"),
+        None,
+        "stopping the pipeline releases the service lock"
+    );
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[tokio::test]
+async fn service_status_reports_audio_capture_state_only_while_running() {
+    let state = AppState::default();
+    *state.audio_state.write().await = AudioSourceStatus::Standby;
+    state.is_running.store(true, Ordering::SeqCst);
+    let running = get_service_status_internal(&state).await.unwrap();
+    assert_eq!(running.audio_state, AudioSourceStatus::Standby);
+    assert_eq!(
+        serde_json::to_value(&running).unwrap()["audio_state"],
+        "standby"
+    );
+
+    state.is_running.store(false, Ordering::SeqCst);
+    let stopped = get_service_status_internal(&state).await.unwrap();
+    assert_eq!(stopped.audio_state, AudioSourceStatus::Stopped);
+}
+
+fn unique_test_dir(label: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir =
+        std::env::temp_dir().join(format!("liveaudio-{label}-{}-{nanos}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create test dir");
+    dir
+}
+
+#[test]
+fn test_obs_overlay_resolves_bundled_resource_first() {
+    let resource_dir = unique_test_dir("obs-resource");
+    let assets = resource_dir.join("liveaudio").join("assets");
+    std::fs::create_dir_all(&assets).unwrap();
+    std::fs::write(assets.join("subtitulos_obs.html"), "<html></html>").unwrap();
+
+    let resolved = crate::commands::resolve_obs_overlay_path(Some(&resource_dir))
+        .expect("bundled overlay must resolve");
+    assert_eq!(resolved, assets.join("subtitulos_obs.html"));
+
+    let _ = std::fs::remove_dir_all(&resource_dir);
+}
+
+#[test]
+fn test_obs_overlay_missing_resource_is_not_resolved_there() {
+    let resource_dir = unique_test_dir("obs-missing");
+    let resolved = crate::commands::resolve_obs_overlay_path(Some(&resource_dir));
+    assert!(resolved.map_or(true, |path| !path.starts_with(&resource_dir)));
+    let _ = std::fs::remove_dir_all(&resource_dir);
+}
+
+#[cfg(windows)]
+#[test]
+fn test_obs_overlay_url_percent_encodes_windows_path() {
+    let path =
+        PathBuf::from(r"\\?\C:\Users\José Ñ\Live Audio\liveaudio\assets\subtitulos_obs.html");
+    let url = crate::commands::obs_overlay_url(&path, 8765).expect("url");
+    assert_eq!(
+        url,
+        "file:///C:/Users/Jos%C3%A9%20%C3%91/Live%20Audio/liveaudio/assets/subtitulos_obs.html?port=8765"
+    );
+}
+
+#[cfg(not(windows))]
+#[test]
+fn test_obs_overlay_url_percent_encodes_unix_path() {
+    let path = PathBuf::from("/home/José Ñ/Live Audio/liveaudio/assets/subtitulos_obs.html");
+    let url = crate::commands::obs_overlay_url(&path, 8765).expect("url");
+    assert_eq!(
+        url,
+        "file:///home/Jos%C3%A9%20%C3%91/Live%20Audio/liveaudio/assets/subtitulos_obs.html?port=8765"
+    );
+}
+
+#[test]
+fn test_obs_overlay_url_rejects_relative_path() {
+    assert!(crate::commands::obs_overlay_url(&PathBuf::from("assets/x.html"), 1).is_err());
+}
+
+#[test]
+fn test_bundled_uv_resource_uses_platform_binary_name() {
+    let expected = if cfg!(windows) {
+        "packaging/vendor/uv.exe"
+    } else {
+        "packaging/vendor/uv"
+    };
+    assert_eq!(crate::commands::BUNDLED_UV_RESOURCE, expected);
+}
+
+#[test]
+fn test_select_uv_prefers_existing_bundled_file() {
+    let dir = unique_test_dir("uv-bundled");
+    let bundled = dir.join("uv");
+    std::fs::write(&bundled, "").unwrap();
+    let selected = crate::commands::select_uv_executable(Some(bundled.clone()), || {
+        panic!("fallback not expected")
+    });
+    assert_eq!(selected, Ok(bundled));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_select_uv_falls_back_when_bundled_file_absent() {
+    let dir = unique_test_dir("uv-fallback");
+    let fallback = dir.join("system-uv");
+    let selected = crate::commands::select_uv_executable(Some(dir.join("missing-uv")), || {
+        Some(fallback.clone())
+    });
+    assert_eq!(selected, Ok(fallback));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_select_uv_reports_actionable_error_when_nothing_found() {
+    let error = crate::commands::select_uv_executable(None, || None).unwrap_err();
+    assert!(error.contains("uv"));
+    assert!(error.contains("PATH"));
+}
+
+#[test]
+fn test_subtitle_cue_broadcasts_as_live_wire_message() {
+    let cue = SubtitleCueDto {
+        id: 42,
+        start: 0.0,
+        end: 3.0,
+        text: "LiveAudio test subtitle".to_string(),
+        style: "neon".to_string(),
+        timestamp_ms: 42,
+    };
+
+    let wire = crate::commands::test_subtitle_wire_message(&cue);
+
+    assert_eq!(wire.id, "42");
+    assert_eq!(wire.text, "LiveAudio test subtitle");
+    assert_eq!(wire.style, "neon");
+    assert!(!wire.is_replay);
+    assert_eq!(wire.catchup_interval_sec, 0.0);
+}

@@ -2,7 +2,7 @@
 
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -30,6 +30,25 @@ pub fn format_vtt_timestamp(seconds: f64) -> String {
         secs,
         millis.min(999)
     )
+}
+
+/// Cue text cannot contain the `-->` timing separator: a line with it would end the cue early and
+/// corrupt the file. The single left-to-right pass is enough, because the inserted `- ->` never
+/// forms a new `-->`.
+pub fn vtt_cue_text(text: &str) -> String {
+    text.replace("-->", "- ->")
+}
+
+/// Last cue number already written to a WebVTT file, so a resumed session keeps
+/// numbering sequentially (`engine.py` session resume). Missing file yields 0.
+pub fn last_cue_counter(path: &Path) -> u64 {
+    let content = std::fs::read_to_string(path).unwrap_or_default();
+    content.lines().map(str::trim).fold(0, |counter, line| {
+        match line.strip_prefix("#cue:").map(str::parse::<u64>) {
+            Some(Ok(marker)) => marker,
+            _ => line.parse::<u64>().map_or(counter, |cue| counter.max(cue)),
+        }
+    })
 }
 
 /// Asynchronous, bounded WebVTT file writer sink (ADR-005).
@@ -65,7 +84,11 @@ impl WebVttSink {
                 let end_str = format_vtt_timestamp(cue.end_timestamp_sec);
                 let entry = format!(
                     "{}\n{} --> {}\n{}\n\n#cue:{}\n\n",
-                    cue.cue_counter, start_str, end_str, cue.text, cue.cue_counter
+                    cue.cue_counter,
+                    start_str,
+                    end_str,
+                    vtt_cue_text(&cue.text),
+                    cue.cue_counter
                 );
 
                 let write_res = OpenOptions::new()
@@ -147,6 +170,52 @@ impl TranscriptionSink for WebVttSink {
             saved: self.saved.load(Ordering::SeqCst),
             failed: self.failed.load(Ordering::SeqCst),
             rejected: self.rejected.load(Ordering::SeqCst),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn last_cue_counter_resumes_from_existing_cues() {
+        let dir = std::env::temp_dir().join(format!("liveaudio-vtt-resume-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("subtitles.vtt");
+        assert_eq!(last_cue_counter(&path), 0, "missing file starts at zero");
+
+        std::fs::write(
+            &path,
+            [
+                "WEBVTT",
+                "",
+                "1",
+                "00:00:00.000 --> 00:00:01.000",
+                "uno",
+                "",
+                "#cue:1",
+                "",
+                "7",
+                "00:00:02.000 --> 00:00:03.000",
+                "siete",
+                "",
+                "#cue:7",
+                "",
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        assert_eq!(last_cue_counter(&path), 7);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cue_text_never_contains_the_vtt_arrow() {
+        assert_eq!(vtt_cue_text("plain text"), "plain text");
+        for text in ["see --> there", "--->", "a-->b-->c", "-->-->"] {
+            let cleaned = vtt_cue_text(text);
+            assert!(!cleaned.contains("-->"), "{cleaned:?} from {text:?}");
         }
     }
 }

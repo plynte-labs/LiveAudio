@@ -91,6 +91,7 @@ desktop.ini
 # ============================================
 packaging/_release_meta.py
 packaging/vendor/
+desktop/src-tauri/binaries/
 build_artifacts/
 
 # ============================================
@@ -106,3 +107,6 @@ tools/
 # ============================================
 /target/
 
+
+# Bundled ONNX Runtime provider companion must be tracked (tauri validates it)
+!packaging/onnxruntime/**/*.so

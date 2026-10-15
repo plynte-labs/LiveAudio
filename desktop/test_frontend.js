@@ -112,7 +112,7 @@ async function runTests() {
   assert(htmlContent.includes('id="badge-prompt-lang"'), 'Prompt active language indicator badge exists');
   assert(htmlContent.includes('id="btn-open-session-folder"') && htmlContent.includes('id="session-path"'), 'Subtitles & session folder button and path exist in UI');
   assert(htmlContent.includes('id="slider-max-chunk"') && htmlContent.includes('max="60.0"'), 'Max chunk duration slider supports up to 60.0s');
-  assert(htmlContent.includes('v1.5.0'), 'Version 1.5.0 badge rendered in index.html');
+  assert(htmlContent.includes('v1.5.1'), 'Version 1.5.1 badge rendered in index.html');
   const authorLink = htmlContent.match(/<a\b[^>]*id="author-profile-link"[^>]*>([\s\S]*?)<\/a>/i);
   assert(authorLink && authorLink[0].includes('data-i18n="author_credit"'),
     'Author credit is a semantic localized anchor');
@@ -159,6 +159,15 @@ async function runTests() {
 
   assert(jsContent.includes('window.__TAURI__.core.invoke'), 'Tauri core invoke call handled');
   assert(jsContent.includes('window.__TAURI__.event.listen'), 'Tauri event listener handled');
+  // Tauri 2 maps command arguments from camelCase in JS to snake_case in Rust;
+  // a snake_case key is silently ignored by the backend.
+  const snakeInvokeKeys = [...jsContent.matchAll(/invoke\('\w+',\s*\{([^}]*)\}/g)]
+    .flatMap(([, body]) => body.split(',').map((entry) => entry.split(':')[0].trim()))
+    .filter((key) => key.includes('_'));
+  assert(snakeInvokeKeys.length === 0,
+    `invoke arguments use camelCase keys (found: ${snakeInvokeKeys.join(', ') || 'none'})`);
+  assert(jsContent.includes("invoke('get_recent_logs', { maxLines: 40 })"),
+    'get_recent_logs passes maxLines in camelCase');
   assert(jsContent.includes('get_config'), 'get_config command invoked');
   assert(jsContent.includes('save_config'), 'save_config command invoked');
   assert(jsContent.includes('get_audio_devices'), 'get_audio_devices command invoked');
@@ -447,6 +456,53 @@ async function runTests() {
     && runtimeSettings.hardwareStatusLabel({ is_running: true, model_size: 'base', device: 'cpu', active_device: 'USB mic' })
       .includes('USB mic'),
     'runtime hardware status shows the selected audio input');
+  const monitorCalls = [];
+  const monitorSaved = await persistAndApplyRuntimeConfig({
+    before: baseline,
+    after: { ...baseline, ws_port: 9000 },
+    isRunning: false,
+    monitorMode: true,
+    confirmRestart: () => { monitorCalls.push('confirm'); return true; },
+    save: async () => monitorCalls.push('save'),
+    restart: async () => monitorCalls.push('restart'),
+  });
+  assert(monitorSaved.saved && !monitorSaved.restarted && monitorSaved.deferred === true
+    && monitorCalls.join(',') === 'save',
+    'Monitor Mode saves runtime settings as deferred without prompting or restarting the foreign service');
+  const styleOnlyInMonitor = await persistAndApplyRuntimeConfig({
+    before: baseline,
+    after: { ...baseline, subtitle_style: 'neon' },
+    isRunning: false,
+    monitorMode: true,
+    confirmRestart: () => true,
+    save: async () => {},
+    restart: async () => {},
+  });
+  assert(styleOnlyInMonitor.saved && !styleOnlyInMonitor.deferred,
+    'Monitor Mode does not flag style-only changes as deferred');
+  const { monitorFeedAction, monitorFeedText } = runtimeSettings;
+  assert(typeof monitorFeedAction === 'function'
+    && monitorFeedAction({ monitor_mode: true, ws_port: 8766 }, null) === 'open'
+    && monitorFeedAction({ monitor_mode: true, ws_port: 8766 }, 8766) === 'keep'
+    && monitorFeedAction({ monitor_mode: true, ws_port: 8767 }, 8766) === 'open'
+    && monitorFeedAction({ monitor_mode: false, ws_port: 8766 }, 8766) === 'close'
+    && monitorFeedAction({ is_running: true, ws_port: 8765 }, null) === 'keep',
+    'read-only feed opens on the foreign port, follows port changes, and closes outside Monitor Mode');
+  assert(typeof monitorFeedText === 'function'
+    && monitorFeedText('{"text":"hola","style":"default"}') === 'hola'
+    && monitorFeedText('{"type":"hello","app":"liveaudio","proto":1}') === ''
+    && monitorFeedText('{"type":"theme","tokens":{}}') === ''
+    && monitorFeedText('not json') === '',
+    'read-only feed shows subtitle text and ignores hello, theme and malformed frames');
+  assert(htmlContent.includes('id="monitor-banner"'), 'Monitor Mode banner element exists');
+  assert(appSource.includes('new WebSocket(') && appSource.includes('currentStatus.monitor_mode'),
+    'desktop opens a read-only WebSocket feed and guards the toggle in Monitor Mode');
+  assert(typeof runtimeSettings.audioStateKey === 'function'
+    && runtimeSettings.audioStateKey({ is_running: true, audio_state: 'standby' }) === 'audio_standby'
+    && runtimeSettings.audioStateKey({ is_running: true, audio_state: 'reconnecting' }) === 'audio_reconnecting'
+    && runtimeSettings.audioStateKey({ is_running: true, audio_state: 'capturing' }) === ''
+    && runtimeSettings.audioStateKey({ is_running: false, audio_state: 'standby' }) === '',
+    'audio standby and reconnect states are surfaced only while the service runs');
   assert(typeof runtimeSettings.sessionFailureLabel === 'function'
     && runtimeSettings.sessionFailureLabel({ session_error: 'Session output failed: 1 write(s), 0 rejected' })
       .includes('1 write'),
@@ -474,11 +530,32 @@ async function runTests() {
   assert(fs.existsSync(i18nPath), 'i18n.js exists');
   const { t, setLanguage, getLanguage, getProfilePresetData, PROFILE_I18N, applyTranslations } = await import('./src/i18n.js');
 
+  const monitorKeys = ['btn_monitor', 'status_monitor', 'monitor_banner', 'monitor_pid_unknown', 'toast_config_saved_deferred'];
+  for (const lang of ['es', 'en']) {
+    setLanguage(lang);
+    assert(monitorKeys.every((key) => t(key) && t(key) !== key), `Monitor Mode copy exists in ${lang}`);
+    const banner = typeof runtimeSettings.monitorBannerText === 'function'
+      ? runtimeSettings.monitorBannerText({ monitor_mode: true, foreign_service_pid: 4242 }, t)
+      : '';
+    assert(banner.includes('4242') && !banner.includes('OpenCohost'),
+      `Monitor Mode banner names the owner PID without assuming the owner app (${lang})`);
+    assert(runtimeSettings.monitorBannerText({ monitor_mode: true, foreign_service_pid: null }, t)
+      .includes(t('monitor_pid_unknown'))
+      && runtimeSettings.monitorBannerText({ monitor_mode: false }, t) === '',
+    `Monitor Mode banner handles an unknown PID and is empty outside Monitor Mode (${lang})`);
+  }
+
   setLanguage('es');
   assert(getLanguage() === 'es', 'language setter activates Spanish');
   assert(t('tab_setup') === 'Inicio' && t('tab_files') === 'Archivos', 'Spanish settings navigation labels exist');
   assert(t('btn_start') === 'Iniciar Transcripción', 'Spanish translation for btn_start');
   assert(t('status_stopped') === 'Detenido', 'Spanish translation for status_stopped');
+  assert(t('audio_standby') === 'Esperando micrófono' && t('audio_reconnecting') === 'Reconectando audio…',
+    'Spanish audio capture state labels exist');
+  setLanguage('en');
+  assert(t('audio_standby') === 'Waiting for microphone' && t('audio_reconnecting') === 'Reconnecting audio…',
+    'English audio capture state labels exist');
+  setLanguage('es');
   const ariaLabelElement = {
     attributes: { 'data-i18n-aria-label': 'settings_tabs_label' },
     getAttribute(name) { return this.attributes[name]; },
@@ -530,11 +607,11 @@ async function runTests() {
   assert(stableEn.label === 'Stable Streaming' && stableEn.samplePrompt.length > 0,
     'English stable streaming profile preset has label and prompt suggestion');
 
-  // 6. Verify version 1.5.0 consistency across workspace and manifests
+  // 6. Verify version 1.5.1 consistency across workspace and manifests
   const rootCargo = fs.readFileSync(path.join(__dirname, '..', 'Cargo.toml'), 'utf8');
-  assert(rootCargo.includes('version = "1.5.0"'), 'Root Cargo.toml has version 1.5.0');
+  assert(rootCargo.includes('version = "1.5.1"'), 'Root Cargo.toml has version 1.5.1');
   const tauriConf = JSON.parse(fs.readFileSync(path.join(__dirname, 'src-tauri', 'tauri.conf.json'), 'utf8'));
-  assert(tauriConf.version === '1.5.0', 'tauri.conf.json has version 1.5.0');
+  assert(tauriConf.version === '1.5.1', 'tauri.conf.json has version 1.5.1');
   assert(tauriConf.bundle.category === 'Music', 'Tauri bundle category uses a supported audio-related category');
   const expectedResourceMap = {
     '../../THIRD_PARTY_NOTICES.md': 'THIRD_PARTY_NOTICES.md',
@@ -543,10 +620,14 @@ async function runTests() {
     '../../liveaudio/core/*.py': 'liveaudio/core',
     '../../liveaudio/service/*.py': 'liveaudio/service',
     '../../liveaudio/utils/*.py': 'liveaudio/utils',
-    '../../packaging/vendor/uv.exe': 'packaging/vendor/uv.exe',
   };
   assert(JSON.stringify(tauriConf.bundle.resources) === JSON.stringify(expectedResourceMap),
-    'Tauri maps the bundled uv executable, third-party notice, and direct runtime files');
+    'Tauri maps the third-party notice and direct runtime files');
+  const platformConf = (name) => JSON.parse(fs.readFileSync(path.join(__dirname, 'src-tauri', name), 'utf8'));
+  assert(platformConf('tauri.windows.conf.json').bundle.resources['../../packaging/vendor/uv.exe'] === 'packaging/vendor/uv.exe',
+    'Windows bundle maps the vendored uv.exe');
+  assert(platformConf('tauri.linux.conf.json').bundle.resources['../../packaging/vendor/uv'] === 'packaging/vendor/uv',
+    'Linux bundle maps the vendored uv binary');
   assert(htmlContent.includes('id="btn-runtime-repair"'), 'ASR runtime repair action exists');
   assert(htmlContent.includes('id="btn-runtime-cancel"'), 'ASR setup cancellation action exists');
   assert(jsContent.includes("listen('runtime_setup_progress'"), 'Runtime setup progress is forwarded to the UI');
@@ -572,11 +653,35 @@ async function runTests() {
   assert(tauriConf.bundle.windows.nsis.installerHooks === 'hooks.nsh',
     'NSIS installer hooks script is configured in tauri.conf.json bundle windows nsis');
 
+  // Capability scope: the default capability is limited to the main window. The explicit
+  // allow-emit entry is unused (core:default still expands to it; full revocation is deferred).
+  const capability = JSON.parse(fs.readFileSync(path.join(__dirname, 'src-tauri', 'capabilities', 'default.json'), 'utf8'));
+  assert(JSON.stringify(capability.windows) === JSON.stringify(['main']),
+    'Default capability is scoped to the main window only');
+  assert(!capability.permissions.includes('core:event:allow-emit'),
+    'Default capability no longer lists the unused core:event:allow-emit entry');
+  // onCloseRequested finishes an unprevented close by calling window.destroy(); without this
+  // permission the call is rejected and the window can never be closed.
+  assert(capability.permissions.includes('core:window:allow-destroy'),
+    'Default capability grants core:window:allow-destroy for the onCloseRequested close path');
+  assert(!/\bemit\s*\(/.test(jsContent), 'Frontend does not call emit, so the emit permission is unnecessary');
+
+  // The event panel ready line is translated through i18n, not hard-coded Spanish
+  const i18nSource = fs.readFileSync(path.join(__dirname, 'src', 'i18n.js'), 'utf8');
+  assert(!jsContent.includes("'Panel de eventos listo.'"), 'Event panel ready log line is not hard-coded Spanish');
+  assert(jsContent.includes("t('log_events_ready')"), 'Event panel ready log line uses the log_events_ready i18n key');
+  assert(i18nSource.includes("log_events_ready: 'Panel de eventos listo.'") && i18nSource.includes("log_events_ready: 'Event panel ready.'"),
+    'i18n defines log_events_ready in both Spanish and English');
+
   // Verify NSIS hooks script content and legacy migration coverage
   const hooksPath = path.join(__dirname, 'src-tauri', 'hooks.nsh');
   assert(fs.existsSync(hooksPath), 'hooks.nsh exists in desktop/src-tauri');
   const hooksContent = fs.readFileSync(hooksPath, 'utf8');
   assert(hooksContent.includes('!macro NSIS_HOOK_PREINSTALL'), 'hooks.nsh defines NSIS_HOOK_PREINSTALL');
+  assert(hooksContent.includes('IfFileExists "$R2\\liveaudio-desktop.exe"'),
+    'Legacy predicate treats an install directory that holds liveaudio-desktop.exe as modern');
+  assert(hooksContent.includes('${If} $R9 >= 5'),
+    'Legacy predicate treats any major.minor >= 1.5 as modern, so 1.6.0 without MainBinaryName is not purged');
   assert(hooksContent.includes('SetRegView 64') && hooksContent.includes('SetRegView 32'),
     'hooks.nsh inspects both 64-bit and 32-bit registry views');
   assert(hooksContent.includes('HKCU') && hooksContent.includes('HKLM'),
@@ -597,7 +702,7 @@ async function runTests() {
   assert(hooksContent.includes('liveaudio-desktop.exe'),
     'hooks.nsh identifies modern Rust desktop client to prevent false-positive uninstallation');
 
-  assert(t('app_version').includes('v1.5.0'), 'i18n app_version includes v1.5.0');
+  assert(t('app_version').includes('v1.5.1'), 'i18n app_version includes v1.5.1');
 
   // 7. Verify Accessible Modal System & 3rd Loading State Button
   assert(htmlContent.includes('id="modal-container"'), 'Accessible modal container element exists in index.html');
@@ -735,6 +840,65 @@ async function runTests() {
     'Subtitles are exclusive to the stream feed and excluded from event logger console');
   assert(appSource.includes("itemElement.classList.add('feed-item-blocked')"),
     'Blacklisting a phrase strikes through and marks the feed item as blocked');
+
+  // Probar (test subtitle): one feed entry per click, via the subtitle_cue event only
+  assert(!/addSubtitleToFeed\(cue\.text/.test(appSource),
+    'Probar does not append the returned cue; the subtitle_cue event is the single feed path');
+  assert(!appSource.includes('samplePhrases') && !appSource.includes('Math.random() * samplePhrases'),
+    'Probar sends one fixed localized test line instead of random marketing phrases');
+  assert(appSource.includes("invoke('send_test_subtitle', { text: testText, style })"),
+    'Probar sends the localized test text to the backend');
+  setLanguage('es');
+  assert(t('test_subtitle_text') === 'Subtítulo de prueba de LiveAudio',
+    'Spanish test subtitle text is localized');
+  setLanguage('en');
+  assert(t('test_subtitle_text') === 'LiveAudio test subtitle',
+    'English test subtitle text is localized');
+  setLanguage('es');
+
+  // Close guard: confirm before closing while this window owns a running session
+  assert(/onCloseRequested\(async \(event\) =>/.test(appSource) && /event\.preventDefault\(\);/.test(appSource),
+    'Window close is intercepted with onCloseRequested so an owned session can be confirmed first');
+  assert(appSource.includes('!currentStatus.is_running || currentStatus.monitor_mode'),
+    'Close guard prompts only for a session this window owns, not Monitor Mode');
+  assert(/if \(closeConfirmed[\s\S]*?return;/.test(appSource) && /closeConfirmed = true;\s*await appWindow\.close\(\)/.test(appSource),
+    'Confirmed close re-enters close without prompting again');
+  assert(/if \(ok\) \{[\s\S]*?closeConfirmed = true/.test(appSource) && !appSource.includes('appWindow.destroy'),
+    'Cancel keeps the window open and confirm reuses the graceful close path');
+  setLanguage('es');
+  assert(t('close_confirm_title') === 'Cerrar LiveAudio' && t('close_confirm_action') === 'Detener y cerrar',
+    'Spanish close confirmation copy is localized');
+  setLanguage('en');
+  assert(t('close_confirm_title') === 'Close LiveAudio' && t('close_confirm_action') === 'Stop and close',
+    'English close confirmation copy is localized');
+  setLanguage('es');
+
+  // Visual and i18n defects from the 2026-10-14 screenshot
+  assert(/data-i18n="app_version">v[\d.]+<\/span>/.test(htmlContent) && !/Tauri 2/.test(htmlContent),
+    'Header badge shows only the app version, without the internal framework label');
+  assert(!/app_version: '[^']*Tauri/.test(i18nContent),
+    'Localized app_version tables drop the internal framework label');
+  assert(appSource.includes('loading: t(\'status_loading\')'),
+    'Status pill maps the loading state to a translated label');
+  setLanguage('es');
+  assert(t('status_loading') === 'Cargando...', 'Spanish loading status translation exists');
+  assert(t('runtime_setup_worker_starting') === 'Iniciando el motor ASR y esperando a que esté listo…',
+    'Spanish ASR worker startup line is localized');
+  setLanguage('en');
+  assert(t('status_loading') === 'Loading...', 'English loading status translation exists');
+  assert(t('runtime_setup_worker_starting') === 'Starting the ASR worker and waiting for it to become ready…',
+    'English ASR worker startup line is localized');
+  setLanguage('es');
+  assert(appSource.includes("phase === 'starting_worker'") && appSource.includes("t('runtime_setup_worker_starting')"),
+    'Startup progress line uses the localized text for the starting_worker phase');
+  assert(!/\.feed-item\.feed-item-blocked\s*\{[^}]*opacity/.test(cssContent)
+    && /\.feed-item\.feed-item-blocked\s*>\s*\.feed-item-body\s*\{[^}]*opacity/.test(cssContent),
+    'Blocked feed items dim only their text, so the kebab menu opacity matches other items');
+  assert(/#runtime-setup-progress\[hidden\]\s*\{\s*display:\s*none/.test(cssContent)
+    && /#runtime-setup-meter\s*\{[^}]*width:\s*100%/.test(cssContent),
+    'Startup progress block is styled as hint text with a full-width meter, hidden when idle');
+  assert(appSource.includes('elements.inputObsUrl.title = obs.url'),
+    'Truncated OBS URL field exposes the full URL as a tooltip');
 
   // Verify robust state synchronization, serialized queue, keyboard navigation and bounds clamping
   assert(appSource.includes('savedConfig = structuredClone(newConfig);'),

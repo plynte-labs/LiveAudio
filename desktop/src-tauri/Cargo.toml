@@ -23,6 +23,7 @@ tokio = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = "0.3.23"
+tauri-plugin-single-instance = "2"
 
 [build-dependencies]
 tauri-build = "=2.7.0"

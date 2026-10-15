@@ -183,6 +183,17 @@ async fn test_handshake_origin_rejection_and_acceptance() {
     let local_conn = connect_async(local_req).await;
     assert!(local_conn.is_ok(), "http://localhost:1420 must be accepted");
 
+    // 4. Tauri release webview origin (http://tauri.localhost) must be accepted
+    let mut tauri_req = ws_url.clone().into_client_request().unwrap();
+    tauri_req
+        .headers_mut()
+        .insert("Origin", "http://tauri.localhost".parse().unwrap());
+    let tauri_conn = connect_async(tauri_req).await;
+    assert!(
+        tauri_conn.is_ok(),
+        "http://tauri.localhost must be accepted"
+    );
+
     // Metrics check
     assert!(
         server
@@ -249,6 +260,51 @@ async fn test_late_joining_client_replay() {
     let msg3 = read.next().await.unwrap().unwrap();
     let replayed2: SubtitleWireMessage = serde_json::from_str(&msg3.to_text().unwrap()).unwrap();
     assert_eq!(replayed2.id, "msg-2");
+
+    server.stop().await.expect("Stop server");
+}
+
+#[tokio::test]
+async fn test_late_joining_replay_is_flagged_as_replay() {
+    // A cue that went out live (is_replay = false) must reach a late joiner flagged as a replay;
+    // otherwise a fresh PTT socket (OpenCohost) treats the previous utterance as new speech.
+    let mut config = WsServerConfig::default();
+    config.backlog_policy = BacklogPolicy::SendAll;
+    let mut server = WsServer::new(config);
+    let port = server.start(19935).await.expect("Start server");
+
+    let live = SubtitleWireMessage::new(
+        "msg-live",
+        "Earlier utterance",
+        "default",
+        10.0,
+        11.0,
+        0.1,
+        1.0,
+        0.9,
+        false,
+        0.0,
+    );
+    server.broadcast_subtitle(&live).unwrap();
+
+    let url = format!("ws://127.0.0.1:{}", port);
+    let (ws_stream, _) = connect_async(&url).await.expect("Late client connect");
+    let (_write, mut read) = ws_stream.split();
+    let _hello = tokio::time::timeout(Duration::from_secs(2), read.next())
+        .await
+        .expect("hello");
+
+    let msg = tokio::time::timeout(Duration::from_secs(2), read.next())
+        .await
+        .expect("replayed cue")
+        .unwrap()
+        .unwrap();
+    let replayed: SubtitleWireMessage = serde_json::from_str(msg.to_text().unwrap()).unwrap();
+    assert_eq!(replayed.id, "msg-live");
+    assert!(
+        replayed.is_replay,
+        "late-join burst must mark cues is_replay = true"
+    );
 
     server.stop().await.expect("Stop server");
 }
@@ -513,4 +569,58 @@ async fn test_sink_adapter_bridges_cue_to_ws_client() {
     assert_eq!(sub.text, "Sink pipeline test");
 
     server_mut.stop().await.expect("Stop server");
+}
+
+#[tokio::test]
+async fn test_client_count_never_wraps_when_stop_closes_a_live_client() {
+    let port = 19950;
+    let mut server = WsServer::new(WsServerConfig {
+        base_port: port,
+        ..Default::default()
+    });
+    let bound = server.start(port).await.expect("Failed to start server");
+    let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{bound}"))
+        .await
+        .expect("client connects");
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while server.client_count() != 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("client registered");
+
+    server.stop().await.expect("Failed to stop server");
+    // The connection task decrements after it closes the socket, so EOF means it finished.
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while ws.next().await.is_some() {}
+    })
+    .await
+    .expect("server closes the client socket");
+
+    assert_eq!(server.client_count(), 0);
+}
+
+#[tokio::test]
+async fn test_silent_tcp_peer_is_dropped_after_handshake_timeout() {
+    use tokio::io::AsyncReadExt;
+
+    let port = 19960;
+    let mut server = WsServer::new(WsServerConfig {
+        base_port: port,
+        handshake_timeout: Duration::from_millis(100),
+        ..Default::default()
+    });
+    let bound = server.start(port).await.expect("Failed to start server");
+    let mut raw = tokio::net::TcpStream::connect(("127.0.0.1", bound))
+        .await
+        .expect("raw TCP connects");
+
+    let mut buf = [0u8; 16];
+    let read = tokio::time::timeout(Duration::from_secs(5), raw.read(&mut buf))
+        .await
+        .expect("server must close a peer that never completes the handshake");
+    assert_eq!(read.expect("read succeeds"), 0, "expected EOF");
+
+    server.stop().await.expect("Failed to stop server");
 }

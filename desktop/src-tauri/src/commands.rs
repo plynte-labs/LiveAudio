@@ -2,13 +2,15 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use liveaudio_audio::traits::AudioSource;
-use liveaudio_audio::{AudioChunkReceiver, AudioStreamConfig, CpalAudioSource};
+use liveaudio_audio::{AudioChunkReceiver, AudioStreamConfig, CpalAudioSource, ResilientCapture};
 use liveaudio_core::acoustic_events::{
     AcousticEventLifecycle, AcousticSpeechEndReason, AcousticSpeechEvent,
+};
+use liveaudio_core::asr::worker::{
+    presentation_text, transcript_text_from_result, worker_init_payload,
 };
 use liveaudio_core::asr::AsrTranscriptionResponse;
 use liveaudio_core::config::{get_data_home, save_config as save_config_core, LiveAudioConfig};
@@ -17,13 +19,15 @@ use liveaudio_core::runtime::{
     discover_managed_python, managed_runtime_root, preflight_asr_runtime,
     provision_runtime_with_uv_cancellable, AsrBackend, RuntimeError, RuntimeSetupProgress,
 };
+use liveaudio_core::service_lock::{service_lock_holder, ServiceLock, ServiceLockHolder};
 use liveaudio_core::sink::{
-    CompositeSink, JsonlSink, SinkError, SinkStats, TranscriptionCue, TranscriptionSink, WebVttSink,
+    last_cue_counter, CompositeSink, JsonlSink, SinkError, SinkStats, TranscriptionCue,
+    TranscriptionSink, WebVttSink,
 };
 use liveaudio_core::supervisor::{ProcessSupervisor, WorkerProcessConfig};
 use liveaudio_network::{
     candidate_ports, subtitle_from_worker_result, BacklogPolicy, NetworkServer,
-    PendingUtteranceTracker, WsServer, WsServerConfig,
+    PendingUtteranceTracker, SubtitleWireMessage, WsServer, WsServerConfig,
 };
 use liveaudio_vad::{
     cpu_runtime_library_path, initialize_onnx_runtime, SileroVad, VadConfig, VadEngine,
@@ -509,6 +513,147 @@ async fn rollback_failed_start_before_audio(
     error
 }
 
+/// Reuses the running OBS WebSocket or binds a new one on the configured port.
+/// Returns the server and whether this call created it; a bind failure rolls back
+/// the "starting" state like the other pre-audio startup failures.
+pub(crate) async fn ensure_startup_websocket(
+    state: &AppState,
+    config: &LiveAudioConfig,
+) -> Result<(WsServer, bool), String> {
+    let mut ws_guard = state.ws_server.lock().await;
+    if let Some(ref existing) = *ws_guard {
+        return Ok((existing.clone(), false));
+    }
+    let mut ws = WsServer::new(WsServerConfig {
+        base_port: config.ws_port,
+        backlog_policy: BacklogPolicy::from_config(&config.subtitle_backlog_policy),
+        max_live_delay_sec: config.subtitle_max_live_delay_sec as f32,
+        ..Default::default()
+    });
+    let effective_port = match NetworkServer::start(&mut ws, config.ws_port).await {
+        Ok(port) => port,
+        Err(error) => {
+            drop(ws_guard);
+            return Err(rollback_failed_start_before_audio(
+                state,
+                false,
+                format!("Failed to bind OBS WebSocket: {}", error),
+            )
+            .await);
+        }
+    };
+    state.active_port.store(effective_port, Ordering::SeqCst);
+    tracing::info!("Servidor WebSocket iniciado en puerto {}", effective_port);
+    *ws_guard = Some(ws.clone());
+    Ok((ws, true))
+}
+
+/// Takes the service lock in `dir` for this desktop's pipeline. Another live owner (e.g. a
+/// headless `liveaudio-cli serve`) fails the start with `service-already-running`.
+pub(crate) async fn acquire_service_lock(state: &AppState, dir: &Path) -> Result<(), String> {
+    match ServiceLock::try_acquire(dir) {
+        Ok(Some(lock)) => {
+            *state.service_lock.lock().await = Some(lock);
+            Ok(())
+        }
+        Ok(None) => {
+            // Detection before every Start: a refused start enters Monitor Mode.
+            let holder = match refresh_foreign_service(state, dir).await {
+                Some(ServiceLockHolder { pid: Some(pid), .. }) => format!(" (PID {pid})"),
+                _ => String::new(),
+            };
+            Err(format!(
+                "service-already-running: another LiveAudio process{holder} is already running the service"
+            ))
+        }
+        Err(error) => {
+            // Same policy as the former launch lock: an unopenable lock does not block the app.
+            tracing::warn!("Service lock unavailable, starting without it: {error}");
+            Ok(())
+        }
+    }
+}
+
+/// Monitor Mode poll interval. Short enough for a timely takeover (same 3 s cadence as audio
+/// reconnect); sparse because the non-Windows probe briefly takes the lock (T7a finding L1).
+const FOREIGN_SERVICE_POLL: Duration = Duration::from_secs(3);
+const TAKEOVER_RETRY_DELAY: Duration = Duration::from_secs(1);
+
+/// Outcome of one Monitor Mode poll.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ForeignServicePoll {
+    NotMonitoring,
+    Monitoring,
+    Released,
+}
+
+/// Records whether another live process owns the service lock in `dir`. A lock this desktop
+/// holds is never foreign; a failed probe counts as no owner (a later start re-checks).
+pub(crate) async fn refresh_foreign_service(
+    state: &AppState,
+    dir: &Path,
+) -> Option<ServiceLockHolder> {
+    let holder = if state.service_lock.lock().await.is_some() {
+        None
+    } else {
+        service_lock_holder(dir).ok().flatten()
+    };
+    *state.foreign_service.write().await = holder;
+    holder
+}
+
+/// Re-probes only while monitoring; `Released` means the foreign owner exited.
+pub(crate) async fn poll_foreign_service(state: &AppState, dir: &Path) -> ForeignServicePoll {
+    if state.foreign_service.read().await.is_none() {
+        return ForeignServicePoll::NotMonitoring;
+    }
+    match refresh_foreign_service(state, dir).await {
+        Some(_) => ForeignServicePoll::Monitoring,
+        None => ForeignServicePoll::Released,
+    }
+}
+
+/// Retries a start once when the lock looked held, absorbing a momentary probe/acquire race.
+pub(crate) async fn retry_once_if_already_running<T, F, Fut>(
+    delay: Duration,
+    mut attempt: F,
+) -> Result<T, String>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, String>>,
+{
+    match attempt().await {
+        Err(error) if error.starts_with("service-already-running") => {
+            tokio::time::sleep(delay).await;
+            attempt().await
+        }
+        result => result,
+    }
+}
+
+/// Detects a foreign service at launch, then polls it while in Monitor Mode and starts this
+/// desktop's own service when the foreign owner exits (takeover).
+pub(crate) async fn watch_foreign_service(app: AppHandle) {
+    let state = app.state::<AppState>().inner().clone();
+    let dir = get_data_home();
+    if refresh_foreign_service(&state, &dir).await.is_some() {
+        if let Ok(status) = get_service_status_internal(&state).await {
+            let _ = app.emit("service_status_changed", &status);
+        }
+    }
+    loop {
+        tokio::time::sleep(FOREIGN_SERVICE_POLL).await;
+        if poll_foreign_service(&state, &dir).await != ForeignServicePoll::Released {
+            continue;
+        }
+        tracing::info!("The service owner exited; starting this desktop's service");
+        let start = || start_service_guarded(&app, &state);
+        if let Err(error) = retry_once_if_already_running(TAKEOVER_RETRY_DELAY, start).await {
+            tracing::warn!("Service takeover did not start: {error}");
+        }
+    }
+}
+
 pub(crate) async fn stop_active_websocket(state: &AppState) -> Result<(), String> {
     let server = state.ws_server.lock().await.take();
     state.active_port.store(0, Ordering::SeqCst);
@@ -572,6 +717,20 @@ pub(crate) fn create_session_sinks(
         )));
     }
     Ok((Some(Arc::new(CompositeSink::new(sinks))), Some(canonical)))
+}
+
+/// Timeline origin and last written cue number for a session. A resumed continuous
+/// session keeps both, so cue numbers and capture offsets continue (`engine.py`).
+pub(crate) fn session_timeline(
+    session_path: Option<&Path>,
+    previous_origin: Option<Instant>,
+    resumed: bool,
+) -> (Instant, u64) {
+    let origin = previous_origin
+        .filter(|_| resumed)
+        .unwrap_or_else(Instant::now);
+    let last_cue = session_path.map_or(0, |path| last_cue_counter(&path.join("subtitles.vtt")));
+    (origin, last_cue)
 }
 
 pub(super) fn session_reuse_path<'a>(
@@ -684,10 +843,14 @@ pub async fn get_service_status_internal(state: &AppState) -> Result<ServiceStat
     let is_running = state.is_running.load(Ordering::SeqCst);
     let asr_state = state.asr_state.read().await.clone();
     let vad_onset = state.vad_onset.load(Ordering::SeqCst);
+    let foreign_service = *state.foreign_service.read().await;
     let ws_port = if is_running {
         state.active_port.load(Ordering::SeqCst)
     } else {
-        state.config.read().await.ws_port
+        let configured = state.config.read().await.ws_port;
+        foreign_service
+            .and_then(|holder| holder.ws_port)
+            .unwrap_or(configured)
     };
     let ws_clients = {
         let ws_guard = state.ws_server.lock().await;
@@ -762,6 +925,13 @@ pub async fn get_service_status_internal(state: &AppState) -> Result<ServiceStat
         },
         session_error,
         asr_progress: state.asr_progress.read().await.clone(),
+        audio_state: if is_running {
+            *state.audio_state.read().await
+        } else {
+            liveaudio_audio::AudioSourceStatus::Stopped
+        },
+        monitor_mode: foreign_service.is_some(),
+        foreign_service_pid: foreign_service.and_then(|holder| holder.pid),
     })
 }
 
@@ -777,10 +947,17 @@ pub async fn start_service(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<ServiceStatusDto, String> {
+    start_service_guarded(&app, state.inner()).await
+}
+
+async fn start_service_guarded(
+    app: &AppHandle,
+    state: &AppState,
+) -> Result<ServiceStatusDto, String> {
     let _transition_guard = state.transition_lock.lock().await;
     let startup_token = tokio_util::sync::CancellationToken::new();
     *state.startup_cancel_token.lock().await = Some(startup_token.clone());
-    let result = start_service_locked(&app, state.inner(), false, startup_token).await;
+    let result = start_service_locked(app, state, false, startup_token).await;
     *state.startup_cancel_token.lock().await = None;
     result
 }
@@ -794,7 +971,26 @@ async fn start_service_locked(
     if state.is_running.load(Ordering::SeqCst) {
         return get_service_status_internal(state).await;
     }
+    if let Err(error) = acquire_service_lock(state, &get_data_home()).await {
+        if let Ok(status) = get_service_status_internal(state).await {
+            let _ = app.emit("service_status_changed", &status);
+        }
+        return Err(error);
+    }
+    let result = start_pipeline_locked(app, state, is_restart, startup_token).await;
+    if result.is_err() {
+        // Every failed start has rolled back its resources; give the lock back too.
+        state.service_lock.lock().await.take();
+    }
+    result
+}
 
+async fn start_pipeline_locked(
+    app: &AppHandle,
+    state: &AppState,
+    is_restart: bool,
+    startup_token: tokio_util::sync::CancellationToken,
+) -> Result<ServiceStatusDto, String> {
     initialize_bundled_cpu_runtime(app)?;
 
     *state.asr_state.write().await = "starting".to_string();
@@ -846,13 +1042,13 @@ async fn start_service_locked(
     }
 
     let mut worker_config = WorkerProcessConfig::discover_asr_worker();
-    worker_config.init_payload = Some(serde_json::json!({
-        "model_name": clean_model_name,
-        "device": config.device,
-        "language": clean_lang,
-        "initial_prompt": if prompt.is_empty() { None } else { Some(prompt) },
-        "auto_cpu_fallback": true,
-    }));
+    worker_config.init_payload = Some(worker_init_payload(
+        &config,
+        &clean_model_name,
+        &clean_lang,
+        Some(prompt.as_str()).filter(|prompt| !prompt.is_empty()),
+    ));
+    worker_config.decode_timeout = Some(Duration::from_secs(config.asr_decode_timeout_sec.into()));
     if let Err(error) = preflight_asr_runtime(
         std::path::Path::new(&worker_config.command),
         worker_config.working_dir.as_deref(),
@@ -878,24 +1074,13 @@ async fn start_service_locked(
     *state.session_error.write().await = None;
 
     // 1. WebSocket Server: ensure started on configured port
-    let (ws_server, ws_created_here) = {
-        let mut ws_guard = state.ws_server.lock().await;
-        if let Some(ref existing) = *ws_guard {
-            (existing.clone(), false)
-        } else {
-            let mut ws = WsServer::new(WsServerConfig {
-                base_port: config.ws_port,
-                backlog_policy: BacklogPolicy::from_config(&config.subtitle_backlog_policy),
-                max_live_delay_sec: config.subtitle_max_live_delay_sec as f32,
-                ..Default::default()
-            });
-            let effective_port = NetworkServer::start(&mut ws, config.ws_port)
-                .await
-                .map_err(|error| format!("Failed to bind OBS WebSocket: {}", error))?;
-            state.active_port.store(effective_port, Ordering::SeqCst);
-            tracing::info!("Servidor WebSocket iniciado en puerto {}", effective_port);
-            *ws_guard = Some(ws.clone());
-            (ws, true)
+    let (ws_server, ws_created_here) = match ensure_startup_websocket(state, &config).await {
+        Ok(started) => started,
+        Err(err_msg) => {
+            if let Ok(status) = get_service_status_internal(state).await {
+                let _ = app.emit("service_status_changed", &status);
+            }
+            return Err(err_msg);
         }
     };
 
@@ -1021,7 +1206,6 @@ async fn start_service_locked(
     let max_live_delay_sec = config.subtitle_max_live_delay_sec;
     let catchup_interval_sec = config.subtitle_catchup_interval_sec;
     let session_language = clean_lang.clone();
-    let session_started = Instant::now();
     let initial_worker_attempt = initial_worker_attempt.max(1);
 
     let event_task = tokio::spawn(async move {
@@ -1084,12 +1268,16 @@ async fn start_service_locked(
                                     }
                                     "transcription_result" => {
                                         if let Some(payload) = val.get("payload") {
-                                            let text = payload.get("text").and_then(|t| t.as_str()).unwrap_or("").trim();
+                                            let transcript_text = transcript_text_from_result(payload);
+                                            let text = transcript_text.as_str();
                                             let dur_sec = payload.get("duration_sec").and_then(|d| d.as_f64()).unwrap_or(3.0);
                                             let utt_id = payload.get("utterance_id").and_then(|u| u.as_str()).unwrap_or("utt");
                                             let inference_sec = payload.get("inference_sec").and_then(|d| d.as_f64())
                                                 .or_else(|| payload.get("latency_sec").and_then(|d| d.as_f64())).unwrap_or(0.0);
-                                            let timing = pending_events.lock().unwrap().complete(utt_id, inference_sec);
+                                            let (capture_offset_sec, timing) = {
+                                                let mut pending = pending_events.lock().unwrap();
+                                                (pending.capture_offset_sec(utt_id), pending.complete(utt_id, inference_sec))
+                                            };
 
                                             if !text.is_empty() {
                                                 let blacklist = state_events.config.read().await.blacklist.clone();
@@ -1120,10 +1308,17 @@ async fn start_service_locked(
                                                                 latency_sec: inference_sec as f32,
                                                                 segments: Vec::new(),
                                                             };
+                                                            // Cues sit on the capture timeline; emit time is only a
+                                                            // fallback when the utterance was not tracked.
+                                                            let start_sec = match capture_offset_sec {
+                                                                Some(offset) => offset,
+                                                                None => state_events.session_origin.read().await
+                                                                    .map_or(0.0, |origin| (origin.elapsed().as_secs_f64() - dur_sec).max(0.0)),
+                                                            };
                                                             let cue = TranscriptionCue::new(
-                                                                session_started.elapsed().as_millis().max(1) as u64,
-                                                                session_started.elapsed().as_secs_f64(),
-                                                                session_started.elapsed().as_secs_f64() + dur_sec,
+                                                                state_events.session_cue_counter.fetch_add(1, Ordering::SeqCst) + 1,
+                                                                start_sec,
+                                                                start_sec + dur_sec,
                                                                 text_to_emit.clone(),
                                                                 raw_response,
                                                             );
@@ -1143,7 +1338,7 @@ async fn start_service_locked(
                                                             id: now_ms,
                                                             start: 0.0,
                                                             end: dur_sec,
-                                                            text: text_to_emit.clone(),
+                                                            text: presentation_text(&text_to_emit),
                                                             style: active_style.clone(),
                                                             timestamp_ms: now_ms,
                                                         };
@@ -1187,19 +1382,7 @@ async fn start_service_locked(
     });
 
     // 5. Initialize Hardware Audio Capture (CPAL)
-    let audio_device_id = config
-        .audio_device
-        .as_ref()
-        .and_then(|v| v.get("id"))
-        .and_then(|v| v.as_str())
-        .filter(|id| *id != "default_microphone")
-        .map(|id| {
-            if id == "wasapi_loopback" {
-                "default_loopback".to_string()
-            } else {
-                id.to_string()
-            }
-        });
+    let audio_device_id = config.capture_device_id();
 
     let stream_config = AudioStreamConfig {
         device_id: audio_device_id.clone(),
@@ -1209,9 +1392,15 @@ async fn start_service_locked(
         ring_buffer_capacity: 500,
     };
 
-    let mut audio_source = CpalAudioSource::new().with_rnnoise_enabled(config.rnnoise_enabled);
-    let mut audio_rx = match audio_source.start(&stream_config).await {
-        Ok(receiver) => receiver,
+    let audio_source = CpalAudioSource::new().with_rnnoise_enabled(config.rnnoise_enabled);
+    let (mut audio_capture, mut audio_rx) = match ResilientCapture::start(
+        audio_source,
+        stream_config,
+        liveaudio_audio::get_input_device_count,
+    )
+    .await
+    {
+        Ok(started) => started,
         Err(error) => {
             drop(supervisor_arc);
             let err_msg = rollback_failed_audio_start(
@@ -1244,7 +1433,7 @@ async fn start_service_locked(
     let mut vad = match SileroVad::new(vad_cfg) {
         Ok(vad) => vad,
         Err(error) => {
-            let _ = audio_source.stop().await;
+            audio_capture.stop().await;
             drop(supervisor_arc);
             let err_msg = rollback_failed_audio_start(
                 state,
@@ -1267,7 +1456,7 @@ async fn start_service_locked(
     let (session_sink, session_path) = match create_session_sinks(&config, previous_session_path) {
         Ok(result) => result,
         Err(error) => {
-            let _ = audio_source.stop().await;
+            audio_capture.stop().await;
             drop(supervisor_arc);
             let err_msg = rollback_failed_audio_start(
                 state,
@@ -1283,6 +1472,13 @@ async fn start_service_locked(
             return Err(err_msg);
         }
     };
+    let resumed =
+        previous_session_path.is_some() && previous_session_path == session_path.as_deref();
+    let previous_origin = *state.session_origin.read().await;
+    let (session_origin, last_cue) =
+        session_timeline(session_path.as_deref(), previous_origin, resumed);
+    *state.session_origin.write().await = Some(session_origin);
+    state.session_cue_counter.store(last_cue, Ordering::SeqCst);
     *state.session_sink.lock().await = session_sink;
     *state.session_path.write().await = session_path;
 
@@ -1293,15 +1489,21 @@ async fn start_service_locked(
     let supervisor_audio = supervisor_arc.clone();
     let ws_audio = ws_server.clone();
     let acoustic_events_enabled = config.acoustic_events_enabled;
+    let decode_timeout_ms = u64::from(config.asr_decode_timeout_sec) * 1000;
 
     let pre_buffer_capacity = vad.config().pre_buffer_chunks().max(1);
     let max_samples = (16000.0 * config.max_chunk_duration.ceil()) as usize;
+
+    let mut audio_state_rx = audio_capture.state();
+    let initial_audio_state = *audio_state_rx.borrow_and_update();
+    *state.audio_state.write().await = initial_audio_state;
 
     let audio_task = tokio::spawn(async move {
         let mut utterance_samples: Vec<f32> = Vec::with_capacity(max_samples.max(16000 * 5));
         let mut pre_roll_chunks: VecDeque<Vec<f32>> =
             VecDeque::with_capacity(pre_buffer_capacity + 1);
         let mut is_in_utterance = false;
+        let mut utterance_started_at = Instant::now();
         let mut utterance_seq = 0u64;
         let mut acoustic_lifecycle = AcousticEventLifecycle::new();
         let mut close_reason = AcousticSpeechEndReason::ServiceStopped;
@@ -1309,6 +1511,13 @@ async fn start_service_locked(
         'capture: loop {
             tokio::select! {
                 _ = cancel_audio.cancelled() => break,
+                Ok(()) = audio_state_rx.changed() => {
+                    let audio_state = *audio_state_rx.borrow_and_update();
+                    *state_audio.audio_state.write().await = audio_state;
+                    if let Ok(current_status) = get_service_status_internal(&state_audio).await {
+                        let _ = app_audio.emit("service_status_changed", &current_status);
+                    }
+                }
                 chunk_opt = audio_rx.recv() => {
                     let chunk = match chunk_opt {
                         Some(c) => {
@@ -1353,6 +1562,9 @@ async fn start_service_locked(
                                             utterance_samples.extend_from_slice(&pre);
                                         }
                                         utterance_samples.extend_from_slice(frame);
+                                        // Pre-roll audio was captured before this frame was evaluated.
+                                        let buffered = Duration::from_secs_f64(utterance_samples.len() as f64 / 16000.0);
+                                        utterance_started_at = Instant::now().checked_sub(buffered).unwrap_or_else(Instant::now);
                                     }
                                     VadTransition::SpeechEnd { duration_ms, .. } => {
                                         if is_in_utterance {
@@ -1404,13 +1616,21 @@ async fn start_service_locked(
                                                         "duration_ms": duration_ms,
                                                         "language": clean_lang,
                                                         "context_prompt": context_prompt,
+                                                        "timeout_ms": decode_timeout_ms,
                                                     }
                                                 });
 
                                                 let utterance_id = format!("utt_{}", utterance_seq);
                                                 let created_at_sec = SystemTime::now().duration_since(UNIX_EPOCH)
                                                     .map(|d| d.as_secs_f64()).unwrap_or(0.0);
-                                                pending_utterances.lock().unwrap().track(utterance_id.clone(), created_at_sec);
+                                                let capture_offset_sec = utterance_started_at
+                                                    .saturating_duration_since(session_origin)
+                                                    .as_secs_f64();
+                                                pending_utterances.lock().unwrap().track_with_capture_offset(
+                                                    utterance_id.clone(),
+                                                    created_at_sec,
+                                                    capture_offset_sec,
+                                                );
 
                                                 if let Err(e) = send_audio_command_until_cancelled(
                                                     &supervisor_audio,
@@ -1456,7 +1676,7 @@ async fn start_service_locked(
             acoustic_events_enabled,
             close_reason,
         );
-        let _ = audio_source.stop().await;
+        audio_capture.stop().await;
     });
 
     state.background_tasks.lock().await.push(event_task);
@@ -1481,6 +1701,28 @@ async fn start_service_locked(
     Ok(status)
 }
 
+/// Bundled uv resource path, relative to the app resource directory.
+pub(crate) const BUNDLED_UV_RESOURCE: &str = if cfg!(windows) {
+    "packaging/vendor/uv.exe"
+} else {
+    "packaging/vendor/uv"
+};
+
+/// Prefer the bundled uv when it exists on disk, otherwise fall back to discovery (bundle roots, PATH).
+pub(crate) fn select_uv_executable(
+    bundled: Option<PathBuf>,
+    fallback: impl FnOnce() -> Option<PathBuf>,
+) -> Result<PathBuf, String> {
+    bundled
+        .filter(|path| path.is_file())
+        .or_else(fallback)
+        .ok_or_else(|| {
+            format!(
+                "uv executable not found: expected the bundled {BUNDLED_UV_RESOURCE} or uv on PATH; reinstall LiveAudio or install uv"
+            )
+        })
+}
+
 async fn prepare_managed_runtime(
     app: &AppHandle,
     state: &AppState,
@@ -1496,13 +1738,11 @@ async fn prepare_managed_runtime(
     }
 
     let setup_result = async {
-        let uv = app
+        let bundled = app
             .path()
-            .resolve(
-                "packaging/vendor/uv.exe",
-                tauri::path::BaseDirectory::Resource,
-            )
-            .map_err(|error| format!("Bundled uv executable is unavailable: {error}"))?;
+            .resolve(BUNDLED_UV_RESOURCE, tauri::path::BaseDirectory::Resource)
+            .ok();
+        let uv = select_uv_executable(bundled, liveaudio_core::runtime::find_uv_executable)?;
         let worker = WorkerProcessConfig::find_asr_worker_source()
             .ok_or_else(|| "Bundled ASR worker package is unavailable".to_string())?;
         let package_root = WorkerProcessConfig::find_package_root(&Some(worker))
@@ -1599,12 +1839,31 @@ async fn stop_service_locked(
         let _ = app.emit("service_status_changed", &stopping_status);
     }
 
+    let shutdown = shutdown_service_resources(state).await;
+    let status = get_service_status_internal(state).await?;
+    let _ = app.emit("service_status_changed", &status);
+    shutdown?;
+
+    tracing::info!("Transcription service stopped cleanly via Tauri IPC command");
+    Ok(status)
+}
+
+/// Stops the service for application exit, aborting any in-flight startup first.
+pub(crate) async fn stop_service_for_exit(app: &AppHandle, state: &AppState) {
+    if let Some(token) = state.startup_cancel_token.lock().await.as_ref() {
+        token.cancel();
+    }
+    let _transition_guard = state.transition_lock.lock().await;
+    if let Err(error) = stop_service_locked(app, state).await {
+        tracing::warn!("Service did not stop cleanly on exit: {}", error);
+    }
+}
+
+/// Releases every service resource (capture tasks, session sinks, ASR worker, WebSocket).
+/// Every cleanup step runs even when an earlier one fails; the first failure is returned.
+pub(crate) async fn shutdown_service_resources(state: &AppState) -> Result<(), String> {
     state.is_running.store(false, Ordering::SeqCst);
     state.vad_onset.store(false, Ordering::SeqCst);
-    {
-        let mut asr = state.asr_state.write().await;
-        *asr = "stopped".to_string();
-    }
     {
         let mut start_guard = state.start_time.write().await;
         *start_guard = None;
@@ -1664,14 +1923,14 @@ async fn stop_service_locked(
         shutdown_error.get_or_insert(error);
     }
 
-    if let Some(error) = shutdown_error {
-        return Err(error);
-    }
-    let status = get_service_status_internal(state).await?;
-    let _ = app.emit("service_status_changed", &status);
-
-    tracing::info!("Transcription service stopped cleanly via Tauri IPC command");
-    Ok(status)
+    // Report "stopped" only once every resource was actually released.
+    let (asr_state, result) = match shutdown_error {
+        Some(error) => ("error: stop_failed", Err(error)),
+        None => ("stopped", Ok(())),
+    };
+    *state.asr_state.write().await = asr_state.to_string();
+    state.service_lock.lock().await.take();
+    result
 }
 
 /// Restart the LiveAudio transcription service.
@@ -1758,41 +2017,49 @@ pub async fn open_author_profile() -> Result<(), String> {
     Ok(())
 }
 
+const OBS_OVERLAY_RELATIVE: &str = "liveaudio/assets/subtitulos_obs.html";
+
+/// Find the OBS overlay: bundled resource directory first, then dev checkout fallbacks.
+pub(crate) fn resolve_obs_overlay_path(resource_dir: Option<&Path>) -> Option<PathBuf> {
+    resource_dir
+        .map(|dir| dir.join(OBS_OVERLAY_RELATIVE))
+        .into_iter()
+        .chain(
+            ["", "../", "../../"]
+                .iter()
+                .map(|prefix| PathBuf::from(format!("{prefix}{OBS_OVERLAY_RELATIVE}"))),
+        )
+        .find(|path| path.is_file())
+        .map(|path| std::path::absolute(&path).unwrap_or(path))
+}
+
+/// Build a percent-encoded `file:///` URL for the overlay with the `?port=` query.
+pub(crate) fn obs_overlay_url(path: &Path, port: u16) -> Result<String, String> {
+    let raw = path.to_string_lossy();
+    let clean = raw.strip_prefix(r"\\?\").unwrap_or(&raw);
+    let mut url = tauri::Url::from_file_path(clean)
+        .map_err(|_| format!("OBS overlay path is not absolute: {}", path.display()))?;
+    url.set_query(Some(&format!("port={port}")));
+    Ok(url.to_string())
+}
+
 /// Resolve OBS overlay URL and browser source recommendations.
 #[tauri::command]
-pub async fn get_obs_overlay_info(state: State<'_, AppState>) -> Result<ObsOverlayDto, String> {
+pub async fn get_obs_overlay_info(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<ObsOverlayDto, String> {
     let port = if state.is_running() {
         state.active_port.load(Ordering::SeqCst)
     } else {
         state.config.read().await.ws_port
     };
 
-    // Look for subtitulos_obs.html
-    let candidates = [
-        PathBuf::from("liveaudio/assets/subtitulos_obs.html"),
-        PathBuf::from("../liveaudio/assets/subtitulos_obs.html"),
-        PathBuf::from("../../liveaudio/assets/subtitulos_obs.html"),
-    ];
-
-    let mut resolved_path = None;
-    for cand in &candidates {
-        if let Ok(abs) = std::fs::canonicalize(cand) {
-            resolved_path = Some(abs);
-            break;
-        }
-    }
-
-    let raw_path = resolved_path
-        .unwrap_or_else(|| get_data_home().join("assets").join("subtitulos_obs.html"))
-        .to_string_lossy()
-        .replace('\\', "/");
-
-    let clean_path = raw_path.strip_prefix("//?/").unwrap_or(&raw_path);
-    let url = format!(
-        "file:///{}?port={}",
-        clean_path.trim_start_matches('/'),
-        port
-    );
+    let resource_dir = app.path().resource_dir().ok();
+    let overlay = resolve_obs_overlay_path(resource_dir.as_deref()).ok_or_else(|| {
+        "OBS overlay file subtitulos_obs.html was not found; reinstall LiveAudio".to_string()
+    })?;
+    let url = obs_overlay_url(&overlay, port)?;
 
     Ok(ObsOverlayDto {
         url,
@@ -1839,7 +2106,7 @@ pub async fn export_diagnostics(
     let job_object_support = JobObject::create().is_ok();
     let ports = candidate_ports(config.ws_port, Some(5));
 
-    let report = serde_json::json!({
+    let mut report = serde_json::json!({
         "timestamp_epoch": now,
         "os": std::env::consts::OS,
         "arch": std::env::consts::ARCH,
@@ -1849,6 +2116,7 @@ pub async fn export_diagnostics(
         "config": config,
         "service_status": status,
     });
+    crate::diagnostics::scrub_diagnostics_value(&mut report);
 
     let bytes =
         serde_json::to_vec_pretty(&report).map_err(|e| format!("Serialization error: {}", e))?;
@@ -1861,6 +2129,23 @@ pub async fn export_diagnostics(
         timestamp: format!("{}", now),
         success: true,
     })
+}
+
+/// Wire message for a test cue, shaped like a live subtitle so OBS renders it normally.
+pub(crate) fn test_subtitle_wire_message(cue: &SubtitleCueDto) -> SubtitleWireMessage {
+    let now_sec = cue.timestamp_ms as f64 / 1000.0;
+    SubtitleWireMessage::new(
+        cue.id.to_string(),
+        cue.text.clone(),
+        cue.style.clone(),
+        now_sec,
+        now_sec,
+        0.0,
+        0.0,
+        0.0,
+        false,
+        0.0,
+    )
 }
 
 /// Send a mock/test subtitle cue to verify preview styling and WebSocket propagation.
@@ -1893,6 +2178,9 @@ pub async fn send_test_subtitle(
     };
 
     let _ = app.emit("subtitle_cue", &cue);
+    if let Some(ws) = state.ws_server.lock().await.as_ref() {
+        let _ = ws.broadcast_subtitle(&test_subtitle_wire_message(&cue));
+    }
     Ok(cue)
 }
 

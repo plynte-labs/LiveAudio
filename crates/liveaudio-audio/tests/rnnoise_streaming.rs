@@ -243,7 +243,7 @@ fn sixty_second_synthetic_stream_has_no_sample_loss_or_unbounded_output() {
 #[test]
 fn invalid_samples_fail_without_corrupting_the_processor_state() {
     let mut processor = RnnoiseProcessor::new().expect("built-in RNNoise model initializes");
-    for invalid_sample in [f32::NAN, f32::INFINITY, 1.01, -1.01] {
+    for invalid_sample in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
         let mut invalid = vec![0.0; 512];
         invalid[17] = invalid_sample;
         assert!(processor.process(input_chunk(invalid, 1, 1)).is_err());
@@ -254,6 +254,33 @@ fn invalid_samples_fail_without_corrupting_the_processor_state() {
         processor.process(input_chunk(valid, 2, 2)).is_ok(),
         "rejected data must not mutate the stream"
     );
+}
+
+#[test]
+fn out_of_range_input_is_clamped_instead_of_failing_capture() {
+    let overdriven: Vec<f32> = (0..512 * 8)
+        .map(|index| if (index / 20) % 2 == 0 { 1.5 } else { -1.5 })
+        .collect();
+    let clamped: Vec<f32> = overdriven.iter().map(|s| s.clamp(-1.0, 1.0)).collect();
+
+    let mut processor = RnnoiseProcessor::new().expect("built-in RNNoise model initializes");
+    let mut reference = RnnoiseProcessor::new().expect("built-in RNNoise model initializes");
+    for (index, (hot, safe)) in overdriven.chunks(512).zip(clamped.chunks(512)).enumerate() {
+        let index = index as u64;
+        let output = processor
+            .process(input_chunk(hot.to_vec(), index, index))
+            .expect("overdriven input must not fail capture");
+        let expected = reference
+            .process(input_chunk(safe.to_vec(), index, index))
+            .expect("clamped input processes");
+        assert_eq!(
+            output, expected,
+            "overdriven input behaves as clamped input"
+        );
+        for chunk in &output {
+            assert!(chunk.samples.iter().all(|s| (-1.0..=1.0).contains(s)));
+        }
+    }
 }
 
 #[test]

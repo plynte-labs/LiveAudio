@@ -29,6 +29,12 @@ pub struct ServiceStatusDto {
     pub session_path: Option<String>,
     pub session_error: Option<String>,
     pub asr_progress: Option<AsrProgressDto>,
+    /// Audio capture state: capturing, standby (no input device) or reconnecting.
+    pub audio_state: liveaudio_audio::AudioSourceStatus,
+    /// Another process owns the running service; this desktop only monitors it.
+    pub monitor_mode: bool,
+    /// PID of that owner, when its lock metadata names one.
+    pub foreign_service_pid: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

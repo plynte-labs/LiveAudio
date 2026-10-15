@@ -111,17 +111,54 @@ export function hardwareStatusLabel(status) {
   return `${runtimeLabel}: ${status.model_size.split(' ')[0]} | ${status.device.toUpperCase()} | ${status.active_device || 'Default input'}`;
 }
 
+/** i18n key for a live audio capture state worth surfacing, or '' while capturing or stopped. */
+export function audioStateKey(status) {
+  return status.is_running && ['standby', 'reconnecting'].includes(status.audio_state)
+    ? `audio_${status.audio_state}`
+    : '';
+}
+
+/** Read-only feed step for a service owned by another process: 'open', 'close' or 'keep'. */
+export function monitorFeedAction(status, feedPort) {
+  const wantedPort = status?.monitor_mode ? status.ws_port : null;
+  if (wantedPort === feedPort) return 'keep';
+  return wantedPort ? 'open' : 'close';
+}
+
+/** Subtitle text carried by a service WebSocket frame, or '' for control or malformed frames. */
+export function monitorFeedText(raw) {
+  try {
+    const data = JSON.parse(raw);
+    return data && data.type !== 'hello' && typeof data.text === 'string' ? data.text : '';
+  } catch (_) {
+    return '';
+  }
+}
+
+export function monitorBannerText(status, translate) {
+  if (!status?.monitor_mode) return '';
+  const owner = status.foreign_service_pid ? `PID ${status.foreign_service_pid}` : translate('monitor_pid_unknown');
+  return translate('monitor_banner').replace('{pid}', owner);
+}
+
 export function sessionFailureLabel(status) {
   return status.session_error || '';
 }
 
-export async function persistAndApplyRuntimeConfig({ before, after, isRunning, confirmRestart, save, restart }) {
+/**
+ * Saves settings, restarting this desktop's service after confirmation when needed. In Monitor
+ * Mode another process owns the service: runtime changes are only saved (`deferred`), never applied.
+ */
+export async function persistAndApplyRuntimeConfig({ before, after, isRunning, monitorMode = false, confirmRestart, save, restart }) {
   const shouldRestart = Boolean(isRunning && runtimeSettingsChanged(before, after));
   if (shouldRestart && !(await confirmRestart())) {
     return { saved: false, restarted: false, status: null };
   }
   await save(after);
-  if (!shouldRestart) return { saved: true, restarted: false, status: null };
+  if (!shouldRestart) {
+    const deferred = Boolean(monitorMode && runtimeSettingsChanged(before, after));
+    return { saved: true, restarted: false, status: null, deferred };
+  }
   try {
     return { saved: true, restarted: true, status: await restart(), restartError: null };
   } catch (restartError) {

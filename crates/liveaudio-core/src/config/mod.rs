@@ -283,6 +283,20 @@ fn default_max_chunk_duration() -> f64 {
 fn default_transcription_purpose() -> String {
     "subtitles".to_string()
 }
+
+/// Python parity (`utils/config.py`): the purpose sets the `max_chunk_duration` ceiling and its
+/// default. Returns `(ceiling, default)`. Unknown purposes behave as subtitles.
+fn max_chunk_bounds(purpose: &str) -> (f64, f64) {
+    match purpose {
+        "transcription" | "combined" => (60.0, 30.0),
+        _ => (15.0, default_max_chunk_duration()),
+    }
+}
+
+/// Rounds to one decimal with half-to-even ties on the exact binary value, as Python's `round(x, 1)`.
+fn round_to_tenth(value: f64) -> f64 {
+    format!("{value:.1}").parse().unwrap_or(value)
+}
 fn default_asr_decode_timeout_sec() -> u32 {
     ASR_DECODE_TIMEOUT_DEFAULT_SEC
 }
@@ -357,6 +371,19 @@ impl Default for LiveAudioConfig {
 }
 
 impl LiveAudioConfig {
+    /// Capture device id for the persisted `audio_device` selection.
+    ///
+    /// `None` means the OS default microphone; the legacy `wasapi_loopback` id
+    /// maps to `default_loopback`.
+    pub fn capture_device_id(&self) -> Option<String> {
+        let id = self.audio_device.as_ref()?.get("id")?.as_str()?;
+        match id {
+            "default_microphone" => None,
+            "wasapi_loopback" => Some("default_loopback".to_string()),
+            other => Some(other.to_string()),
+        }
+    }
+
     /// Validates types, bounds, and normalizes values in-place.
     /// Returns `true` if any field was updated or clamped.
     pub fn normalize(&mut self) -> bool {
@@ -420,25 +447,18 @@ impl LiveAudioConfig {
             updated = true;
         }
 
-        // max_chunk_duration
-        if self.max_chunk_duration > 15.0
-            && self.max_chunk_duration <= 60.0
-            && self.transcription_purpose == "subtitles"
-        {
-            self.transcription_purpose = "transcription".to_string();
-            updated = true;
-        }
-        let max_allowed = if self.transcription_purpose == "transcription"
-            || self.transcription_purpose == "combined"
-        {
-            60.0
+        // max_chunk_duration: the purpose sets the ceiling; the purpose itself is never changed here.
+        let (max_allowed, purpose_default) = max_chunk_bounds(&self.transcription_purpose);
+        let duration = if self.max_chunk_duration.is_finite() {
+            self.max_chunk_duration.clamp(1.0, max_allowed)
         } else {
-            15.0
+            purpose_default
         };
-        let clamped_duration =
-            (self.max_chunk_duration.clamp(1.0, max_allowed) * 10.0).round() / 10.0;
-        if (self.max_chunk_duration - clamped_duration).abs() > f64::EPSILON {
-            self.max_chunk_duration = clamped_duration;
+        let rounded_duration = round_to_tenth(duration);
+        if self.max_chunk_duration.is_nan()
+            || (self.max_chunk_duration - rounded_duration).abs() > f64::EPSILON
+        {
+            self.max_chunk_duration = rounded_duration;
             updated = true;
         }
 
@@ -732,8 +752,37 @@ pub fn load_from_path(path: &Path) -> io::Result<LiveAudioConfig> {
     let mut content = String::new();
     file.read_to_string(&mut content)?;
 
-    serde_json::from_str(&content)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))
+    let invalid = |e: serde_json::Error| io::Error::new(io::ErrorKind::InvalidData, e.to_string());
+    let serde_json::Value::Object(mut fields) = serde_json::from_str(&content).map_err(invalid)?
+    else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "config root is not a JSON object",
+        ));
+    };
+    // Per-key tolerance (Python parity): a value that fails to deserialize on its
+    // own falls back to that key's serde default; unknown keys land in `extra`.
+    fields.retain(|key, value| {
+        let single = serde_json::Map::from_iter([(key.clone(), value.clone())]);
+        let ok = serde_json::from_value::<LiveAudioConfig>(single.into()).is_ok();
+        if !ok {
+            tracing::warn!(key = %key, "Invalid config value; using default for this key");
+        }
+        ok
+    });
+    // Python parity: a missing or invalid max_chunk_duration takes the default of the purpose.
+    // Invalid keys were just removed above, so absence here means absent or invalid.
+    if !fields.contains_key("max_chunk_duration") {
+        let purpose = fields
+            .get("transcription_purpose")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        fields.insert(
+            "max_chunk_duration".to_string(),
+            serde_json::json!(max_chunk_bounds(purpose).1),
+        );
+    }
+    serde_json::from_value(fields.into()).map_err(invalid)
 }
 
 /// Atomically saves config to an arbitrary path using a sibling temporary file.
@@ -774,6 +823,33 @@ pub fn save_to_path(config: &LiveAudioConfig, path: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_device_id_maps_persisted_audio_device_to_capture_id() {
+        let with_id = |id: &str| LiveAudioConfig {
+            audio_device: Some(serde_json::json!({ "id": id, "name": "ignored" })),
+            ..LiveAudioConfig::default()
+        };
+        assert_eq!(LiveAudioConfig::default().capture_device_id(), None);
+        assert_eq!(with_id("default_microphone").capture_device_id(), None);
+        assert_eq!(
+            with_id("wasapi_loopback").capture_device_id().as_deref(),
+            Some("default_loopback")
+        );
+        assert_eq!(
+            with_id("loopback:Speakers").capture_device_id().as_deref(),
+            Some("loopback:Speakers")
+        );
+        assert_eq!(
+            with_id("Microphone (USB)").capture_device_id().as_deref(),
+            Some("Microphone (USB)")
+        );
+        let non_string = LiveAudioConfig {
+            audio_device: Some(serde_json::json!({ "id": 7 })),
+            ..LiveAudioConfig::default()
+        };
+        assert_eq!(non_string.capture_device_id(), None);
+    }
 
     #[test]
     fn test_default_config_fields() {
@@ -988,5 +1064,119 @@ mod tests {
         assert_eq!(loaded.output_dir, config.output_dir);
 
         let _ = std::fs::remove_dir_all(&unicode_dir);
+    }
+
+    fn load_json(name: &str, json: &str) -> io::Result<LiveAudioConfig> {
+        let dir = std::env::temp_dir().join(format!(
+            "liveaudio-cfg-tolerant-{}-{}",
+            name,
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(&path, json).unwrap();
+        let res = load_from_path(&path);
+        let _ = std::fs::remove_dir_all(&dir);
+        res
+    }
+
+    #[test]
+    fn normalize_keeps_subtitles_purpose_and_clamps_duration_to_its_ceiling() {
+        let mut cfg = LiveAudioConfig::default();
+        cfg.max_chunk_duration = 30.0;
+        cfg.normalize();
+        assert_eq!(cfg.transcription_purpose, "subtitles");
+        assert_eq!(cfg.max_chunk_duration, 15.0);
+    }
+
+    #[test]
+    fn normalize_rounds_half_to_even_like_python() {
+        let mut cfg = LiveAudioConfig::default();
+        cfg.max_chunk_duration = 12.25;
+        cfg.normalize();
+        assert_eq!(cfg.max_chunk_duration, 12.2);
+    }
+
+    #[test]
+    fn normalize_replaces_non_finite_duration_with_purpose_default() {
+        let mut cfg = LiveAudioConfig::default();
+        cfg.transcription_purpose = "transcription".into();
+        cfg.max_chunk_duration = f64::NAN;
+        cfg.normalize();
+        assert_eq!(cfg.max_chunk_duration, 30.0);
+    }
+
+    #[test]
+    fn missing_or_invalid_duration_takes_the_purpose_default_on_load() {
+        let missing = load_json(
+            "duration-missing",
+            r#"{"transcription_purpose": "transcription"}"#,
+        )
+        .expect("tolerant load");
+        assert_eq!(missing.max_chunk_duration, 30.0);
+
+        let invalid = load_json(
+            "duration-null",
+            r#"{"transcription_purpose": "combined", "max_chunk_duration": null}"#,
+        )
+        .expect("tolerant load");
+        assert_eq!(invalid.max_chunk_duration, 30.0);
+
+        let subtitles = load_json("duration-subtitles", r#"{"max_chunk_duration": "x"}"#)
+            .expect("tolerant load");
+        assert_eq!(subtitles.max_chunk_duration, 5.0);
+
+        let explicit = load_json(
+            "duration-explicit",
+            r#"{"transcription_purpose": "transcription", "max_chunk_duration": 5.0}"#,
+        )
+        .expect("tolerant load");
+        assert_eq!(explicit.max_chunk_duration, 5.0);
+    }
+
+    #[test]
+    fn wrong_typed_value_falls_back_for_that_key_only() {
+        let cfg = load_json(
+            "wrong-type",
+            r#"{"silence_timeout": "0.8", "model_size": "medium", "ws_port": 9001,
+                "custom_addon": {"on": true}}"#,
+        )
+        .expect("tolerant load");
+        assert_eq!(cfg.silence_timeout, default_silence_timeout());
+        assert_eq!(cfg.model_size, "medium");
+        assert_eq!(cfg.ws_port, 9001);
+        assert_eq!(
+            cfg.extra.get("custom_addon"),
+            Some(&serde_json::json!({"on": true}))
+        );
+    }
+
+    #[test]
+    fn null_nan_like_and_bool_numbers_fall_back_per_key() {
+        let cfg = load_json(
+            "null-nan-bool",
+            r#"{"max_chunk_duration": null, "vad_threshold": "NaN", "cpu_threads": true,
+                "device": "cuda", "obs_enabled": false}"#,
+        )
+        .expect("tolerant load");
+        assert_eq!(cfg.max_chunk_duration, default_max_chunk_duration());
+        assert_eq!(cfg.vad_threshold, default_vad_threshold());
+        assert_eq!(cfg.cpu_threads, default_cpu_threads());
+        assert_eq!(cfg.device, "cuda");
+        assert!(!cfg.obs_enabled);
+    }
+
+    #[test]
+    fn out_of_range_ws_port_falls_back_to_default() {
+        let cfg =
+            load_json("ws-port", r#"{"ws_port": 70000, "language": "en"}"#).expect("tolerant load");
+        assert_eq!(cfg.ws_port, 8765);
+        assert_eq!(cfg.language.as_deref(), Some("en"));
+    }
+
+    #[test]
+    fn non_object_json_is_still_an_error() {
+        assert!(load_json("array", "[1, 2]").is_err());
+        assert!(load_json("garbage", "{not json").is_err());
     }
 }

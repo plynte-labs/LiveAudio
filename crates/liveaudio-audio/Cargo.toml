@@ -17,3 +17,6 @@ ringbuf = "0.5"
 rubato = "5.0"
 nnnoiseless = { version = "=0.5.2", default-features = false }
 
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

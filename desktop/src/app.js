@@ -4,7 +4,7 @@
  * LiveAudio Tauri Desktop Frontend Application Logic
  */
 
-import { bindProfileSelection, bindTabNavigation, hardwareStatusLabel, persistAndApplyRuntimeConfig, sessionFailureLabel } from './runtime-settings.js';
+import { audioStateKey, bindProfileSelection, bindTabNavigation, hardwareStatusLabel, monitorBannerText, monitorFeedAction, monitorFeedText, persistAndApplyRuntimeConfig, sessionFailureLabel } from './runtime-settings.js';
 import { initLanguage, setLanguage, getLanguage, t, applyTranslations, getProfilePresetData, PROFILE_I18N } from './i18n.js';
 
 // IPC Bridge
@@ -283,6 +283,7 @@ const elements = {
   checkAcousticEventsEnabled: document.getElementById('check-acoustic-events-enabled'),
   sessionPath: document.getElementById('session-path'),
   sessionError: document.getElementById('session-error'),
+  monitorBanner: document.getElementById('monitor-banner'),
   btnOpenSessionFolder: document.getElementById('btn-open-session-folder'),
   cardSubtitlesFeed: document.getElementById('card-subtitles-feed'),
   subtitlesFeedContainer: document.getElementById('subtitles-feed-container'),
@@ -411,6 +412,39 @@ function updateComputeDeviceReactivity(device) {
   }
 }
 
+// Asks before closing while this window owns a running session. Monitor Mode and idle windows
+// close without a prompt. Confirm re-enters close, so the ExitRequested stop runs exactly once.
+let closeConfirmed = false;
+let closePromptOpen = false;
+function setupCloseGuard(appWindow) {
+  if (!appWindow || typeof appWindow.onCloseRequested !== 'function') return;
+  appWindow.onCloseRequested(async (event) => {
+    if (closeConfirmed) return;
+    if (!currentStatus.is_running || currentStatus.monitor_mode) return;
+    event.preventDefault();
+    if (closePromptOpen) return;
+    closePromptOpen = true;
+    try {
+      const ok = await showConfirmModal({
+        title: t('close_confirm_title'),
+        message: t('close_confirm_message'),
+        detail: t('close_confirm_detail'),
+        confirmText: t('close_confirm_action'),
+        isDanger: true,
+      });
+      if (ok) {
+        closeConfirmed = true;
+        await appWindow.close();
+      }
+    } catch (err) {
+      closeConfirmed = false;
+      console.warn('Close error:', err);
+    } finally {
+      closePromptOpen = false;
+    }
+  });
+}
+
 // Custom Frameless Window Controls Integration
 function setupWindowControls() {
   const getAppWindow = () => {
@@ -423,6 +457,7 @@ function setupWindowControls() {
   };
 
   const appWindow = getAppWindow();
+  setupCloseGuard(appWindow);
 
   if (elements.winBtnMinimize) {
     elements.winBtnMinimize.addEventListener('click', async () => {
@@ -512,6 +547,11 @@ function updateStatusUI(status) {
       ? 'stopping'
       : 'starting';
     setServiceButtonLoading(mode);
+  } else if (status.monitor_mode) {
+    // Another process owns the service: status only, never start/stop it from here.
+    elements.btnToggleService.disabled = true;
+    elements.btnToggleService.className = 'btn-toggle-service loading';
+    elements.btnToggleService.innerHTML = `<span id="btn-toggle-service-text">${t('btn_monitor')}</span>`;
   } else if (status.is_running) {
     elements.btnToggleService.disabled = false;
     elements.btnToggleService.className = 'btn-toggle-service stop';
@@ -533,18 +573,20 @@ function updateStatusUI(status) {
   }
 
   // ASR State Pill
-  const state = status.asr_state || (status.is_running ? 'listening' : 'stopped');
-  const cssState = state.startsWith('error') ? 'failed' : (state.startsWith('Descargando') || state === 'downloading') ? 'starting' : state;
+  const state = status.monitor_mode ? 'monitor' : (status.asr_state || (status.is_running ? 'listening' : 'stopped'));
+  const cssState = state === 'monitor' ? 'listening' : state.startsWith('error') ? 'failed' : (state.startsWith('Descargando') || state === 'downloading' || state === 'loading') ? 'starting' : state;
   elements.pillStatus.className = `pill state-${cssState}`;
   const stateLabels = {
     stopped: t('status_stopped'),
     starting: t('status_starting'),
+    loading: t('status_loading'),
     downloading: t('status_downloading'),
     ready: t('status_ready'),
     listening: t('status_listening'),
     transcribing: t('status_transcribing'),
     degraded: t('status_degraded'),
     failed: t('status_failed'),
+    monitor: t('status_monitor'),
   };
   elements.pillStatusText.textContent = stateLabels[state] || state;
 
@@ -561,7 +603,8 @@ function updateStatusUI(status) {
   elements.pillWsText.textContent = `WS: ${status.ws_port} (${status.ws_clients} ${t('ws_clients_suffix')})`;
 
   // Hardware Pill
-  const hwLabel = hardwareStatusLabel(status);
+  const audioKey = audioStateKey(status);
+  const hwLabel = audioKey ? `${hardwareStatusLabel(status)} | ${t(audioKey)}` : hardwareStatusLabel(status);
   elements.pillHw.textContent = hwLabel;
   elements.pillHw.title = hwLabel;
   if (elements.sessionPath) {
@@ -572,6 +615,29 @@ function updateStatusUI(status) {
     elements.sessionError.textContent = sessionFailureLabel(status);
     elements.sessionError.hidden = !sessionFailureLabel(status);
   }
+  if (elements.monitorBanner) {
+    elements.monitorBanner.textContent = monitorBannerText(status, t);
+    elements.monitorBanner.hidden = !status.monitor_mode;
+  }
+  syncMonitorFeed(status);
+}
+
+// Read-only subtitle feed from a service another process owns (same protocol as the OBS overlay).
+let monitorFeed = null; // { socket, port }
+
+function syncMonitorFeed(status) {
+  const action = monitorFeedAction(status, monitorFeed ? monitorFeed.port : null);
+  if (action === 'keep') return;
+  if (monitorFeed) monitorFeed.socket.close();
+  monitorFeed = null;
+  if (action !== 'open') return;
+  // A dropped connection clears the feed; the next status poll (1 s) reconnects it.
+  const feed = { socket: new WebSocket(`ws://127.0.0.1:${status.ws_port}`), port: status.ws_port };
+  feed.socket.onmessage = (event) => addSubtitleToFeed(monitorFeedText(event.data));
+  feed.socket.onclose = () => {
+    if (monitorFeed === feed) monitorFeed = null;
+  };
+  monitorFeed = feed;
 }
 
 // Stream-Chat Subtitle Feed Subsystem
@@ -1258,6 +1324,7 @@ async function loadObsOverlayInfo() {
   try {
     const obs = await invoke('get_obs_overlay_info');
     elements.inputObsUrl.value = obs.url;
+    elements.inputObsUrl.title = obs.url;
   } catch (err) {
     console.error('Error loading OBS overlay info:', err);
   }
@@ -1375,24 +1442,13 @@ async function initApp() {
   if (elements.btnTestSubtitle) {
     elements.btnTestSubtitle.addEventListener('click', async () => {
       await withProcessing(elements.btnTestSubtitle, async () => {
-        const samplePhrases = getLanguage() === 'es' ? [
-          '¡Hola mundo! Transcripción de voz en tiempo real con LiveAudio.',
-          'Excelente fidelidad acústica en español e inglés sin retraso.',
-          'Integración nativa con OBS Studio mediante fuente de navegador.',
-          'Tecnología Whisper con aceleración por hardware CUDA de baja latencia.',
-        ] : [
-          'Hello world! Real-time voice transcription powered by LiveAudio.',
-          'High acoustic fidelity in Spanish and English with ultra-low latency.',
-          'Native OBS Studio integration via local browser source.',
-          'Whisper ASR engine with GPU CUDA hardware acceleration.',
-        ];
-        const phrase = samplePhrases[Math.floor(Math.random() * samplePhrases.length)];
+        // The backend emits subtitle_cue, which is the only path that appends to the feed.
+        const testText = t('test_subtitle_text');
         const style = elements.selectSubtitleStyle.value;
         try {
-          const cue = await invoke('send_test_subtitle', { text: phrase, style });
-          addSubtitleToFeed(cue.text, cue);
+          await invoke('send_test_subtitle', { text: testText, style });
         } catch (err) {
-          addSubtitleToFeed(phrase, { text: phrase, style, timestamp_ms: Date.now() });
+          addSubtitleToFeed(testText, { text: testText, style, timestamp_ms: Date.now() });
         }
       });
     });
@@ -1414,7 +1470,7 @@ async function initApp() {
 
   // Toggle Service Button
   elements.btnToggleService.addEventListener('click', async () => {
-    if (isServiceActionPending) {
+    if (isServiceActionPending || currentStatus.monitor_mode) {
       return;
     }
     const targetAction = currentStatus.is_running ? 'stopping' : 'starting';
@@ -1480,6 +1536,7 @@ async function initApp() {
           before: savedConfig,
           after: updatedConfig,
           isRunning: currentStatus.is_running,
+          monitorMode: Boolean(currentStatus.monitor_mode),
           confirmRestart: () => showConfirmModal({
             title: t('modal_title_confirm'),
             message: t('confirm_restart'),
@@ -1509,6 +1566,8 @@ async function initApp() {
         } else if (result.restartError) {
           updateStatusUI(await invoke('get_service_status'));
           showToast(`${t('toast_config_saved_restart_err')}${result.restartError}`, true);
+        } else if (result.deferred) {
+          showToast(t('toast_config_saved_deferred'));
         } else {
           showToast(t('toast_config_saved'));
         }
@@ -1556,7 +1615,7 @@ async function initApp() {
         }
         showToast(restart
           ? t('toast_config_reset_restarted')
-          : t('toast_config_reset'));
+          : currentStatus.monitor_mode ? t('toast_config_saved_deferred') : t('toast_config_reset'));
       } catch (err) {
         showToast(`${t('status_error')}: ${err}`, true);
       }
@@ -1679,7 +1738,7 @@ async function initApp() {
 
   // Load Initial / Recent System Logs
   try {
-    const recentLogs = await invoke('get_recent_logs', { max_lines: 40 });
+    const recentLogs = await invoke('get_recent_logs', { maxLines: 40 });
     if (Array.isArray(recentLogs) && recentLogs.length > 0) {
       if (elements.loggerConsole) elements.loggerConsole.innerHTML = '';
       for (const line of recentLogs) {
@@ -1693,10 +1752,10 @@ async function initApp() {
         appendLogEntry(lvl, clean, 'INIT');
       }
     } else {
-      appendLogEntry('info', 'Panel de eventos listo.', 'SYSTEM');
+      appendLogEntry('info', t('log_events_ready'), 'SYSTEM');
     }
   } catch (_) {
-    appendLogEntry('info', 'Panel de eventos listo.', 'SYSTEM');
+    appendLogEntry('info', t('log_events_ready'), 'SYSTEM');
   }
 
   // Subscribe to Tauri events safely
@@ -1739,7 +1798,7 @@ async function initApp() {
 function setRuntimeSetupProgress(progress) {
   if (!elements.runtimeSetupProgress || !progress) return;
   const phase = String(progress.phase || 'preparing');
-  const text = String(progress.text || phase);
+  const text = phase === 'starting_worker' ? t('runtime_setup_worker_starting') : String(progress.text || phase);
   const percent = Number.isFinite(progress.percent) ? Math.max(0, Math.min(100, progress.percent)) : null;
   elements.runtimeSetupProgress.hidden = phase === 'ready';
   elements.runtimeSetupText.textContent = text;

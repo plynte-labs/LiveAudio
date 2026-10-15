@@ -45,6 +45,13 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev
 
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Vendor pinned uv binary into packaging/vendor/
+        run: python packaging/vendor_uv.py
+
       - name: Verify bundled Silero model is tracked in the checkout
         shell: bash
         run: test -f crates/liveaudio-vad/models/silero_vad_v6.onnx

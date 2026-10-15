@@ -62,7 +62,7 @@ fn test_multichannel_downmixing_parity() {
 #[test]
 fn test_resampler_streaming_continuity_48k_to_16k() {
     // 48 kHz to 16 kHz with continuous tone
-    let mut resampler = AudioResampler::new(48000, 16000, 512);
+    let mut resampler = AudioResampler::new(48000, 16000, 512).unwrap();
 
     // Feed in two consecutive batches of 1536 samples (1536 samples @ 48kHz = 512 samples @ 16kHz)
     let b1 = vec![0.5f32; 1536];
@@ -159,13 +159,19 @@ fn test_ring_buffer_overflow_drop_oldest_never_blocks() {
 
 #[test]
 fn test_device_normalization_dedup() {
-    assert_eq!(
-        normalize_device_name("Headphones (Realtek(R) Audio)"),
-        normalize_device_name("Headphones (Realtek Audio)")
+    // Distinct hardware usually differs only inside the parenthesized part on Windows.
+    assert_ne!(
+        normalize_device_name("Microphone (Realtek(R) Audio)"),
+        normalize_device_name("Microphone (USB Audio Device)")
     );
-    assert_eq!(
+    assert_ne!(
         normalize_device_name("Microphone Array [Intel Smart Sound]"),
         normalize_device_name("Microphone Array (Intel)")
+    );
+    // Label noise (case, punctuation, spacing) still merges the same device.
+    assert_eq!(
+        normalize_device_name("Headphones (Realtek(R) Audio)"),
+        normalize_device_name("headphones  (realtek(r) audio)")
     );
 }
 

@@ -2,7 +2,7 @@
 
 //! Desktop Application State Management.
 
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{Mutex, RwLock};
@@ -10,6 +10,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::dto::AsrProgressDto;
 use liveaudio_core::config::LiveAudioConfig;
+use liveaudio_core::service_lock::{ServiceLock, ServiceLockHolder};
 use liveaudio_core::sink::CompositeSink;
 use liveaudio_core::supervisor::ProcessSupervisor;
 
@@ -31,11 +32,20 @@ pub struct AppState {
     pub background_tasks: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
     pub session_sink: Arc<Mutex<Option<Arc<CompositeSink>>>>,
     pub session_path: Arc<RwLock<Option<std::path::PathBuf>>>,
+    /// Timeline origin of the active session; capture offsets are measured from it.
+    pub session_origin: Arc<RwLock<Option<Instant>>>,
+    /// Last cue number handed to the session sinks.
+    pub session_cue_counter: Arc<AtomicU64>,
     pub session_error: Arc<RwLock<Option<String>>>,
     pub transition_lock: Arc<Mutex<()>>,
     pub runtime_setup_token: Arc<Mutex<Option<CancellationToken>>>,
     pub startup_cancel_token: Arc<Mutex<Option<CancellationToken>>>,
     pub previous_transcript: Arc<RwLock<Option<String>>>,
+    pub audio_state: Arc<RwLock<liveaudio_audio::AudioSourceStatus>>,
+    /// Service lock held while this desktop runs the pipeline (released on stop).
+    pub service_lock: Arc<Mutex<Option<ServiceLock>>>,
+    /// Live holder of the service lock when another process runs the service (Monitor Mode).
+    pub foreign_service: Arc<RwLock<Option<ServiceLockHolder>>>,
 }
 
 impl Default for AppState {
@@ -63,11 +73,16 @@ impl AppState {
             background_tasks: Arc::new(Mutex::new(Vec::new())),
             session_sink: Arc::new(Mutex::new(None)),
             session_path: Arc::new(RwLock::new(None)),
+            session_origin: Arc::new(RwLock::new(None)),
+            session_cue_counter: Arc::new(AtomicU64::new(0)),
             session_error: Arc::new(RwLock::new(None)),
             transition_lock: Arc::new(Mutex::new(())),
             runtime_setup_token: Arc::new(Mutex::new(None)),
             startup_cancel_token: Arc::new(Mutex::new(None)),
             previous_transcript: Arc::new(RwLock::new(None)),
+            audio_state: Arc::new(RwLock::new(liveaudio_audio::AudioSourceStatus::Stopped)),
+            service_lock: Arc::new(Mutex::new(None)),
+            foreign_service: Arc::new(RwLock::new(None)),
         }
     }
 

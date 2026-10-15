@@ -147,6 +147,7 @@ pub fn subtitle_from_worker_result(
 struct PendingUtterance {
     created_at_sec: f64,
     dispatched_at: Instant,
+    capture_offset_sec: Option<f64>,
 }
 
 /// Bounded Rust-side correlation between submitted utterance IDs and worker results.
@@ -172,7 +173,34 @@ impl PendingUtteranceTracker {
     }
 
     pub fn track(&mut self, utterance_id: impl Into<String>, created_at_sec: f64) {
-        let utterance_id = utterance_id.into();
+        self.track_at(utterance_id.into(), created_at_sec, None);
+    }
+
+    /// Tracks an utterance together with its capture start, in seconds from the session origin.
+    pub fn track_with_capture_offset(
+        &mut self,
+        utterance_id: impl Into<String>,
+        created_at_sec: f64,
+        capture_offset_sec: f64,
+    ) {
+        self.track_at(
+            utterance_id.into(),
+            created_at_sec,
+            Some(capture_offset_sec),
+        );
+    }
+
+    /// Capture start of a still-pending utterance, if it was tracked with one.
+    pub fn capture_offset_sec(&self, utterance_id: &str) -> Option<f64> {
+        self.pending.get(utterance_id)?.capture_offset_sec
+    }
+
+    fn track_at(
+        &mut self,
+        utterance_id: String,
+        created_at_sec: f64,
+        capture_offset_sec: Option<f64>,
+    ) {
         self.pending.remove(&utterance_id);
         self.order.retain(|id| id != &utterance_id);
         while self.pending.len() >= self.capacity {
@@ -188,6 +216,7 @@ impl PendingUtteranceTracker {
             PendingUtterance {
                 created_at_sec,
                 dispatched_at: Instant::now(),
+                capture_offset_sec,
             },
         );
     }
@@ -414,6 +443,11 @@ impl RetryBuffer {
             self.dropped_count += 1;
         }
         self.buffer.push_back(payload);
+    }
+
+    /// Peek at the oldest pending retry message without removing it.
+    pub fn front(&self) -> Option<&String> {
+        self.buffer.front()
     }
 
     /// Pop the next pending retry message.
