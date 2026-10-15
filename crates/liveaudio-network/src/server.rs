@@ -329,6 +329,19 @@ impl WsServer {
     }
 }
 
+/// Binds `server` only when OBS is enabled; a disabled server stays unbound and returns `None`.
+/// The unbound server still accepts broadcasts (into its replay buffer) so transcription keeps working.
+pub async fn start_if_enabled(
+    server: &mut WsServer,
+    obs_enabled: bool,
+    base_port: u16,
+) -> Result<Option<u16>, NetworkError> {
+    if !obs_enabled {
+        return Ok(None);
+    }
+    NetworkServer::start(server, base_port).await.map(Some)
+}
+
 impl NetworkServer for WsServer {
     fn start(&mut self, base_port: u16) -> NetworkBoxFuture<'_, Result<u16, NetworkError>> {
         Box::pin(async move {

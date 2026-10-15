@@ -39,6 +39,7 @@ export const TRANSLATIONS = {
     vad_silence: 'VAD: Silencio',
     vad_speech: 'VAD: Voz Activa',
     ws_clients_suffix: 'cli',
+    ws_off: 'apagado',
 
     // Action Bar
     btn_start: 'Iniciar Transcripción',
@@ -264,6 +265,7 @@ export const TRANSLATIONS = {
     vad_silence: 'VAD: Silence',
     vad_speech: 'VAD: Active Voice',
     ws_clients_suffix: 'cli',
+    ws_off: 'off',
 
     // Action Bar
     btn_start: 'Start Transcription',

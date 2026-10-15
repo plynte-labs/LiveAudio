@@ -663,6 +663,35 @@ async fn websocket_bind_failure_during_start_rolls_back_starting_state() {
 }
 
 #[tokio::test]
+async fn obs_disabled_startup_does_not_bind_the_websocket() {
+    // Occupying the top port would make a bind fail, so an Ok result proves no bind was attempted.
+    let _occupied = std::net::TcpListener::bind(("127.0.0.1", u16::MAX));
+    let mut config = LiveAudioConfig::default();
+    config.ws_port = u16::MAX;
+    config.obs_enabled = false;
+    let state = AppState::new(config.clone());
+
+    let (ws, created_here) = ensure_startup_websocket(&state, &config)
+        .await
+        .expect("obs-disabled startup must not bind");
+
+    assert!(!created_here);
+    assert_eq!(ws.bound_port(), None);
+    assert!(state.ws_server.lock().await.is_none());
+}
+
+#[tokio::test]
+async fn obs_disabled_status_reports_no_websocket_port() {
+    let mut config = LiveAudioConfig::default();
+    config.obs_enabled = false;
+    let state = AppState::new(config);
+
+    let status = get_service_status_internal(&state).await.expect("status");
+
+    assert_eq!(status.ws_port, 0);
+}
+
+#[tokio::test]
 async fn failed_shutdown_reports_error_state_and_still_releases_websocket() {
     let state = AppState::default();
     state.is_running.store(true, Ordering::SeqCst);
@@ -1255,17 +1284,29 @@ fn test_is_text_blacklisted_cases() {
     let blacklist = "amara.org, subtítulos por, suscríbete, dale like, \"gracias por ver\"";
 
     // Matches exact and substring
-    assert!(is_text_blacklisted("Subtítulos realizados por la comunidad de amara.org", blacklist));
+    assert!(is_text_blacklisted(
+        "Subtítulos realizados por la comunidad de amara.org",
+        blacklist
+    ));
     assert!(is_text_blacklisted("subtítulos por favor", blacklist));
     assert!(is_text_blacklisted("SUSCRÍBETE a mi canal", blacklist));
-    assert!(is_text_blacklisted("No olvides dale like y comentar", blacklist));
-    assert!(is_text_blacklisted("Muchas gracias por ver este video", blacklist));
+    assert!(is_text_blacklisted(
+        "No olvides dale like y comentar",
+        blacklist
+    ));
+    assert!(is_text_blacklisted(
+        "Muchas gracias por ver este video",
+        blacklist
+    ));
 
     // Accent and diacritic folding: matches even if transcript has no accent or blacklist has no accent
     assert!(is_text_blacklisted("Suscribete a mi canal", blacklist)); // unaccented text matches accented blacklist
     assert!(is_text_blacklisted("¡SUSCRIBETE!", blacklist));
     let unaccented_bl = "suscribete, subtitulos por";
-    assert!(is_text_blacklisted("¡Suscríbete a mi canal!", unaccented_bl)); // accented text matches unaccented blacklist
+    assert!(is_text_blacklisted(
+        "¡Suscríbete a mi canal!",
+        unaccented_bl
+    )); // accented text matches unaccented blacklist
     assert!(is_text_blacklisted("Subtítulos por favor", unaccented_bl));
 
     // Multiline and semicolon delimiters
@@ -1281,8 +1322,14 @@ fn test_is_text_blacklisted_cases() {
     assert!(is_text_blacklisted("dale like", smart_quotes_bl));
 
     // Clean text does not match
-    assert!(!is_text_blacklisted("Hola a todos, hoy vamos a programar en Rust", blacklist));
-    assert!(!is_text_blacklisted("Este es un audio completamente normal", blacklist));
+    assert!(!is_text_blacklisted(
+        "Hola a todos, hoy vamos a programar en Rust",
+        blacklist
+    ));
+    assert!(!is_text_blacklisted(
+        "Este es un audio completamente normal",
+        blacklist
+    ));
 
     // Empty blacklist passes everything
     assert!(!is_text_blacklisted("amara.org", ""));
@@ -1495,9 +1542,6 @@ async fn test_multi_chunk_overlap_streaming_simulation() {
         "vamos a ver este gran proyecto genial de código abierto para la comunidad"
     );
 }
-
-
-
 
 #[tokio::test]
 async fn start_fails_cleanly_while_another_process_holds_the_service_lock() {

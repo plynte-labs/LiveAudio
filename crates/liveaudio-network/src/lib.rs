@@ -24,7 +24,7 @@ pub use security::{
     candidate_ports, is_origin_allowed, is_remote_addr_allowed, validate_origin_headers,
     WS_ALLOWED_ORIGINS, WS_LOOPBACK_HOSTS, WS_PORT_FALLBACK_RANGE,
 };
-pub use server::{WsServer, WsServerConfig};
+pub use server::{start_if_enabled, WsServer, WsServerConfig};
 pub use sink_adapter::WebSocketTranscriptionSink;
 pub use traits::{NetworkBoxFuture, NetworkServer};
 
