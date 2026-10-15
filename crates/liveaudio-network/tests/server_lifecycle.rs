@@ -265,6 +265,51 @@ async fn test_late_joining_client_replay() {
 }
 
 #[tokio::test]
+async fn test_late_joining_replay_is_flagged_as_replay() {
+    // A cue that went out live (is_replay = false) must reach a late joiner flagged as a replay;
+    // otherwise a fresh PTT socket (OpenCohost) treats the previous utterance as new speech.
+    let mut config = WsServerConfig::default();
+    config.backlog_policy = BacklogPolicy::SendAll;
+    let mut server = WsServer::new(config);
+    let port = server.start(19935).await.expect("Start server");
+
+    let live = SubtitleWireMessage::new(
+        "msg-live",
+        "Earlier utterance",
+        "default",
+        10.0,
+        11.0,
+        0.1,
+        1.0,
+        0.9,
+        false,
+        0.0,
+    );
+    server.broadcast_subtitle(&live).unwrap();
+
+    let url = format!("ws://127.0.0.1:{}", port);
+    let (ws_stream, _) = connect_async(&url).await.expect("Late client connect");
+    let (_write, mut read) = ws_stream.split();
+    let _hello = tokio::time::timeout(Duration::from_secs(2), read.next())
+        .await
+        .expect("hello");
+
+    let msg = tokio::time::timeout(Duration::from_secs(2), read.next())
+        .await
+        .expect("replayed cue")
+        .unwrap()
+        .unwrap();
+    let replayed: SubtitleWireMessage = serde_json::from_str(msg.to_text().unwrap()).unwrap();
+    assert_eq!(replayed.id, "msg-live");
+    assert!(
+        replayed.is_replay,
+        "late-join burst must mark cues is_replay = true"
+    );
+
+    server.stop().await.expect("Stop server");
+}
+
+#[tokio::test]
 async fn test_late_joining_client_replay_is_paced() {
     let mut config = WsServerConfig::default();
     config.backlog_policy = BacklogPolicy::SendAll;

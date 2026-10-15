@@ -644,7 +644,10 @@ async fn handle_connection(
     };
 
     let mut next_replay_at = tokio::time::Instant::now();
-    for cue_msg in replayed_cues {
+    for mut cue_msg in replayed_cues {
+        // History re-sent to a new connection is a replay even if it first went out live, so
+        // consumers that open a socket per session (OpenCohost PTT) can drop it.
+        cue_msg.is_replay = true;
         tokio::select! {
             _ = inner.shutdown_token.cancelled() => break,
             _ = tokio::time::sleep_until(next_replay_at) => {}
