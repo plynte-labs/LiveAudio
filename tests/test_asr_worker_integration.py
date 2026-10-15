@@ -379,7 +379,7 @@ class TestCudaOomAndErrorRecovery:
                 raise RuntimeError("CUDA out of memory: tried to allocate 4.00 GiB")
             return RealWhisperModel(*args, **kwargs)
 
-        with patch("faster_whisper.WhisperModel", side_effect=failing_init):
+        with patch("faster_whisper.WhisperModel", side_effect=failing_init),                 patch("torch.cuda.is_available", return_value=True):
             worker._handle_init(init_cmd)
 
         oom_errors = [e for e in events if e.event == "error" and getattr(e.payload, "code", "") == "cuda_oom"]
@@ -413,7 +413,7 @@ class TestCudaOomAndErrorRecovery:
             ),
         )
 
-        with patch("faster_whisper.WhisperModel", side_effect=RuntimeError("CUDA driver out of memory")):
+        with patch("faster_whisper.WhisperModel", side_effect=RuntimeError("CUDA driver out of memory")),                 patch("torch.cuda.is_available", return_value=True):
             worker._handle_init(init_cmd)
 
         err_events = [e for e in events if e.event == "error"]

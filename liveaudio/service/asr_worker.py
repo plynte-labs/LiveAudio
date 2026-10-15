@@ -1140,7 +1140,9 @@ def run_self_test(
                 raise RuntimeError("CUDA out of memory: tried to allocate 2.00 GiB")
             return RealWhisperModel(*args, **kwargs)
 
-        with patch("faster_whisper.WhisperModel", side_effect=failing_whisper):
+        # Simulated OOM needs the CUDA branch to be reached, so report CUDA as
+        # present even on hosts without a GPU.
+        with patch("faster_whisper.WhisperModel", side_effect=failing_whisper),                 patch("torch.cuda.is_available", return_value=True):
             worker._handle_init(oom_init_cmd)
 
         err_events = [e for e in events if e.event == "error" and getattr(e.payload, "code", "") == "cuda_oom"]
