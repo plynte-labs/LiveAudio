@@ -244,7 +244,11 @@ async fn cancelling_uv_sync_reaps_child_and_preserves_previous_runtime() {
     let root = test_root("cancel-running-uv");
     let package_source = root.join("source");
     let project_root = root.join("managed");
-    let fake_uv = root.join("uv-hang.cmd");
+    let fake_uv = root.join(if cfg!(windows) {
+        "uv-hang.cmd"
+    } else {
+        "uv-hang"
+    });
     let started_marker = root.join("uv-started");
     fs::create_dir_all(package_source.join("liveaudio/service")).unwrap();
     fs::write(package_source.join("liveaudio/__init__.py"), "# fixture\n").unwrap();
@@ -255,14 +259,7 @@ async fn cancelling_uv_sync_reaps_child_and_preserves_previous_runtime() {
     .unwrap();
     fs::create_dir_all(project_root.join(".venv")).unwrap();
     fs::write(project_root.join("existing-runtime.marker"), "preserve me").unwrap();
-    fs::write(
-        &fake_uv,
-        format!(
-            "@echo off\r\necho started > \"{}\"\r\n:wait\r\ngoto wait\r\n",
-            started_marker.display()
-        ),
-    )
-    .unwrap();
+    write_hanging_fake_uv(&fake_uv, &started_marker);
 
     let cancellation = CancellationToken::new();
     let cancel_task = cancellation.clone();
@@ -334,6 +331,35 @@ fn write_fake_uv_for_project(path: &Path, _root: &Path) {
 fn write_fake_uv_for_project(path: &Path, _root: &Path) {
     use std::os::unix::fs::PermissionsExt;
     fs::write(path, "#!/bin/sh\nmkdir -p \"$3/.venv\"\n").unwrap();
+    let mut permissions = fs::metadata(path).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path, permissions).unwrap();
+}
+
+#[cfg(windows)]
+fn write_hanging_fake_uv(path: &Path, started_marker: &Path) {
+    fs::write(
+        path,
+        format!(
+            "@echo off\r\necho started > \"{}\"\r\n:wait\r\ngoto wait\r\n",
+            started_marker.display()
+        ),
+    )
+    .unwrap();
+}
+
+#[cfg(not(windows))]
+fn write_hanging_fake_uv(path: &Path, started_marker: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    // exec keeps the hanging process as the spawned child, so cancellation kills it directly.
+    fs::write(
+        path,
+        format!(
+            "#!/bin/sh\necho started > '{}'\nexec sleep 600\n",
+            started_marker.display()
+        ),
+    )
+    .unwrap();
     let mut permissions = fs::metadata(path).unwrap().permissions();
     permissions.set_mode(0o755);
     fs::set_permissions(path, permissions).unwrap();
