@@ -219,7 +219,7 @@ Speech activity events bypass the per-client retry queue. Under backpressure the
 ### 4.5 Defined but not sent over the WebSocket
 
 - **`status`**: the `StatusWireEvent` type exists in `protocol.rs`, but no code path sends it on the WebSocket.
-- **`ws_port`**: when `liveaudio-cli` starts, it writes a `ws_port` service event as a JSON line to its stdout. It is not a WebSocket frame. The event uses the service envelope from `liveaudio-ipc`, and its payload contains `base_port`, `effective_port`, `base` and `port`:
+- **`ws_port`**: when `liveaudio-cli` starts with `obs_enabled` set to `true`, it writes a `ws_port` service event as a JSON line to its stdout. With `obs_enabled` set to `false`, no listener is bound and no event is written. It is not a WebSocket frame. The event uses the service envelope from `liveaudio-ipc`, and its payload contains `base_port`, `effective_port`, `base` and `port`:
 
   ```json
   {"schema": "liveaudio.service.event", "version": 1, "service_pid": 1234, "parent_pid": 5678, "type": "ws_port", "base_port": 8765, "effective_port": 8766, "base": 8765, "port": 8766}
@@ -277,10 +277,12 @@ The server keeps the last 256 subtitles it actually sent (`REPLAY_BUFFER_MAX`). 
 
 A client that wants only fresh subtitles can skip every message with `is_replay: true`. That also skips delayed live subtitles. A client that wants all text can ignore the flag.
 
+The bundled overlay uses the flag only to choose its stacked render mode. It never drops a subtitle because of the flag. The example clients in section 8 do skip flagged messages on purpose, so they also skip delayed live subtitles.
+
 ### 5.5 Delivery guarantees and slow clients
 
 - There are no acknowledgements, sequence numbers, or resume tokens. A client that disconnects misses everything until it reconnects. On reconnection it gets the replay described above.
-- Each client has an outgoing queue of 64 frames and a retry queue of 10 frames. Frames that do not fit in the outgoing queue wait in the retry queue. When the retry queue is full, its oldest frame is dropped and counted. The client is not disconnected.
+- Each client has an outgoing queue of 64 frames and a retry queue of 10 frames. Frames that do not fit in the outgoing queue wait in the retry queue. When the retry queue is full, its oldest frame is dropped and counted. The client is not disconnected. Queued frames are sent during the next broadcast, not when the client catches up. If no subtitle follows a burst, the last queued frames wait until one does.
 - Replay buffer overflow is counted in `replay_drops`. Retry overflow is counted in `retry_drops`. Both counters appear in the network health report (`NetworkHealthReport`), not on the wire.
 - The server does not de-duplicate. In a narrow timing window while a client is being admitted, a subtitle can arrive twice: once in the replay burst and once live. If your client must display each subtitle exactly once, de-duplicate by `id`.
 
@@ -294,7 +296,7 @@ The protocol is server-to-client only. The server does not interpret client mess
 - **Ping** frames are answered with Pong. Because frames are read only after the replay burst, a Ping sent during a long burst is answered when the burst finishes.
 - **Close** frames close the connection.
 
-The server does not send its own WebSocket pings. A client that uses protocol-level keepalive should either turn it off or allow for delayed replies during replay. When the server shuts down, it sends a Close frame with code `1000` and reason `"Server shutdown"`.
+The server does not send its own WebSocket pings, and it has no idle timeout. A client that disappears without a Close frame (for example, a laptop that went to sleep) stays in the client count until TCP reports the connection dead. Such a client does not block broadcasts, and its queues stay bounded. A client that uses protocol-level keepalive should either turn it off or allow for delayed replies during replay. When the server shuts down, it sends a Close frame with code `1000` and reason `"Server shutdown"`.
 
 ---
 
@@ -427,7 +429,9 @@ In the Python app, you can save transcripts without sending subtitles to OBS:
 2. Turn off **Send subtitles to OBS** (config key `obs_enabled`).
 3. Transcripts are still saved to disk (JSONL and VTT).
 
-> **Note:** The Python engine checks `obs_enabled` before it emits to the WebSocket (`liveaudio/core/engine.py`). The Rust server does not read `obs_enabled`, and the Rust desktop UI has no equivalent switch in this repository. In the desktop app and `liveaudio-cli`, subtitles go to connected clients whenever the server runs.
+> **Note (Rust desktop app and `liveaudio-cli`):** When `obs_enabled` is `false`, the server is not bound. Transcription and the transcript keep working. The desktop app reports the WebSocket port as `0` and shows `WS: off`, and the overlay URL command returns an error. The desktop app has no UI switch for this key, so set it in the configuration file.
+>
+> The Python engine also checks `obs_enabled` before it emits to the WebSocket (`liveaudio/core/engine.py`).
 
 ---
 
