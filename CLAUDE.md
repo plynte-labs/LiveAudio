@@ -5,18 +5,18 @@
 - All implementation, design, and code-review delegation MUST use Fable 5: pass `model: "fable"` in every Agent tool call for sdd-apply, sdd-design, sdd-propose, jd-judge-a/b, jd-fix-agent, and general implementation delegation.
 - Lightweight phases keep cheaper models: sdd-explore/spec/tasks/verify → sonnet, sdd-archive/onboard → haiku.
 
-## Active Work
-
-- Packaging & distribution overhaul (uv bootstrapper + frozen Python launcher, Windows + Linux).
-  Plan: C:\Users\tavo_\.claude\plans\ok-continua-con-la-refactored-dongarra.md
-  Engram topic: architecture/packaging-security (supersedes the Nuitka/portable-Python design).
-
 ## Project Facts
 
 - Open source (MIT) — no IP-protection constraints.
-- Python desktop app: faster-whisper + ctranslate2 (ASR), torch (Silero VAD), CustomTkinter GUI, websockets (OBS subtitles).
-- CUDA builds must use the cu121 torch index (bundles cublas64_12.dll required by ctranslate2 4.x).
-- Do not commit built artifacts; dist/ is gitignored.
+- Architecture: Rust workspace (`crates/`) + Tauri 2 desktop app (`desktop/`), with a hybrid Python ASR worker.
+  - `liveaudio-audio`: capture via `cpal`. `liveaudio-vad`: Silero VAD v6 via ONNX Runtime (`ort`, model embedded).
+  - `liveaudio-network`: WebSocket server (`tokio-tungstenite`) for OBS subtitles and integrations; protocol in `docs/WEBSOCKET_OBS.md`.
+  - `liveaudio-core`: pipeline and runtime provisioning; `liveaudio-cli`: CLI, also bundled as the Tauri sidecar.
+  - Python is ASR only: `liveaudio/service/asr_worker.py` (faster-whisper + ctranslate2), provisioned into a managed `.venv` with a vendored `uv` (`liveaudio setup-runtime --backend cpu|cu121`).
+- The legacy Python GUI (`liveaudio/app.py`, CustomTkinter) is not the shipped app.
+- CUDA backend must use the cu121 torch index (bundles cublas64_12.dll required by ctranslate2 4.x).
+- Release: build the `liveaudio-cli` sidecar, then `npx @tauri-apps/cli@2.12.1 build` with `tauri.release.conf.json`.
+- Do not commit built artifacts (`dist/` is gitignored) or `desktop/src-tauri/gen/schemas/*`.
 
 ## Minimalism — Decision Ladder
 
