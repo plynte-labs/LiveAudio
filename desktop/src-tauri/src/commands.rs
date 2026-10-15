@@ -27,7 +27,7 @@ use liveaudio_core::sink::{
 use liveaudio_core::supervisor::{ProcessSupervisor, WorkerProcessConfig};
 use liveaudio_network::{
     candidate_ports, subtitle_from_worker_result, BacklogPolicy, NetworkServer,
-    PendingUtteranceTracker, WsServer, WsServerConfig,
+    PendingUtteranceTracker, SubtitleWireMessage, WsServer, WsServerConfig,
 };
 use liveaudio_vad::{
     cpu_runtime_library_path, initialize_onnx_runtime, SileroVad, VadConfig, VadEngine,
@@ -2131,6 +2131,23 @@ pub async fn export_diagnostics(
     })
 }
 
+/// Wire message for a test cue, shaped like a live subtitle so OBS renders it normally.
+pub(crate) fn test_subtitle_wire_message(cue: &SubtitleCueDto) -> SubtitleWireMessage {
+    let now_sec = cue.timestamp_ms as f64 / 1000.0;
+    SubtitleWireMessage::new(
+        cue.id.to_string(),
+        cue.text.clone(),
+        cue.style.clone(),
+        now_sec,
+        now_sec,
+        0.0,
+        0.0,
+        0.0,
+        false,
+        0.0,
+    )
+}
+
 /// Send a mock/test subtitle cue to verify preview styling and WebSocket propagation.
 #[tauri::command]
 pub async fn send_test_subtitle(
@@ -2161,6 +2178,9 @@ pub async fn send_test_subtitle(
     };
 
     let _ = app.emit("subtitle_cue", &cue);
+    if let Some(ws) = state.ws_server.lock().await.as_ref() {
+        let _ = ws.broadcast_subtitle(&test_subtitle_wire_message(&cue));
+    }
     Ok(cue)
 }
 

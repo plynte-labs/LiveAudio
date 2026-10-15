@@ -837,6 +837,21 @@ async function runTests() {
   assert(appSource.includes("itemElement.classList.add('feed-item-blocked')"),
     'Blacklisting a phrase strikes through and marks the feed item as blocked');
 
+  // Probar (test subtitle): one feed entry per click, via the subtitle_cue event only
+  assert(!/addSubtitleToFeed\(cue\.text/.test(appSource),
+    'Probar does not append the returned cue; the subtitle_cue event is the single feed path');
+  assert(!appSource.includes('samplePhrases') && !appSource.includes('Math.random() * samplePhrases'),
+    'Probar sends one fixed localized test line instead of random marketing phrases');
+  assert(appSource.includes("invoke('send_test_subtitle', { text: testText, style })"),
+    'Probar sends the localized test text to the backend');
+  setLanguage('es');
+  assert(t('test_subtitle_text') === 'Subtítulo de prueba de LiveAudio',
+    'Spanish test subtitle text is localized');
+  setLanguage('en');
+  assert(t('test_subtitle_text') === 'LiveAudio test subtitle',
+    'English test subtitle text is localized');
+  setLanguage('es');
+
   // Verify robust state synchronization, serialized queue, keyboard navigation and bounds clamping
   assert(appSource.includes('savedConfig = structuredClone(newConfig);'),
     'savedConfig baseline is synchronized on blacklist and prompt additions');

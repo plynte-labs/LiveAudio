@@ -1406,24 +1406,13 @@ async function initApp() {
   if (elements.btnTestSubtitle) {
     elements.btnTestSubtitle.addEventListener('click', async () => {
       await withProcessing(elements.btnTestSubtitle, async () => {
-        const samplePhrases = getLanguage() === 'es' ? [
-          '¡Hola mundo! Transcripción de voz en tiempo real con LiveAudio.',
-          'Excelente fidelidad acústica en español e inglés sin retraso.',
-          'Integración nativa con OBS Studio mediante fuente de navegador.',
-          'Tecnología Whisper con aceleración por hardware CUDA de baja latencia.',
-        ] : [
-          'Hello world! Real-time voice transcription powered by LiveAudio.',
-          'High acoustic fidelity in Spanish and English with ultra-low latency.',
-          'Native OBS Studio integration via local browser source.',
-          'Whisper ASR engine with GPU CUDA hardware acceleration.',
-        ];
-        const phrase = samplePhrases[Math.floor(Math.random() * samplePhrases.length)];
+        // The backend emits subtitle_cue, which is the only path that appends to the feed.
+        const testText = t('test_subtitle_text');
         const style = elements.selectSubtitleStyle.value;
         try {
-          const cue = await invoke('send_test_subtitle', { text: phrase, style });
-          addSubtitleToFeed(cue.text, cue);
+          await invoke('send_test_subtitle', { text: testText, style });
         } catch (err) {
-          addSubtitleToFeed(phrase, { text: phrase, style, timestamp_ms: Date.now() });
+          addSubtitleToFeed(testText, { text: testText, style, timestamp_ms: Date.now() });
         }
       });
     });

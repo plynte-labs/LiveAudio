@@ -1802,3 +1802,23 @@ fn test_select_uv_reports_actionable_error_when_nothing_found() {
     assert!(error.contains("uv"));
     assert!(error.contains("PATH"));
 }
+
+#[test]
+fn test_subtitle_cue_broadcasts_as_live_wire_message() {
+    let cue = SubtitleCueDto {
+        id: 42,
+        start: 0.0,
+        end: 3.0,
+        text: "LiveAudio test subtitle".to_string(),
+        style: "neon".to_string(),
+        timestamp_ms: 42,
+    };
+
+    let wire = crate::commands::test_subtitle_wire_message(&cue);
+
+    assert_eq!(wire.id, "42");
+    assert_eq!(wire.text, "LiveAudio test subtitle");
+    assert_eq!(wire.style, "neon");
+    assert!(!wire.is_replay);
+    assert_eq!(wire.catchup_interval_sec, 0.0);
+}
