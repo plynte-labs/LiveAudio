@@ -600,7 +600,9 @@ function updateStatusUI(status) {
   }
 
   // WS Pill
-  elements.pillWsText.textContent = `WS: ${status.ws_port} (${status.ws_clients} ${t('ws_clients_suffix')})`;
+  elements.pillWsText.textContent = status.ws_port === 0
+    ? `WS: ${t('ws_off')}`
+    : `WS: ${status.ws_port} (${status.ws_clients} ${t('ws_clients_suffix')})`;
 
   // Hardware Pill
   const audioKey = audioStateKey(status);

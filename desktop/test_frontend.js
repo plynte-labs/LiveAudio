@@ -338,6 +338,12 @@ async function runTests() {
     && !i18nContent.includes('integration is complete'),
     'help copy describes active RNNoise and metadata-only events without interim wording');
 
+  const appJsContent = fs.readFileSync(path.join(__dirname, 'src', 'app.js'), 'utf8');
+  assert(/status\.ws_port === 0[\s\S]{0,120}t\('ws_off'\)/.test(appJsContent),
+    'WS pill shows an off label instead of port 0 when OBS is disabled');
+  assert((i18nContent.match(/ws_off:/g) || []).length === 2,
+    'ws_off is localized in Spanish and English');
+
   const baseline = { model_size: 'small', device: 'cpu', ws_port: 8765, subtitle_style: 'default' };
   assert(!runtimeSettingsChanged(baseline, { ...baseline, subtitle_style: 'neon' }),
     'style-only change does not request a service restart');

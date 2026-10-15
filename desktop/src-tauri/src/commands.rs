@@ -26,7 +26,7 @@ use liveaudio_core::sink::{
 };
 use liveaudio_core::supervisor::{ProcessSupervisor, WorkerProcessConfig};
 use liveaudio_network::{
-    candidate_ports, subtitle_from_worker_result, BacklogPolicy, NetworkServer,
+    candidate_ports, start_if_enabled, subtitle_from_worker_result, BacklogPolicy, NetworkServer,
     PendingUtteranceTracker, SubtitleWireMessage, WsServer, WsServerConfig,
 };
 use liveaudio_vad::{
@@ -36,16 +36,21 @@ use liveaudio_vad::{
 
 fn initialize_bundled_cpu_runtime(app: &AppHandle) -> Result<(), String> {
     // 1. Try packaged resource directory first
-    let packaged_path = app.path().resource_dir().ok().and_then(|resource_root| {
-        cpu_runtime_library_path(&resource_root).ok()
-    }).filter(|p| p.is_file());
+    let packaged_path = app
+        .path()
+        .resource_dir()
+        .ok()
+        .and_then(|resource_root| cpu_runtime_library_path(&resource_root).ok())
+        .filter(|p| p.is_file());
 
     // 2. Try development and local executable fallbacks
     let runtime_path = if let Some(path) = packaged_path {
         path
     } else {
         let current_dir = std::env::current_dir().ok();
-        let exe_dir = std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.to_path_buf()));
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|e| e.parent().map(|p| p.to_path_buf()));
 
         let candidates = [
             // packaging in current working dir (e.g. E:\LiveAudio\packaging)
@@ -530,8 +535,10 @@ pub(crate) async fn ensure_startup_websocket(
         max_live_delay_sec: config.subtitle_max_live_delay_sec as f32,
         ..Default::default()
     });
-    let effective_port = match NetworkServer::start(&mut ws, config.ws_port).await {
-        Ok(port) => port,
+    let effective_port = match start_if_enabled(&mut ws, config.obs_enabled, config.ws_port).await {
+        Ok(Some(port)) => port,
+        // OBS disabled: keep the unbound server for the pipeline, but do not expose it in state.
+        Ok(None) => return Ok((ws, false)),
         Err(error) => {
             drop(ws_guard);
             return Err(rollback_failed_start_before_audio(
@@ -847,10 +854,12 @@ pub async fn get_service_status_internal(state: &AppState) -> Result<ServiceStat
     let ws_port = if is_running {
         state.active_port.load(Ordering::SeqCst)
     } else {
-        let configured = state.config.read().await.ws_port;
+        let saved = state.config.read().await;
+        // 0 means no WebSocket listener: OBS is disabled in config.
+        let own_port = if saved.obs_enabled { saved.ws_port } else { 0 };
         foreign_service
             .and_then(|holder| holder.ws_port)
-            .unwrap_or(configured)
+            .unwrap_or(own_port)
     };
     let ws_clients = {
         let ws_guard = state.ws_server.lock().await;
@@ -1681,10 +1690,9 @@ async fn start_pipeline_locked(
 
     state.background_tasks.lock().await.push(event_task);
     state.background_tasks.lock().await.push(audio_task);
-    state.active_port.store(
-        ws_server.bound_port().unwrap_or(config.ws_port),
-        Ordering::SeqCst,
-    );
+    state
+        .active_port
+        .store(ws_server.bound_port().unwrap_or(0), Ordering::SeqCst);
     *state.active_config.write().await = Some(config.clone());
     let status = get_service_status_internal(state).await?;
     let _ = app.emit("service_status_changed", &status);
@@ -2052,8 +2060,18 @@ pub async fn get_obs_overlay_info(
     let port = if state.is_running() {
         state.active_port.load(Ordering::SeqCst)
     } else {
-        state.config.read().await.ws_port
+        let saved = state.config.read().await;
+        if saved.obs_enabled {
+            saved.ws_port
+        } else {
+            0
+        }
     };
+    if port == 0 {
+        return Err(
+            "OBS WebSocket is disabled (obs_enabled=false); the overlay needs it".to_string(),
+        );
+    }
 
     let resource_dir = app.path().resource_dir().ok();
     let overlay = resolve_obs_overlay_path(resource_dir.as_deref()).ok_or_else(|| {
@@ -2236,7 +2254,14 @@ pub fn is_text_blacklisted(text: &str, blacklist_csv: &str) -> bool {
             entry
                 .trim()
                 .trim_matches(|c| {
-                    c == '"' || c == '\'' || c == '“' || c == '”' || c == '‘' || c == '’' || c == '«' || c == '»'
+                    c == '"'
+                        || c == '\''
+                        || c == '“'
+                        || c == '”'
+                        || c == '‘'
+                        || c == '’'
+                        || c == '«'
+                        || c == '»'
                 })
                 .trim()
         })
@@ -2365,6 +2390,3 @@ pub fn trim_boundary_overlap_with_max(prev: &str, curr: &str, max_words: usize) 
 
     curr_trimmed.to_string()
 }
-
-
-

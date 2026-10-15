@@ -34,7 +34,7 @@ use liveaudio_core::supervisor::{
 };
 use liveaudio_ipc::ServiceEventType;
 use liveaudio_network::{
-    candidate_ports, subtitle_from_worker_result, BacklogPolicy, NetworkServer,
+    candidate_ports, start_if_enabled, subtitle_from_worker_result, BacklogPolicy,
     PendingUtteranceTracker, WsServer, WsServerConfig,
 };
 use liveaudio_vad::{
@@ -801,22 +801,29 @@ async fn run_service(
         max_live_delay_sec: config.subtitle_max_live_delay_sec as f32,
         ..Default::default()
     });
-    let effective_port = match NetworkServer::start(&mut ws, effective_base_port).await {
-        Ok(port) => {
-            eprintln!("✅ WebSocket server listening on ws://127.0.0.1:{}", port);
-            port
-        }
-        Err(e) => {
-            eprintln!("❌ Failed to bind WebSocket server: {}", e);
-            return Err(e.into());
-        }
-    };
+    let effective_port =
+        match start_if_enabled(&mut ws, config.obs_enabled, effective_base_port).await {
+            Ok(Some(port)) => {
+                eprintln!("✅ WebSocket server listening on ws://127.0.0.1:{}", port);
+                Some(port)
+            }
+            Ok(None) => {
+                eprintln!("WebSocket server disabled (obs_enabled=false); transcription continues");
+                None
+            }
+            Err(e) => {
+                eprintln!("❌ Failed to bind WebSocket server: {}", e);
+                return Err(e.into());
+            }
+        };
 
-    // Emit ws_port event immediately over stdout JSON-lines for OpenCohost discovery
-    emitter.emit_ws_port(effective_base_port, effective_port);
-    // Desktop monitors read the bound port from the lock (it may differ after port fallback).
-    if let Err(error) = service_lock.record_ws_port(effective_port) {
-        eprintln!("Could not record the WebSocket port in the service lock: {error}");
+    if let Some(effective_port) = effective_port {
+        // Emit ws_port event immediately over stdout JSON-lines for OpenCohost discovery
+        emitter.emit_ws_port(effective_base_port, effective_port);
+        // Desktop monitors read the bound port from the lock (it may differ after port fallback).
+        if let Err(error) = service_lock.record_ws_port(effective_port) {
+            eprintln!("Could not record the WebSocket port in the service lock: {error}");
+        }
     }
 
     // 3. Faster-Whisper Supervised Worker
