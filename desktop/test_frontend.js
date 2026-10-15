@@ -660,6 +660,10 @@ async function runTests() {
     'Default capability is scoped to the main window only');
   assert(!capability.permissions.includes('core:event:allow-emit'),
     'Default capability no longer lists the unused core:event:allow-emit entry');
+  // onCloseRequested finishes an unprevented close by calling window.destroy(); without this
+  // permission the call is rejected and the window can never be closed.
+  assert(capability.permissions.includes('core:window:allow-destroy'),
+    'Default capability grants core:window:allow-destroy for the onCloseRequested close path');
   assert(!/\bemit\s*\(/.test(jsContent), 'Frontend does not call emit, so the emit permission is unnecessary');
 
   // The event panel ready line is translated through i18n, not hard-coded Spanish
