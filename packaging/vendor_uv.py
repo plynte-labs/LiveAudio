@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Download the pinned uv binary into packaging/vendor/ (used by CI and release)."""
 
 import io
