@@ -9,7 +9,7 @@ export const TRANSLATIONS = {
   es: {
     // Header & Brand
     app_title: 'LiveAudio',
-    app_version: 'v1.5.0 Tauri 2',
+    app_version: 'v1.5.0',
     author_credit: 'by Franguh',
     author_credit_accessible: 'Visitar el perfil de Franguh en GitHub (se abre en el navegador del sistema)',
     toast_author_profile_open_failed: 'No se pudo abrir el perfil de Franguh en el navegador: ',
@@ -20,6 +20,8 @@ export const TRANSLATIONS = {
     // Status Pills
     status_stopped: 'Detenido',
     status_starting: 'Iniciando...',
+    status_loading: 'Cargando...',
+    runtime_setup_worker_starting: 'Iniciando el motor ASR y esperando a que esté listo…',
     status_downloading: 'Descargando modelo…',
     status_ready: 'Listo',
     status_listening: 'Escuchando',
@@ -232,7 +234,7 @@ export const TRANSLATIONS = {
   en: {
     // Header & Brand
     app_title: 'LiveAudio',
-    app_version: 'v1.5.0 Tauri 2',
+    app_version: 'v1.5.0',
     author_credit: 'by Franguh',
     author_credit_accessible: 'Visit Franguh on GitHub (opens in the system browser)',
     toast_author_profile_open_failed: 'Could not open Franguh’s profile in the browser: ',
@@ -243,6 +245,8 @@ export const TRANSLATIONS = {
     // Status Pills
     status_stopped: 'Stopped',
     status_starting: 'Starting...',
+    status_loading: 'Loading...',
+    runtime_setup_worker_starting: 'Starting the ASR worker and waiting for it to become ready…',
     status_downloading: 'Downloading model…',
     status_ready: 'Ready',
     status_listening: 'Listening',

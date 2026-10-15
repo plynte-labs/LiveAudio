@@ -622,6 +622,25 @@ textarea.form-control {
   pointer-events: none;
 }
 
+#runtime-setup-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 4px 14px;
+  font-size: 0.75rem;
+  color: var(--text-hint);
+}
+
+#runtime-setup-progress[hidden] {
+  display: none;
+}
+
+#runtime-setup-meter {
+  width: 100%;
+  height: 6px;
+  accent-color: var(--accent-primary);
+}
+
 .form-group.device-dimmed .form-hint {
   color: var(--accent-amber);
 }
@@ -750,9 +769,13 @@ textarea.form-control {
 }
 
 .feed-item.feed-item-blocked {
-  opacity: 0.55;
   background: rgba(239, 68, 68, 0.05);
   border-color: rgba(239, 68, 68, 0.2);
+}
+
+.feed-item.feed-item-blocked > .feed-item-time,
+.feed-item.feed-item-blocked > .feed-item-body {
+  opacity: 0.55;
 }
 
 .feed-item.feed-item-blocked .feed-item-text {

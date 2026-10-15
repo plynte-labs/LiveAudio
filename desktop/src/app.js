@@ -574,11 +574,12 @@ function updateStatusUI(status) {
 
   // ASR State Pill
   const state = status.monitor_mode ? 'monitor' : (status.asr_state || (status.is_running ? 'listening' : 'stopped'));
-  const cssState = state === 'monitor' ? 'listening' : state.startsWith('error') ? 'failed' : (state.startsWith('Descargando') || state === 'downloading') ? 'starting' : state;
+  const cssState = state === 'monitor' ? 'listening' : state.startsWith('error') ? 'failed' : (state.startsWith('Descargando') || state === 'downloading' || state === 'loading') ? 'starting' : state;
   elements.pillStatus.className = `pill state-${cssState}`;
   const stateLabels = {
     stopped: t('status_stopped'),
     starting: t('status_starting'),
+    loading: t('status_loading'),
     downloading: t('status_downloading'),
     ready: t('status_ready'),
     listening: t('status_listening'),
@@ -1323,6 +1324,7 @@ async function loadObsOverlayInfo() {
   try {
     const obs = await invoke('get_obs_overlay_info');
     elements.inputObsUrl.value = obs.url;
+    elements.inputObsUrl.title = obs.url;
   } catch (err) {
     console.error('Error loading OBS overlay info:', err);
   }
@@ -1796,7 +1798,7 @@ async function initApp() {
 function setRuntimeSetupProgress(progress) {
   if (!elements.runtimeSetupProgress || !progress) return;
   const phase = String(progress.phase || 'preparing');
-  const text = String(progress.text || phase);
+  const text = phase === 'starting_worker' ? t('runtime_setup_worker_starting') : String(progress.text || phase);
   const percent = Number.isFinite(progress.percent) ? Math.max(0, Math.min(100, progress.percent)) : null;
   elements.runtimeSetupProgress.hidden = phase === 'ready';
   elements.runtimeSetupText.textContent = text;

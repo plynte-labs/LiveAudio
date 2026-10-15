@@ -869,6 +869,33 @@ async function runTests() {
     'English close confirmation copy is localized');
   setLanguage('es');
 
+  // Visual and i18n defects from the 2026-10-14 screenshot
+  assert(/data-i18n="app_version">v[\d.]+<\/span>/.test(htmlContent) && !/Tauri 2/.test(htmlContent),
+    'Header badge shows only the app version, without the internal framework label');
+  assert(!/app_version: '[^']*Tauri/.test(i18nContent),
+    'Localized app_version tables drop the internal framework label');
+  assert(appSource.includes('loading: t(\'status_loading\')'),
+    'Status pill maps the loading state to a translated label');
+  setLanguage('es');
+  assert(t('status_loading') === 'Cargando...', 'Spanish loading status translation exists');
+  assert(t('runtime_setup_worker_starting') === 'Iniciando el motor ASR y esperando a que esté listo…',
+    'Spanish ASR worker startup line is localized');
+  setLanguage('en');
+  assert(t('status_loading') === 'Loading...', 'English loading status translation exists');
+  assert(t('runtime_setup_worker_starting') === 'Starting the ASR worker and waiting for it to become ready…',
+    'English ASR worker startup line is localized');
+  setLanguage('es');
+  assert(appSource.includes("phase === 'starting_worker'") && appSource.includes("t('runtime_setup_worker_starting')"),
+    'Startup progress line uses the localized text for the starting_worker phase');
+  assert(!/\.feed-item\.feed-item-blocked\s*\{[^}]*opacity/.test(cssContent)
+    && /\.feed-item\.feed-item-blocked\s*>\s*\.feed-item-body\s*\{[^}]*opacity/.test(cssContent),
+    'Blocked feed items dim only their text, so the kebab menu opacity matches other items');
+  assert(/#runtime-setup-progress\[hidden\]\s*\{\s*display:\s*none/.test(cssContent)
+    && /#runtime-setup-meter\s*\{[^}]*width:\s*100%/.test(cssContent),
+    'Startup progress block is styled as hint text with a full-width meter, hidden when idle');
+  assert(appSource.includes('elements.inputObsUrl.title = obs.url'),
+    'Truncated OBS URL field exposes the full URL as a tooltip');
+
   // Verify robust state synchronization, serialized queue, keyboard navigation and bounds clamping
   assert(appSource.includes('savedConfig = structuredClone(newConfig);'),
     'savedConfig baseline is synchronized on blacklist and prompt additions');
