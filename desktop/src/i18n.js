@@ -9,7 +9,7 @@ export const TRANSLATIONS = {
   es: {
     // Header & Brand
     app_title: 'LiveAudio',
-    app_version: 'v1.5.0',
+    app_version: 'v1.5.1',
     author_credit: 'by Franguh',
     author_credit_accessible: 'Visitar el perfil de Franguh en GitHub (se abre en el navegador del sistema)',
     toast_author_profile_open_failed: 'No se pudo abrir el perfil de Franguh en el navegador: ',
@@ -234,7 +234,7 @@ export const TRANSLATIONS = {
   en: {
     // Header & Brand
     app_title: 'LiveAudio',
-    app_version: 'v1.5.0',
+    app_version: 'v1.5.1',
     author_credit: 'by Franguh',
     author_credit_accessible: 'Visit Franguh on GitHub (opens in the system browser)',
     toast_author_profile_open_failed: 'Could not open Franguh’s profile in the browser: ',

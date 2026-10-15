@@ -2215,7 +2215,7 @@ checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 
 [[package]]
 name = "liveaudio-audio"
-version = "1.5.0"
+version = "1.5.1"
 dependencies = [
  "cpal",
  "crossbeam-channel",
@@ -2231,7 +2231,7 @@ dependencies = [
 
 [[package]]
 name = "liveaudio-cli"
-version = "1.5.0"
+version = "1.5.1"
 dependencies = [
  "liveaudio-audio",
  "liveaudio-core",
@@ -2247,7 +2247,7 @@ dependencies = [
 
 [[package]]
 name = "liveaudio-core"
-version = "1.5.0"
+version = "1.5.1"
 dependencies = [
  "crossbeam-channel",
  "libc",
@@ -2265,7 +2265,7 @@ dependencies = [
 
 [[package]]
 name = "liveaudio-desktop"
-version = "1.5.0"
+version = "1.5.1"
 dependencies = [
  "cpal",
  "liveaudio-audio",
@@ -2287,7 +2287,7 @@ dependencies = [
 
 [[package]]
 name = "liveaudio-ipc"
-version = "1.5.0"
+version = "1.5.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2296,7 +2296,7 @@ dependencies = [
 
 [[package]]
 name = "liveaudio-network"
-version = "1.5.0"
+version = "1.5.1"
 dependencies = [
  "futures-util",
  "liveaudio-core",
@@ -2312,7 +2312,7 @@ dependencies = [
 
 [[package]]
 name = "liveaudio-vad"
-version = "1.5.0"
+version = "1.5.1"
 dependencies = [
  "liveaudio-audio",
  "liveaudio-ipc",
