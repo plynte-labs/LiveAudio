@@ -666,9 +666,11 @@ async fn websocket_bind_failure_during_start_rolls_back_starting_state() {
 async fn obs_disabled_startup_does_not_bind_the_websocket() {
     // Occupying the top port would make a bind fail, so an Ok result proves no bind was attempted.
     let _occupied = std::net::TcpListener::bind(("127.0.0.1", u16::MAX));
-    let mut config = LiveAudioConfig::default();
-    config.ws_port = u16::MAX;
-    config.obs_enabled = false;
+    let config = LiveAudioConfig {
+        ws_port: u16::MAX,
+        obs_enabled: false,
+        ..LiveAudioConfig::default()
+    };
     let state = AppState::new(config.clone());
 
     let (ws, created_here) = ensure_startup_websocket(&state, &config)
@@ -682,8 +684,10 @@ async fn obs_disabled_startup_does_not_bind_the_websocket() {
 
 #[tokio::test]
 async fn obs_disabled_status_reports_no_websocket_port() {
-    let mut config = LiveAudioConfig::default();
-    config.obs_enabled = false;
+    let config = LiveAudioConfig {
+        obs_enabled: false,
+        ..LiveAudioConfig::default()
+    };
     let state = AppState::new(config);
 
     let status = get_service_status_internal(&state).await.expect("status");
