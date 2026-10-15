@@ -53,7 +53,7 @@ Close behavior gaps in the Rust WebSocket path that were found while documenting
   - Decision gap (not fixed, outside T3's authorized fix type): with a zero-pace burst of 600 frames, the healthy client got 112 frames and never got the last one. Retry-queue frames only flush on the next `broadcast_raw`, so the last frames wait until another subtitle arrives. The doc now discloses this. Fix option: flush the retry queue from the per-client write loop after each send. This changes backpressure semantics, so it needs owner approval.
 - T4 (done): `docs/WEBSOCKET_OBS.md` updated: section 4.5 (ws_port event), 5.4 (overlay uses is_replay for render only), 5.5 (retry tail, half-open clients), 6 (no pings, no idle timeout), 9 (obs_enabled honored by Rust desktop and CLI). Commit `2cf89c9`.
 - Verification: `cargo test --workspace` 279 passed, 0 failed (after T1). Frontend `node test_frontend.js` 345 passed, 0 failed. Clippy: `cargo clippy --workspace --all-targets` fails on a pre-existing `not_unsafe_ptr_arg_deref` error in `liveaudio-core/src/job_object/mod.rs` (untouched). With that lint allowed, no lint lands in changed lines; the workspace has many pre-existing warnings.
-- Engram mirror: pending (not written in this run). Feature document is the local source of truth.
+- Engram mirror: synced (topic `odd/ws-runtime-gaps/tasks`).
 
 ## Next Step
 
