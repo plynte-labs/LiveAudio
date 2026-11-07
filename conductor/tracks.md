@@ -153,3 +153,9 @@ This file tracks major LiveAudio tracks. Each track should have its own detailed
   *Link: [./tracks/ws-ipc-auth-token_20260911/](./tracks/ws-ipc-auth-token_20260911/)*
   *Status: 🔲 proposed / spec drafted. Scope confirmed with PO (Option 1: mandatory in headless mode, optional toggle in desktop GUI). Scaffolding created in `conductor/tracks/ws-ipc-auth-token_20260911/` (`spec.md` + `plan.md`).*
 
+---
+
+- [ ] **Track: Multi-Source Capture with Source Tagging**
+  *Link: [./tracks/multi-source-capture_20261015/](./tracks/multi-source-capture_20261015/)*
+  *Status: new — pending PO decisions. Draft spec + plan from the owner's Spanish draft; PO decisions 1-4 open with recommendations; all tasks unchecked. Verification notes in spec.md: single device per instance CONFIRMED; WASAPI loopback in cpal_source.rs CONFIRMED (device enumeration lives in device.rs); server.rs:635-655 DIFFERENT (replay burst at 648-673, PTT residue NOT FOUND); audio_device CONFIRMED.*
+
