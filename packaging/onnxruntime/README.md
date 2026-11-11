@@ -1,29 +1,30 @@
-# Bundled CPU ONNX Runtime assets
+# ONNX Runtime assets (Windows DirectML & Linux CPU)
 
-LiveAudio bundles ONNX Runtime 1.26.0 CPU libraries. The pinned Rust `ort`
-dependency uses API 17, which this release supports. Runtime libraries are
-loaded only from the absolute, application-owned resource path. The application
-does not download or search for ONNX Runtime at startup.
+LiveAudio loads native ONNX Runtime (Silero VAD and native Whisper ASR) from the application-owned resource directory. The binaries are **not stored in git**: fetch them with
+
+```
+node packaging/fetch_onnxruntime.mjs            # current OS
+node packaging/fetch_onnxruntime.mjs windows-x64 linux-x64
+```
+
+The script downloads each official archive, aborts on any SHA-256 mismatch, extracts only the needed files into `packaging/onnxruntime/<platform>/`, and is idempotent. CI and the release workflow run it before building. Both platforms use **ONNX Runtime 1.24.4** (the last version with an official DirectML build).
 
 ## Pinned upstream artifacts
 
-| Target | Official Microsoft release asset | Size | SHA-256 |
-| --- | --- | ---: | --- |
-| Windows x64 | [onnxruntime-win-x64-1.26.0.zip](https://github.com/microsoft/onnxruntime/releases/download/v1.26.0/onnxruntime-win-x64-1.26.0.zip) (release asset 415503188) | 75,675,381 bytes | `6ebe99b5564bf4d029b6e93eac9ff423682b6212eade769e9ca3f685eaf500b4` |
-| Linux x64 | [onnxruntime-linux-x64-1.26.0.tgz](https://github.com/microsoft/onnxruntime/releases/download/v1.26.0/onnxruntime-linux-x64-1.26.0.tgz) (release asset 415501317) | 8,590,023 bytes | `1254da24fb389cf39dc0ff3451ab48301740ffbfcbaf646849df92f80ee92c57` |
+| Target | Source | Version | Files | Acceleration |
+|---|---|---|---|---|
+| Windows x64 | NuGet `Microsoft.ML.OnnxRuntime.DirectML` | 1.24.4 | `onnxruntime.dll`, `onnxruntime_providers_shared.dll`, `LICENSE`, `ThirdPartyNotices.txt` | DirectX 12 DirectML (NVIDIA, AMD, Intel) + CPU |
+| Windows x64 | NuGet `Microsoft.AI.DirectML` | 1.15.4 | `DirectML.dll`, `DirectML-LICENSE.txt` | - |
+| Linux x64 | [onnxruntime-linux-x64-1.24.4.tgz](https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-linux-x64-1.24.4.tgz) | 1.24.4 | `libonnxruntime.so.1.24.4`, `libonnxruntime_providers_shared.so`, `LICENSE`, `ThirdPartyNotices.txt` | Multi-threaded CPU |
 
-The archive digest and release version were verified before extraction. Each
-platform directory contains the CPU runtime library, the package's shared
-provider companion, `VERSION_NUMBER`, `LICENSE`, and `ThirdPartyNotices.txt`.
-Tauri's platform configuration explicitly packages these files. The runtime
-licenses/notices are preserved alongside each platform asset set.
+SHA-256 pins live in `packaging/fetch_onnxruntime.mjs`. To bump a version, update the URL and hash there, the Linux `.so` filename in `crates/liveaudio-core/src/runtime.rs`, `crates/liveaudio-vad/src/runtime.rs`, `desktop/src-tauri/tauri.linux.conf.json`, and the CI/release assertions.
 
-## Validation boundary
+## Licenses
 
-The Windows x64 library was loaded in an isolated process and used for 512
-sequential 16 kHz Silero frames without audio hardware. Linux package assets
-were verified by release digest and extracted, but this development host has
-no installed Linux Rust target or Linux runner; Linux inference and packaged
-launch therefore remain unverified locally. CI validates the native Linux
-CPU inference path on its Ubuntu runner. Neither check proves a Linux desktop
-installer launch or clean-machine installation.
+- ONNX Runtime: MIT.
+- `DirectML.dll`: Microsoft Software License Terms (not MIT); redistributable as part of the app. The text ships as `onnxruntime/windows-x64/DirectML-LICENSE.txt` and is referenced in `THIRD_PARTY_NOTICES.md`.
+
+## Packaging boundary
+
+- Windows: Tauri bundles these files via `desktop/src-tauri/tauri.windows.conf.json`; the standalone CLI zip copies the directory. Release staging checks `DirectML.dll`, `onnxruntime.dll` and the DirectML license.
+- Linux: AppImage/deb via `tauri.linux.conf.json` and the CLI tarball.
