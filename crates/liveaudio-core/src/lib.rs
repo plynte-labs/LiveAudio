@@ -15,6 +15,7 @@ pub mod service_lock;
 pub mod sink;
 pub mod supervisor;
 pub mod system_fonts;
+pub mod usage_stats;
 
 pub use asr::{
     AsrBackend, AsrBoxFuture, AsrError, AsrHealthStatus, AsrModelConfig, AsrTranscriptionRequest,
