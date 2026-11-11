@@ -2,14 +2,14 @@
 
 ## Initial Concept
 
-LiveAudio is a local-first real-time ASR desktop tool for streamers and content creators. It captures microphone or system audio, transcribes speech locally with Whisper/faster-whisper, and publishes live subtitles to OBS through WebSocket/browser-source integrations.
+LiveAudio is a local-first real-time ASR desktop tool for streamers and content creators. It captures microphone or system audio, transcribes speech locally with Whisper on ONNX Runtime (DirectML, CUDA or CPU), and publishes live subtitles to OBS through WebSocket/browser-source integrations.
 
 ## Product Goals
 
 - Keep audio transcription and session data local by default.
 - Provide reliable live subtitles for OBS without flooding viewers after freezes or reconnects.
 - Make configuration understandable for non-technical users through profiles, safe defaults, and clear warnings.
-- Preserve advanced controls for tuning latency, VAD behavior, device selection, model size, CUDA/CPU execution, and subtitle output.
+- Preserve advanced controls for tuning latency, VAD behavior, device selection, model size, GPU/CPU execution provider, and subtitle output.
 - Recover gracefully from device disconnects, GPU pressure, ASR stalls, and long streaming sessions.
 
 ## Target Users

@@ -1,191 +1,150 @@
-# Packaging, Releases and Updates
+# Packaging and Updates
 
-Canonical maintainer documentation for how LiveAudio is built, distributed,
-installed and updated. User-facing instructions live in the
-[README](../README.md); this document explains how the machinery works.
+Maintainer reference for how LiveAudio is built, released and auto-updated.
+The sources of truth are `.github/workflows/release.yml`, `packaging/`,
+`desktop/src-tauri/tauri.conf.json` and `desktop/src-tauri/tauri.release.conf.json`.
+If this page and those files disagree, the files win; fix this page.
 
----
+## 1. What a release contains
 
-## 1. Architecture Overview
+The release workflow runs on a `v*` tag and builds two platforms.
 
-LiveAudio is distributed as a **small bootstrapper launcher** (a frozen
-PyInstaller executable of `packaging/launcher.py`, stdlib + tkinter and a
-bundled Windows native TLS backend)
-rather than a multi-GB bundle. The launcher provisions everything else on
-first run.
+| Asset | Built on | Contents |
+|---|---|---|
+| NSIS installer (`*-setup.exe`) and its `.sig` | `windows-latest` | Tauri desktop app with the `liveaudio-cli` and `liveaudio-asr-worker` sidecars, `onnxruntime.dll`, `onnxruntime_providers_shared.dll` and `DirectML.dll`. Per-user install. |
+| `liveaudio-cli-X.Y.Z-windows-x64.zip` | `windows-latest` | Standalone CLI and ASR worker with the ONNX Runtime and DirectML DLLs and their licenses. |
+| `latest.json` | `windows-latest` | Tauri updater manifest (Windows only, see section 4). |
+| AppImage (`*.AppImage`, `.sig`), `*.deb` | `ubuntu-22.04` | Desktop app bundles (AppImage is the configured target in `tauri.linux.conf.json`). |
+| `liveaudio-cli-X.Y.Z-linux-x64.tar.gz` | `ubuntu-22.04` | Standalone CLI and ASR worker with ONNX Runtime CPU. |
+| `SHA256SUMS.txt` | publish job | SHA-256 of every asset above. |
 
-On Windows, launcher-owned HTTPS downloads and release metadata requests use
-`truststore` with an explicit verified client context. Windows CryptoAPI can
-resolve certificate chains through native trust stores, including missing
-intermediates and managed root updates. The dependency is bundled before
-bootstrap, not downloaded into the application environment afterward. Missing
-backend files fail with a reinstall instruction; certificate and hostname
-checks are never disabled. Other platforms keep Python's default HTTPS
-validation. This does not alter the application's TLS configuration or `uv`'s
-own downloads, and cannot guarantee success when network policy blocks
-certificate updates. The build and Windows dev dependency groups include the
-backend for packaging and source-checkout launcher tests.
+The `publish` job creates the GitHub release as a **draft** with generated
+notes. Nothing is public until a maintainer reviews the draft and publishes it.
+The updater endpoint (`releases/latest/download/latest.json`) only serves a
+published release.
 
-Provisioning sequence:
+The CUDA ASR worker (`liveaudio-asr-worker-cuda.exe`, CTranslate2) is **not built by CI** and
+is not in the installer. The maintainer builds it locally and uploads it to the release as an
+extra asset (section 5). The app downloads it on demand, with the NVIDIA cuBLAS/cuDNN DLLs,
+after an explicit user click; the download is pinned by `packaging/ct2-worker.pin.json`
+(URL, SHA-256, size) and verified before use.
 
+Whisper model weights are not bundled. They are downloaded at runtime from
+Hugging Face. The Silero VAD model is embedded in the binary.
+
+## 2. Build locally
+
+The steps mirror CI. Run them from the repository root unless noted.
+
+1. Fetch the pinned native libraries (not committed):
+   ```bash
+   node packaging/fetch_onnxruntime.mjs                # current OS
+   node packaging/fetch_onnxruntime.mjs windows-x64 linux-x64
+   ```
+   The script downloads ONNX Runtime 1.24.4 (and DirectML 1.15.4 on Windows),
+   checks each archive against a pinned SHA-256 and aborts on mismatch. The
+   pins live in `packaging/fetch_onnxruntime.mjs`.
+2. Build the sidecars:
+   ```bash
+   cargo build --release -p liveaudio-asr-worker -p liveaudio-cli
+   ```
+3. Copy them into `desktop/src-tauri/binaries/` (gitignored) using Tauri's
+   external-binary naming, `<name>-<target-triple>[.exe]`. `rustc -vV` prints the
+   triple. `release.yml` shows the exact copy commands.
+4. Build the bundle. The release config only adds the sidecars and must be
+   passed explicitly. The signing key must be in the environment, as in CI:
+   ```bash
+   cd desktop
+   TAURI_SIGNING_PRIVATE_KEY=... TAURI_SIGNING_PRIVATE_KEY_PASSWORD=... \
+     npx --yes @tauri-apps/cli build --config src-tauri/tauri.release.conf.json
+   ```
+
+Version consistency: CI fails when the tag (`vX.Y.Z`) does not match the
+`liveaudio-desktop` package version in the Cargo workspace. Keep
+`version` in `desktop/src-tauri/tauri.conf.json` on the same number, because the
+installer and the updater compare that value.
+
+## 3. Signing
+
+### Updater signatures (Minisign)
+
+- The updater uses Tauri's Minisign scheme. Bundles get a `.sig` at build time
+  when `createUpdaterArtifacts` is on (it is in `tauri.conf.json`).
+- The public key is `plugins.updater.pubkey` in `desktop/src-tauri/tauri.conf.json`.
+- The private key and its password are GitHub Actions secrets:
+  `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Never
+  commit them. Generate a new pair with `npx @tauri-apps/cli signer generate -w <path-outside-repo>`.
+- Rotating the key is a breaking step: an installed app only accepts updates
+  signed by the public key it was built with, so a rotation needs a release that
+  users install manually.
+
+### Authenticode (Windows code signing): not in place
+
+The installer and the CLI executables are **not Authenticode-signed**. The
+release workflow has no signing step. Windows SmartScreen therefore shows an
+"Unrecognized app" / "Unknown publisher" warning on first run. Minisign signs
+updates; it does not replace Authenticode for SmartScreen. Adding Authenticode
+signing (and reputation building) is an open item with no active track.
+
+## 4. Update manifest (`latest.json`)
+
+`packaging/assemble_latest_manifest.mjs` runs in the Windows job after the
+bundle is built:
+
+```bash
+node packaging/assemble_latest_manifest.mjs --version X.Y.Z --out-dir release_assets
 ```
-LiveAudio-Setup-X.Y.Z.exe / liveaudio-launcher
-        │
-        ├─ 1. Resolve install root (portable.marker / default per-user dir)
-        ├─ 2. Detect hardware → torch extra: cpu | cu121
-        ├─ 3. Download liveaudio-src-X.Y.Z.zip from the GitHub release
-        │     (URL + SHA256 baked into the exe via _release_meta.py)
-        ├─ 4. Ensure uv (bundled > PATH > previously downloaded)
-        ├─ 5. uv sync --locked --extra <cpu|cu121> --python 3.11
-        │     (uv also downloads a managed CPython into <root>/python)
-        ├─ 6. Write installed.json (atomic; marks the install as complete)
-        └─ 7. Launch <root>/app/.venv/.../liveaudio (gui-script entry point)
-```
 
-On subsequent runs, `installed.json` matches the launcher's target version,
-so the launcher takes the **fast path**: it spawns the installed app
-directly. On Windows a brief "Starting LiveAudio…" splash stays open until
-the app window (`APP_WINDOW_TITLE` in `launcher.py`, matching the Tk title
-in `liveaudio/app.py`) is detected via `FindWindowW` — the app imports torch
-at module level, so a cold start can take 60+ seconds with no feedback of
-its own. If the window never appears but the process is alive, the splash
-closes quietly after a timeout; if the process dies first, an error dialog
-points at `bootstrap.log`. The same wait applies after a bootstrap launch.
-On Linux and with `--headless` there is no splash: the app is launched and
-the launcher exits.
+- It finds the installer and its `.sig` under the NSIS bundle directories.
+- It writes `latest.json` with `version`, `notes`, `pub_date` and
+  `platforms["windows-x86_64"]` (`signature` = the raw `.sig` contents, `url` =
+  `https://github.com/<repo>/releases/download/<tag>/<installer file name>`).
+- `repo` and `tag` default to `GITHUB_REPOSITORY` and `GITHUB_REF_NAME`.
+- Only `windows-x86_64` is written. Linux users update by downloading a new
+  AppImage or deb manually.
 
-### Install layout
+The app checks `https://github.com/plynte-labs/LiveAudio/releases/latest/download/latest.json`
+(`plugins.updater.endpoints`) and installs in `passive` mode on Windows.
 
-| Location | Content |
+## 5. Checklist for a release
+
+1. Bump the version in `desktop/src-tauri/tauri.conf.json` and the workspace
+   `Cargo.toml`. Update `CHANGELOG.md` and `HISTORIAL_CAMBIOS.md`.
+2. Build the CUDA worker locally with the new version (needs the CUDA toolchain,
+   about 18 minutes; see `crates/liveaudio-asr-worker-ct2/README.md`):
+   ```powershell
+   .\packaging\build_ct2_worker.ps1 -CudaRoot <toolkit root> -Pin
+   ```
+   `-Pin` copies the exe to `dist-ct2/` (gitignored) and rewrites
+   `packaging/ct2-worker.pin.json` with the version, release URL, SHA-256 and size.
+3. Commit `packaging/ct2-worker.pin.json`. The app embeds it at compile time, so it
+   must be in the tagged commit. While it holds the all-zero SHA-256 placeholder the
+   app reports the worker as not published and keeps using the ONNX Runtime worker.
+4. Tag `vX.Y.Z` and push the tag. The workflow builds the app (unchanged; it does not
+   build the CUDA worker).
+5. When the draft release appears, upload the worker as a release asset. The name
+   must match the pin URL:
+   ```bash
+   gh release upload vX.Y.Z dist-ct2/liveaudio-asr-worker-cuda.exe
+   ```
+6. Check that the draft has all assets, that `latest.json` points at the installer
+   name, and that `SHA256SUMS.txt` matches. The worker is not in `SHA256SUMS.txt`
+   (the pin file holds its hash).
+7. Smoke-test the installer on a clean Windows machine, including the on-demand
+   NVIDIA install. Follow [UPDATER_TESTING.md](UPDATER_TESTING.md) for the updater path.
+8. Publish the draft. The worker must be uploaded before publishing: users download it
+   from the published release URL.
+
+## 6. Troubleshooting
+
+| Symptom | Likely cause |
 |---|---|
-| `<root>/app/` | Application source (`pyproject.toml`, `uv.lock`, `liveaudio/`) |
-| `<root>/app/.venv/` | Virtual environment created by `uv sync` |
-| `<root>/python/` | uv-managed CPython 3.11 (`UV_PYTHON_INSTALL_DIR`) |
-| `<root>/uv/` | Downloaded uv binary (only when not bundled / on PATH) |
-| `<root>/installed.json` | `{app_version, extra, python, uv_version}` |
-| `<root>/bootstrap.log` | Full launcher + uv log of every run |
-| `<root>/data/` | App data home (`LIVEAUDIO_HOME`): `config.json`, `sessions/` |
+| `fetch_onnxruntime.mjs`: SHA-256 mismatch | Upstream archive changed or a proxy rewrote it. Do not edit the pin without checking the upstream release. |
+| CI: tag does not match Cargo version | The tag or `liveaudio-desktop` version is wrong. Re-tag after fixing the version. |
+| CI: missing `DirectML.dll` or `onnxruntime.dll` | `fetch_onnxruntime.mjs` did not run before the build. |
+| Updater reports no update | The release is still a draft, or the manifest version is not greater than the installed version. |
+| SmartScreen warning on install | Expected while the installer is unsigned (section 3). |
 
-Install root resolution (in `resolve_install_root`):
-
-1. `LIVEAUDIO_INSTALL_ROOT` env var (testing/automation override)
-2. **Portable mode**: a `portable.marker` file next to the launcher →
-   `<launcher dir>/data` becomes the root; `HF_HOME` is also redirected so
-   Whisper models stay inside the portable folder
-3. Default: `%LOCALAPPDATA%\LiveAudio` (Windows) /
-   `~/.local/share/liveaudio` (Linux)
-
-The app's data home is `<root>/data` unless `LIVEAUDIO_HOME` is set
-explicitly. When the app runs without the launcher it defaults to
-`%APPDATA%\LiveAudio` on Windows; a legacy `config.json` in the current
-working directory is migrated automatically on first load.
-
-### Hardware detection ladder
-
-`detect_device()` decides the torch extra, first match wins:
-
-1. `--device cpu|cuda` CLI flag (persisted in `installed.json`)
-2. Persisted preference (`extra` in `installed.json`)
-3. NVML present (nvml.dll / libnvidia-ml) **and** `nvidia-smi` reports
-   driver >= 525 and VRAM >= 4096 MiB → `cu121`
-4. Anything else (no NVML, smi failure, weak GPU) → `cpu`, with a
-   user-facing note when a GPU was found but below requirements
-
-### Launcher CLI
-
-`--device cpu|cuda`, `--update [vX.Y.Z]`, `--self-test`, `--reinstall`,
-`--install-desktop-entry` (Linux), `--headless`, `--src-dir PATH`
-(dev mode: bootstrap from a local checkout instead of a release zip).
-
----
-
-## 2. Release Process
-
-1. Bump `__version__` in `liveaudio/__init__.py` (single source of truth;
-   hatchling reads it for the wheel version too).
-2. Update `CHANGELOG.md`, commit, and tag: `git tag vX.Y.Z && git push --tags`.
-3. The `release.yml` workflow runs on the tag:
-   - verifies the tag matches `liveaudio.__version__` (fails the build if not)
-   - builds the wheel and `liveaudio-src-X.Y.Z.zip` (pyproject + uv.lock +
-     package, no caches)
-   - exports `requirements-cpu.txt` / `requirements-cu121.txt` from the
-     lockfile (pip-only escape hatch)
-   - freezes the launcher on Windows and Linux with PyInstaller, embedding
-     the source-zip URL + SHA256 (`packaging/build_release_meta.py`) and a
-     vendored pinned uv binary
-   - produces `LiveAudio-Setup-X.Y.Z.exe` and
-     `LiveAudio-X.Y.Z-linux-x64.tar.gz`, generates `SHA256SUMS.txt`, and
-     creates a **draft** GitHub release with all assets
-4. A human reviews the draft (check assets, smoke-test the installer) and
-   **publishes** it. Nothing ships without that manual step.
-
----
-
-## 3. Update Flow
-
-1. The app checks the GitHub Releases API in the background and shows an
-   update button when a newer version exists.
-2. Clicking it spawns the launcher (found via the `LIVEAUDIO_LAUNCHER` env
-   var the launcher exports at app start) detached with `--update vX.Y.Z`,
-   then the app exits.
-3. The launcher fetches the release metadata, verifies the source zip
-   against the release's checksum asset, replaces `<root>/app/` (the
-   `.venv` is preserved), and re-runs `uv sync --locked`.
-4. uv only downloads what changed — torch wheels are cached, so a typical
-   update transfers a few MB, not gigabytes.
-5. `installed.json` is rewritten last and the new version launches.
-
-`--update` without a tag means "latest". If the installed version already
-matches, the launcher reports "already up to date" and exits.
-
----
-
-## 4. CUDA Constraints
-
-- **Index routing:** the `cu121` extra resolves torch/torchaudio from
-  `https://download.pytorch.org/whl/cu121`; `cpu` uses the `/whl/cpu`
-  index. The extras are declared as conflicting in `[tool.uv]` — exactly
-  one must be selected.
-- **Version window:** `torch>=2.4,<2.6` on cu121. The cu121 index publishes
-  no 2.6 wheels, and >=2.4 is required because it ships **cuDNN 9**, which
-  `ctranslate2>=4.5` (faster-whisper's backend) links against.
-- **DLL resolution (`liveaudio/utils/dllpath.py`):** on Windows,
-  ctranslate2 loads `cublas64_12.dll` / cuDNN 9 DLLs via `LoadLibrary`,
-  which searches `PATH` — not Python's DLL directories. `ensure_torch_dlls()`
-  registers `torch/lib` with `os.add_dll_directory()` **and** prepends it to
-  `PATH` before the model loads. Without this, CUDA inference fails with
-  "cublas64_12.dll not found" even though torch bundles the DLLs.
-- Driver floor is 525 (first driver branch with full CUDA 12.x support);
-  below that the launcher falls back to CPU rather than installing a broken
-  CUDA stack.
-
----
-
-## 5. Troubleshooting
-
-## 5.1 Unified first-run boundary (checkpoint)
-
-The candidate deliberately uses two sequential windows. The launcher can
-report that **Opening LiveAudio** has reached a visible window, but this never
-means Whisper is ready. It writes a local atomic handoff before starting the
-app; malformed or stale handoff data is ignored safely by the app. This
-boundary is implemented in the current checkpoint, but its clean packaged
-runtime and manual E2E proof are still pending.
-
-`uv sync`, VAD preparation, and post-download model loading are indeterminate
-unless the underlying operation provides real byte or tqdm evidence. The
-launcher does not download Whisper, keep an IPC connection open, or present
-global 100% as transcription readiness.
-
-`--reinstall` replaces `app/` and its virtual environment only. It preserves
-`hf-cache` unconditionally; this MVP has no model-purge command or UI.
-
-| Problem | What to do |
-|---|---|
-| Interrupted download of the big CUDA install | Just re-run the launcher. `uv` caches per-wheel, so completed wheels are not re-downloaded; the source zip is re-fetched and checksum-verified. |
-| Corrupted / half-broken install | Run the launcher with `--reinstall` — wipes `app/` and the `.venv`, keeps the device preference, bootstraps fresh. |
-| "SHA256 mismatch" | The download was corrupted or tampered with. The launcher retries automatically (3 attempts with backoff); persistent failures mean a proxy/AV is rewriting downloads. |
-| Need to see what happened | Read `bootstrap.log` in the install root (`%LOCALAPPDATA%\LiveAudio` on Windows, `~/.local/share/liveaudio` on Linux, `data/` next to the launcher in portable mode). The error dialog has an "Open log" button. |
-| Wrong backend installed | Re-run with `--device cpu` or `--device cuda`; the launcher re-syncs and persists the choice. |
-| No GUI environment (servers, CI) | Use `--headless` for plain stdout progress. The launcher also falls back to headless automatically when tkinter is unavailable. |
-| Diagnose paths/detection without installing | `--self-test` prints the detected device, resolved paths and uv status, then exits. |
+Related: [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) (licenses shipped
+in the bundle), [packaging/onnxruntime/README.md](../packaging/onnxruntime/README.md)
+(native library layout), [UPDATER_TESTING.md](UPDATER_TESTING.md) (VM test recipe).

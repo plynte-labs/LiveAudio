@@ -12,7 +12,7 @@ CRITICAL: You must validate the success of every tool call. If a tool call fails
 ## 1.0.1 LIVEAUDIO PROJECT OVERRIDES
 
 - Commit policy: any instruction in this skill to stage, commit, archive, delete, or revert changes requires explicit user approval first. If approval is not already present in the current user request, stop and ask.
-- Tool mapping: use OpenCode `question` for `ask_user`, `apply_patch` for file edits, `bash` for shell commands, and treat Plan Mode instructions as procedural guidance when no plan-mode tool exists.
+- Tool mapping: use `AskUserQuestion` for `ask_user`, `Edit`/`Write` for file edits, `Bash` for shell commands, and treat Plan Mode instructions as procedural guidance when no plan-mode tool exists.
 - Universal File Resolution Protocol for this project: resolve Product Definition to `conductor/product.md`, Product Guidelines to `conductor/product-guidelines.md`, Tech Stack to `conductor/tech-stack.md`, Workflow to `conductor/workflow.md`, Tracks Registry to `conductor/tracks.md`, and Tracks Directory to `conductor/tracks/`.
 - Privacy rule: never save or expose raw audio, raw transcripts, session contents, secrets, API keys, private filesystem paths, or PII in Engram, prompts, logs, or review notes. Use sanitized technical summaries only.
 
@@ -109,9 +109,9 @@ PLAN MODE PROTOCOL: This setup process runs entirely within Plan Mode. While in 
                 3.  **Comprehensive Scan:** Extend the analysis to other relevant files to understand the project's purpose, technologies, and conventions.
 
             -   **2.1 File Size and Relevance Triage:**
-                1.  **Respect Ignore Files:** Before scanning any files, you MUST check for the existence of `.geminiignore` and `.gitignore` files. If either or both exist, you MUST use their combined patterns to exclude files and directories from your analysis. The patterns in `.geminiignore` should take precedence over `.gitignore` if there are conflicts. This is the primary mechanism for avoiding token-heavy, irrelevant files like `node_modules`.
+                1.  **Respect Ignore Files:** Before scanning any files, you MUST check for the existence of a `.gitignore` file. If it exists, you MUST use its patterns to exclude files and directories from your analysis. This is the primary mechanism for avoiding token-heavy, irrelevant files like `node_modules`.
                 2.  **Efficiently List Relevant Files:** To list the files for analysis, you MUST use a command that respects the ignore files. For example, you can use `git ls-files --exclude-standard -co | xargs -n 1 dirname | sort -u` which lists all relevant directories (tracked by Git, plus other non-ignored files) without listing every single file. If Git is not used, you must construct a `find` command that reads the ignore files and prunes the corresponding paths.
-                3.  **Fallback to Manual Ignores:** ONLY if neither `.geminiignore` nor `.gitignore` exist, you should fall back to manually ignoring common directories. Example command: `ls -lR -I 'node_modules' -I '.m2' -I 'build' -I 'dist' -I 'bin' -I 'target' -I '.git' -I '.idea' -I '.vscode'`.
+                3.  **Fallback to Manual Ignores:** ONLY if no `.gitignore` exists, you should fall back to manually ignoring common directories. Example command: `ls -lR -I 'node_modules' -I '.m2' -I 'build' -I 'dist' -I 'bin' -I 'target' -I '.git' -I '.idea' -I '.vscode'`.
                 4.  **Exclude Sensitive Files:** Always exclude `.env*`, credentials, keys, tokens, logs, audio files, transcript/session outputs, dumps, and other private data even if they are not ignored by Git.
                 5.  **Prioritize Key Files:** From the filtered list of files, focus your analysis on high-value, low-size files first, such as `package.json`, `pom.xml`, `requirements.txt`, `go.mod`, and other configuration or manifest files.
                 6.  **Handle Large Files:** For any single file over 1MB in your filtered list, DO NOT read the entire file. Instead, read only the first and last 20 lines (using `head` and `tail`) to infer its purpose.
@@ -299,7 +299,7 @@ PLAN MODE PROTOCOL: This setup process runs entirely within Plan Mode. While in 
 2.  **Select Code Style Guides:**
     -   List the available style guides by using the `run_shell_command` tool to execute `ls .agents/skills/conductor-setup/templates/code_styleguides/`. **CRITICAL: You MUST use `run_shell_command` for this step. Do NOT use the `list_directory` tool, as the templates directory resides outside of your allowed workspace and the call will fail.**
     -   **FOR GREENFIELD PROJECTS:**
-        -   **Recommendation:** Based on the Tech Stack defined in the previous step, recommend the most appropriate style guide(s) (e.g., "python.md" for a Python project) and explain why.
+        -   **Recommendation:** Based on the Tech Stack defined in the previous step, recommend the most appropriate style guide(s) (e.g., "javascript.md" for a JavaScript frontend) and explain why.
         -   **Determine Mode:** Use the `ask_user` tool:
             - **questions:**
                 - **header:** "Code Style Guide"
@@ -334,7 +334,7 @@ PLAN MODE PROTOCOL: This setup process runs entirely within Plan Mode. While in 
             -   **Action:** Announce "I'll present the additional guides. Please select all that apply." Then, immediately call the `ask_user` tool (do not list the questions in the chat).
             -   **Method:** Use a single `ask_user` tool call. Dynamically split the available guides into batches of 4 options max. Create one `multiSelect: true` question for each batch.
 
-3.  **Action:** Construct and execute a command to create the directory and copy all selected files. For example: `mkdir -p conductor/code_styleguides && cp .agents/skills/conductor-setup/templates/code_styleguides/python.md .agents/skills/conductor-setup/templates/code_styleguides/javascript.md conductor/code_styleguides/`
+3.  **Action:** Construct and execute a command to create the directory and copy all selected files. For example: `mkdir -p conductor/code_styleguides && cp .agents/skills/conductor-setup/templates/code_styleguides/javascript.md .agents/skills/conductor-setup/templates/code_styleguides/html-css.md conductor/code_styleguides/`
 4.  **Continue:** Immediately proceed to the next section.
 
 ### 2.5 Select Workflow (Interactive)

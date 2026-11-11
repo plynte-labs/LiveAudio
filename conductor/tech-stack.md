@@ -1,36 +1,45 @@
 # Tech Stack
 
-## Runtime
+LiveAudio is a Rust workspace with a Tauri 2 desktop app. The application
+runs without Python, uv, PyTorch or CUDA toolkit installs.
 
-- Python 3.10+.
-- Desktop GUI with CustomTkinter.
-- Multiprocessing architecture for audio capture, ASR inference, and UI orchestration.
+## Workspace Crates
 
-## ASR And Audio
+- `liveaudio-audio`: capture through `cpal` (WASAPI on Windows), device
+  selection, ring buffer, resilient capture with reconnection, optional RNNoise.
+- `liveaudio-vad`: Silero VAD v6 through ONNX Runtime (`ort`). The model is
+  embedded in the binary. Includes the pre-roll buffer.
+- `liveaudio-asr-worker`: native Whisper on ONNX Runtime with DirectML, CUDA or
+  CPU execution providers. Runs as a separate supervised process. Downloads
+  model weights at runtime.
+- `liveaudio-core`: pipeline orchestration, configuration and validation,
+  process supervision, Windows job objects, WebVTT and transcript sinks.
+- `liveaudio-ipc`: shared IPC types used by the core, CLI and desktop app.
+- `liveaudio-network`: local WebSocket server (`tokio-tungstenite`) for OBS
+  browser sources and integrations, the `/overlay` HTTP page, and the replay
+  buffer for catch-up subtitles.
+- `liveaudio-cli`: command-line front end and sidecar: `doctor`, `serve`,
+  `devices`, and an MCP stdio server.
+- `desktop/src-tauri`: Tauri 2 shell and commands. Frontend assets live in
+  `desktop/`.
 
-- `faster-whisper` for Whisper transcription.
-- `torch` for CPU/CUDA execution support.
-- `sounddevice` for microphone and WASAPI loopback capture.
-- `numpy` for audio buffers.
-- Silero VAD integration through the existing audio pipeline.
+## Native Dependencies
 
-## Networking And OBS
-
-- `websockets` for local WebSocket subtitle broadcast.
-- `subtitulos_obs.html` as OBS Browser Source client.
-
-## Persistence
-
-- Local JSON config through `utils/config.py` and `config.json`.
-- Session outputs under local session directories using transcript/subtitle files.
+- ONNX Runtime 1.24.4, fetched by `packaging/fetch_onnxruntime.mjs` (not committed).
+- DirectML 1.15.4 on Windows (`DirectML.dll`).
+- See `THIRD_PARTY_NOTICES.md` for licenses and `docs/PACKAGING_AND_UPDATES.md`
+  for how they ship.
 
 ## Validation Commands
 
-- Syntax check: `python -m compileall main.py core utils`.
-- Dependency install: `pip install -r requirements.txt`.
-- Manual run: `python main.py`.
+- `cargo fmt --all --check`
+- `cargo clippy --workspace --all-targets -- -D warnings`
+- `cargo test --workspace`
+- `node --test tests-js/*.mjs`
+- `node desktop/test_frontend.js`
 
 ## Change Control
 
-- Tech stack changes must be documented here before implementation.
-- For code tasks, run the closest available validation even when no formal test suite exists.
+- Changes to crate boundaries, IPC or the WebSocket protocol must be documented
+  in `docs/WEBSOCKET_OBS.md` (or the relevant doc) before implementation.
+- Run the closest available validation after code changes.

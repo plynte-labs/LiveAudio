@@ -14,7 +14,7 @@ Your workflow MUST anticipate and handle common non-linear Git histories, such a
 ## 1.0.1 LIVEAUDIO PROJECT OVERRIDES
 
 - Destructive action policy: any instruction in this skill to revert, delete, stage, commit, archive, or otherwise destructively modify files requires explicit user approval first.
-- Tool mapping: use OpenCode `question` for `ask_user`, `apply_patch` for file edits, and `bash` for shell commands.
+- Tool mapping: use `AskUserQuestion` for `ask_user`, `Edit`/`Write` for file edits, and `Bash` for shell commands.
 - Universal File Resolution Protocol for this project: resolve Tracks Registry to `conductor/tracks.md` and Tracks Directory to `conductor/tracks/`.
 - Privacy rule: never save or expose raw audio, raw transcripts, session contents, secrets, API keys, private filesystem paths, or PII in Engram, prompts, logs, or review notes. Use sanitized technical summaries only.
 

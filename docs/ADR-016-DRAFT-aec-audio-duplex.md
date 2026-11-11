@@ -21,6 +21,8 @@ Al utilizar bocinas abiertas (sin audífonos):
 
 ## 2. Decisiones Arquitectónicas Consolidadas
 
+> Historical note: this section was written for the hybrid Rust/Python pipeline (PortAudio, Faster-Whisper in a Python worker). The Python runtime has been removed; ASR now runs in the native `liveaudio-asr-worker` on ONNX Runtime (see `conductor/tech-stack.md`). The decisions below are kept as decision history, not as a description of the current runtime.
+
 | Decisión | Justificación |
 |---|---|
 | **Separación estricta de responsabilidades** | LiveAudio es responsable exclusivamente de la **percepción acústica** (captura, limpieza, VAD, STT). OpenCohost es dueño exclusivo de la **política conversacional** (barge-in, cancelación de TTS, turn-taking). LiveAudio jamás enviará eventos imperativos como `cancel_tts`. |
@@ -74,6 +76,8 @@ Esta matriz conserva la evaluación original. Los plazos y cifras de CPU/latenci
 
 ## 5. Reevaluación tras la migración — 2026-10-10
 
+> Historical note: this reassessment describes the hybrid state of 2026-10-10, including a Python Faster-Whisper worker that no longer exists. The open questions it records (RNNoise, AEC, barge-in) are unchanged, and nothing in this section approves implementation.
+
 **Resultado: reconsiderar RNNoise, AEC y barge-in como capacidades independientes; este ADR sigue en pausa.** Se documenta el interés del Product Owner en controles opcionales, no una aprobación del backend, de la interfaz ni de su implementación. Las secciones 1–4 preservan el razonamiento histórico; Python no impedía por definición estas funciones y Rust no las habilita automáticamente.
 
 ### 5.1 Antes y ahora
@@ -84,7 +88,7 @@ Esta matriz conserva la evaluación original. Los plazos y cifras de CPU/latenci
 | AEC | Integración nativa y empaquetado adicionales respecto al entorno Python. | Ya hay captura de micrófono o loopback; no captura dúplex sincronizada ni AEC. | Puede reducir el audio de bocinas que vuelve al micrófono, incluida la voz del asistente. Rust facilita la integración nativa, no resuelve la sincronización ni garantiza la cancelación. |
 | Barge-in | Política conversacional asignada a OpenCohost. | El VAD Rust dispone de `SpeechStart` local; falta el contrato acústico hacia el consumidor conversacional. | Permitiría interrumpir al asistente al comenzar a hablar, sin esperar una transcripción completa. OpenCohost decide cancelar TTS y gestionar turnos; LiveAudio no envía `cancel_tts`. |
 
-La arquitectura sigue siendo **captura/VAD en Rust + Faster-Whisper en un worker Python supervisado**, no un ASR completamente Rust. Referencias: [arquitectura WU1](migration/architecture_wu1.md), [requisitos actuales del runtime ASR](migration/rust-runtime-requirements.md), [transiciones VAD](../crates/liveaudio-vad/src/types.rs) e [integración desktop](../desktop/src-tauri/src/commands.rs). Esta revisión no mide CPU, latencia ni calidad de transcripción.
+La arquitectura sigue siendo **captura/VAD en Rust + Faster-Whisper en un worker Python supervisado**, no un ASR completamente Rust. Referencias: [transiciones VAD](../crates/liveaudio-vad/src/types.rs) e [integración desktop](../desktop/src-tauri/src/commands.rs). Esta revisión no mide CPU, latencia ni calidad de transcripción.
 
 ### 5.2 Qué significa la referencia de AEC
 
@@ -125,11 +129,8 @@ El empaquetado Rust/Tauri existente reduce la novedad de distribuir código nati
 
 **Referencias de empaquetado verificables:**
 
-- [Requisitos actuales del runtime Rust/ASR](migration/rust-runtime-requirements.md): frontera Python, aprovisionamiento explícito y límites de la evidencia en máquinas limpias.
-- [Snapshot histórico de empaquetado WU8](migration/packaging_wu8.md): contexto de instalador/portable; sus resultados previos no prueban distribución de DSP nuevo.
 - [Configuración Tauri](../desktop/src-tauri/tauri.conf.json), [manifiesto desktop](../desktop/src-tauri/Cargo.toml) y [manifiesto de audio](../crates/liveaudio-audio/Cargo.toml): configuración y dependencias del checkout actual.
-- [Herramienta de empaquetado Tauri](../packaging/package_tauri_release.py): referencia de ensamblado/validación existente, no evidencia de ejecución en esta revisión.
-- [Empaquetado del launcher Python anterior](PACKAGING_AND_UPDATES.md): antecedente, no descripción del runtime Rust actual.
+- [Current packaging and updates](PACKAGING_AND_UPDATES.md): current release process and updater signing.
 
 **Fuentes primarias del procesamiento:** [RNNoise](https://github.com/xiph/rnnoise), [API de procesamiento de audio WebRTC](https://webrtc.googlesource.com/src/+/refs/heads/main/api/audio/audio_processing.h), [WASAPI y control de AEC](https://learn.microsoft.com/en-us/windows/win32/coreaudio/wasapi) y [ejemplo oficial de AEC de Windows](https://github.com/microsoft/Windows-classic-samples/blob/main/Samples/AcousticEchoCancellation/README.md).
 

@@ -2,6 +2,14 @@
 
 Este documento detalla todas las modificaciones realizadas durante la auditoría técnica y de seguridad del proyecto LiveAudio, así como la justificación técnica de cada decisión.
 
+## 2026-10-29. Actualizador integrado seguro para la aplicación de escritorio y migración Rust ORT (v1.6.0 - No publicado / Unreleased)
+
+* **Cambio:** Integración del actualizador en la aplicación de escritorio (`tauri-plugin-updater`) para Windows (NSIS en modo pasivo sin elevación UAC obligatoria). Comprobación en segundo plano periódica (cada 24 horas y 10 segundos tras el inicio) con opción de búsqueda manual en Ajustes > Avanzado.
+* **Arquitectura 100% Rust + Tauri 2 (Zero Python):** Eliminación total del worker y runtime de Python. Todo el pipeline de audio, VAD (Silero) y transcripción ASR opera en Rust nativo sobre ONNX Runtime con aceleración DirectML (`DirectML.dll` + `onnxruntime.dll` en Windows) compatible con GPUs NVIDIA, AMD e Intel, además de CPU multi-hilo nativo.
+* **Seguridad en transmisiones (Stream Safety):** Se bloquea la descarga y la instalación mientras la aplicación esté en uso activo (transcripción en marcha, clientes WebSocket/OBS conectados o modo monitor activo). Soporte para instalación al cerrar ("Install on close"), ejecutándose tras el apagado limpio del servicio antes de terminar el proceso.
+* **Privacidad y verificación criptográfica:** El audio y las transcripciones nunca salen del ordenador; la comprobación solo consulta `latest.json` en GitHub Releases sin telemetría ni identificadores. Los ejecutables se verifican mediante firma Minisign Ed25519.
+* **Migración desde v1.5.1:** Los usuarios de la versión 1.5.1 o anterior deben instalar la versión 1.6.0 manualmente una vez desde GitHub Releases para incorporar el soporte del actualizador y la clave pública de firma.
+
 ## 2026-10-11. Preparación y reparación del runtime ASR en escritorio
 
 * **Cambio:** La aplicación de escritorio puede preparar o reparar el runtime ASR desde Ajustes. La primera preparación usa Python 3.11 y las dependencias bloqueadas, requiere conexión a internet y muestra progreso con opción de cancelación y reintento.

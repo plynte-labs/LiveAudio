@@ -1,8 +1,8 @@
 # WebSocket Protocol and OBS Integration
 
-LiveAudio runs a local WebSocket server that streams live subtitles to connected clients. Its main consumer is the bundled OBS Browser Source overlay (`liveaudio/assets/subtitulos_obs.html`). This document is the protocol reference for that overlay and for any third-party client.
+LiveAudio runs a local WebSocket server that streams live subtitles to connected clients. Its main consumer is the bundled OBS Browser Source overlay (`assets/subtitulos_obs.html` or `http://127.0.0.1:<port>/overlay`). This document is the protocol reference for that overlay and for any third-party client.
 
-> **Scope.** This document describes the Rust server in `crates/liveaudio-network`, which the Tauri desktop app and the `liveaudio-cli` crate use. The repository also contains a Python implementation (`liveaudio/core/network.py`) used by the legacy Python app and service mode. It uses the same `hello` shape, but it was not checked against this document and behaves differently in places. For example, it sends WebSocket keepalive pings every 10 seconds, and the Rust server does not.
+> **Scope.** This document describes the Rust server in `crates/liveaudio-network`, which the Tauri desktop app and the `liveaudio-cli` crate use.
 
 ## Contents
 
@@ -31,6 +31,7 @@ LiveAudio runs a local WebSocket server that streams live subtitles to connected
 | Frames | Text frames, one JSON object per frame, UTF-8 |
 | Direction | Server to client. The server does not act on client messages (see [section 6](#6-client-to-server-traffic)). |
 | Fan-out | Every connected client receives the same live stream. A client that connects late also receives replayed subtitles (see [section 5.3](#53-late-join-replay)). |
+| Built-in HTTP Overlay | `http://127.0.0.1:<port>/overlay` (serves the embedded HTML overlay directly, no file path needed) |
 | Authentication | None |
 
 ```
@@ -93,6 +94,7 @@ Messages are identified as follows. Use the `type` field when it is present. A s
 | no `type`, has `text` | Subtitle | [4.2](#42-subtitle) |
 | `"type": "theme"` | Theme token update | [4.3](#43-theme) |
 | `"type": "speech_activity_start"` or `"speech_activity_end"` | Speech activity event (optional) | [4.4](#44-speech-activity-events) |
+| `"type": "subtitle_partial"` | Provisional subtitle (optional) | [4.6](#46-partial-subtitles) |
 
 ### 4.1 `hello`
 
@@ -162,37 +164,62 @@ Subtitle replayed to a late-joining client, or delayed by more than one second:
 
 ### 4.3 `theme`
 
-A theme message updates CSS custom properties on the overlay.
+A theme message sets the subtitle style on the overlay through CSS custom properties. Each message is the full custom style: a token that is missing from the message returns to the overlay's built-in value, so an empty `tokens` object resets the style.
 
 | Field | JSON type | Meaning |
 |---|---|---|
 | `type` | string | Always `"theme"` |
-| `tokens` | object (string to string) | CSS custom property names mapped to values |
+| `tokens` | object (string to string) | Token names mapped to values |
 
 ```json
-{"type": "theme", "tokens": {"--sub-bg": "rgba(0, 0, 0, 0.7)", "--sub-font-size": "42px"}}
+{"type": "theme", "tokens": {"--sub-bg": "rgba(0, 0, 0, 0.7)", "--sub-font-size": "42px", "--sub-animation": "fade"}}
 ```
 
-The bundled overlay applies only these 12 token names. Other names are ignored.
+Only the 13 tokens below are accepted. Validation happens in two places. LiveAudio validates the theme when the configuration is loaded or saved (`normalize()` in `liveaudio-core`), and the server forwards the tokens it is given without checking them again. The overlay validates every message, so an unknown token or a value that fails its check is dropped without affecting the other tokens.
 
 | Token | Accepted values |
 |---|---|
 | `--sub-bg` | color |
 | `--sub-color` | color |
-| `--sub-font-size` | size, numeric part from 12 to 120 |
-| `--sub-font-weight` | weight |
-| `--sub-radius` | size, numeric part from 0 to 50 |
-| `--sub-shadow` | shadow |
-| `--sub-border` | border |
-| `--sub-padding` | padding |
-| `--sub-animation-duration` | duration, numeric part from 0.1 to 2.0 |
-| `--sub-font-family` | font |
-| `--sub-text-transform` | transform |
-| `--sub-letter-spacing` | spacing |
+| `--sub-font-size` | `px` length, number from 12 to 120 |
+| `--sub-font-weight` | `normal`, `bold`, or a multiple of 100 from 100 to 900 |
+| `--sub-radius` | `px` length, number from 0 to 50 |
+| `--sub-shadow` | shadow (`x y blur color`, no `url`) |
+| `--sub-border` | border (no `url`) |
+| `--sub-padding` | one to four lengths |
+| `--sub-animation` | `pop`, `fade` or `none` |
+| `--sub-animation-duration` | `s` duration, number from 0.1 to 2.0 |
+| `--sub-font-family` | font name: letters, digits, spaces, `-`, `,`, quotes |
+| `--sub-text-transform` | `none`, `uppercase`, `lowercase` or `capitalize` |
+| `--sub-letter-spacing` | `normal` or a length |
 
-For size and duration tokens, the overlay parses the leading number and checks it against the range. Other values are applied as written.
+Color means `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`, `rgb(...)` or `rgba(...)`. Free-form values (shadow, border, padding, spacing) are limited to a short set of characters, and `url` is never accepted.
 
-**Status:** the bundled overlay handles this message, and the server exposes `broadcast_theme`. No shipped binary in this repository calls it at the time of writing, so theme frames are not sent in normal operation.
+Numbers must have a leading digit (`.5px` and `5.px` are rejected). LiveAudio clamps an out-of-range size or duration into its range when it normalizes the configuration, so `3px` becomes `12px`. The overlay rejects an out-of-range value instead, so a sender that skips LiveAudio can only lose that one token.
+
+Colors are capped at 200 characters, and so are the other values.
+
+**Background.** `--sub-bg` is a color with alpha. The Style tab writes it only when the user turns on a custom background, and then always as `rgba(...)`, so opaque black is stored correctly. When `--sub-bg` is absent, each preset keeps its own background. The same applies to `--sub-color` and the text color of the karaoke preset, through the overlay's `--sub-user-color` and `--sub-user-bg` values.
+
+**Limitations.**
+- The Style tab offers a curated font list per operating system, not the fonts installed on this machine. A saved font that is not in the list stays selectable.
+- The preview in the desktop app is an approximation. Its layout and animations do not match OBS exactly.
+
+**Where the theme comes from:**
+
+- The desktop app sends the theme when the style is saved, and when the service starts. The built-in style (`subtitle_style`) is chosen in the Style tab of the desktop app and is saved with the theme; new cues carry it in their `style` field.
+- `liveaudio-cli` sends the theme after it binds the server at startup.
+- The server keeps the last theme it received and sends it to every new client right after `hello` (see [5.3](#53-late-join-replay)). A client that connects before any theme is set receives no `theme` message.
+
+**Configuration.** The theme is stored in the LiveAudio configuration:
+
+| Key | Type | Meaning |
+|---|---|---|
+| `subtitle_style` | string | The built-in style: one of `default`, `karaoke`, `neon`, `minimal`, `bold`, `rgb`, `typewriter`. Chosen with the built-in style selector in the desktop app Style tab, which saves it at once. Other values fall back to `default` when the configuration is loaded. |
+| `subtitle_theme` | object (string to string) | The `tokens` sent in the theme message. Unknown tokens and invalid values are removed when the configuration is loaded. Empty by default. |
+| `subtitle_presets` | list of `{"name", "tokens"}` | Named themes saved from the Style tab. At most 20 presets, each name at most 40 characters, names are unique. Empty by default. |
+
+Presets are stored only. Loading one copies its tokens into `subtitle_theme`, and it does not change the protocol.
 
 ### 4.4 Speech activity events
 
@@ -227,6 +254,28 @@ Speech activity events bypass the per-client retry queue. Under backpressure the
 
   Use `port` (the effective port) from this event if you run the CLI as a child process.
 
+### 4.6 Partial subtitles
+
+While a phrase is still being spoken, the desktop app can send provisional text for it. This is off by default and is enabled by the config key `live_partial_subtitles_enabled` (default `false`, restart required). Only the desktop app sends partials. `liveaudio-cli` ignores the key.
+
+| Field | JSON type | Meaning |
+|---|---|---|
+| `type` | string | Always `"subtitle_partial"` |
+| `utterance_id` | string | The id the final subtitle for this phrase will carry as its `id`, for example `utt_7` |
+| `partial_text` | string | The text decoded so far. An empty string means "remove the provisional line". |
+
+```json
+{"type": "subtitle_partial", "utterance_id": "utt_7", "partial_text": "hola, esto es una"}
+```
+
+The frame has no `text` field, so a client that only reads `text` ignores it. Rules for clients:
+
+- Each partial replaces the previous one. Roughly one frame is sent every 0.5 s of speech.
+- Show the final subtitle (section 4.2) with the same `id`, or a newer one, in place of the provisional text.
+- Partials are live only. They bypass the replay buffer and the per-client retry queue, so a client that connects late or falls behind does not receive them. Under backpressure they are dropped.
+- Partials are never written to the JSONL, VTT or SRT files.
+- The text can change between frames. Do not treat it as final.
+
 ---
 
 ## 5. Subtitle delivery, backlog policy and replay
@@ -260,13 +309,14 @@ A subtitle with `catchup_interval_sec` greater than `0` is a paced replay. The s
 The server keeps the last 256 subtitles it actually sent (`REPLAY_BUFFER_MAX`). The oldest entries are dropped when the buffer is full. When a client connects:
 
 1. The server sends `hello`.
-2. It selects buffered subtitles by the policy in effect:
+2. If a theme has been set, it sends the latest `theme` message (see [4.3](#43-theme)).
+3. It selects buffered subtitles by the policy in effect:
    - `auto`: subtitles whose `processed_at` is within the last `2 x subtitle_max_live_delay_sec` seconds (20 seconds with defaults);
    - `live_only`: within the last `subtitle_max_live_delay_sec` seconds;
    - `send_all`: everything in the buffer.
-3. It sends the selected subtitles in order, with `is_replay` set to `true` on every one, whatever its original value.
-4. Each replayed subtitle is spaced by the `catchup_interval_sec` of the one before it. The first is sent immediately.
-5. Live subtitles produced during the burst are queued for the client and sent after the burst.
+4. It sends the selected subtitles in order, with `is_replay` set to `true` on every one, whatever its original value.
+5. Each replayed subtitle is spaced by the `catchup_interval_sec` of the one before it. The first is sent immediately.
+6. Live subtitles produced during the burst are queued for the client and sent after the burst.
 
 ### 5.4 Interpreting `is_replay`
 
@@ -307,11 +357,13 @@ The server does not send its own WebSocket pings, and it has no idle timeout. A 
   - **No `Origin` header** (native applications, scripts, most non-browser clients): accepted.
   - **More than one `Origin` header**: rejected with HTTP `403`.
   - **Accepted origins:**
-    - `http://absolute` (the OBS Browser Source);
-    - `http://tauri.localhost` and `https://tauri.localhost` (exact match, the desktop app's webview);
-    - any `http` or `https` origin whose host is `localhost`, `127.0.0.1` or `::1`, on any port.
-  - **Anything else**: rejected with HTTP `403`, body `Origen no permitido: <origin>`.
-- **No authentication.** Any process on the same machine can connect and read subtitles. The Origin filter restricts browser pages only. A page served from any loopback origin, on any port, is allowed and can read the stream. A page opened from `file://` usually sends `Origin: null`, which is rejected.
+    - `http://absolute` (the OBS Browser Source CEF internal origin);
+    - `http://tauri.localhost`, `https://tauri.localhost`, and `tauri://localhost` (exact match, the desktop app's webview);
+    - Loopback origins (`http` or `https` where host is `localhost`, `127.0.0.1`, or `[::1]`):
+      - On the WebSocket server's effective bound port (e.g., the built-in overlay served at `/overlay`);
+      - On any port included in the user-configured allowlist (`ws_allowed_loopback_ports`, defaults to `[1420]` for desktop development).
+  - **Anything else**: strictly rejected with HTTP `403`, body `Origen no permitido: <origin>`.
+- **No authentication.** Any process on the same machine connecting without an `Origin` header can read subtitles. Browser pages are strictly governed by the Origin filter. Loopback web applications running on other local ports (such as OpenCohost or dev servers) must have their port added to the allowlist before connecting. Users can manage allowed ports and view recent blocked connection attempts in the desktop app under **Settings > Advanced > Allowed local connections**.
 - **Request path.** The server does not check the request path. Use `/` by convention.
 - **Handshake timeout.** A client must finish the WebSocket handshake within 5 seconds.
 
@@ -319,7 +371,7 @@ The server does not send its own WebSocket pings, and it has no idle timeout. A 
 
 ## 8. Client examples
 
-Browser clients must be served from `http://localhost` or `http://127.0.0.1`. A page opened from `file://` is rejected (see [section 7](#7-security)). The examples use the base port. Use the discovery procedure in [section 2](#2-connecting-and-discovering-the-port) to find the effective port.
+Browser clients must be served from an allowed origin (e.g., `http://localhost:<bound_port>` or an allowlisted port such as `1420`). A page opened from `file://` sends `Origin: null` and is rejected (see [section 7](#7-security)). The examples use the base port. Use the discovery procedure in [section 2](#2-connecting-and-discovering-the-port) to find the effective port.
 
 ### 8.1 JavaScript (browser)
 
@@ -393,9 +445,19 @@ if __name__ == "__main__":
 
 ### Step 2: Configure the source
 
+You have two options to connect OBS to the overlay:
+
+**Option A (Recommended): Direct Loopback URL**
+- Leave **Local file** unchecked.
+- Set **URL** to: `http://127.0.0.1:8765/overlay` (or use the active port shown in the app).
+- This uses LiveAudio's embedded HTTP overlay server and avoids local filesystem path or permission issues.
+
+**Option B: Local File**
+- Enable **Local file** and select `assets/subtitulos_obs.html` in the project folder.
+
 | Property | Recommended value |
 |---|---|
-| **URL / Local file** | Enable **Local file** and select `liveaudio/assets/subtitulos_obs.html` in the project folder. |
+| **URL / Local file** | `http://127.0.0.1:8765/overlay` (or local `assets/subtitulos_obs.html`) |
 | **Width** | `1920` |
 | **Height** | `200` |
 | **FPS** | `30` or `60` |
@@ -408,7 +470,7 @@ Place it at the bottom center of the scene and adjust its size as needed.
 
 ### Step 4: Start LiveAudio
 
-1. Start LiveAudio (the installed launcher, or `uv run liveaudio` in development) and press **Start system**.
+1. Start LiveAudio (the desktop app or `liveaudio-cli`) and press **Start system**.
 2. Speak. Subtitles appear in OBS automatically.
 
 ### Using a custom port
@@ -423,15 +485,13 @@ Without `?port=`, the overlay starts at `8765`. In both cases it scans `port` th
 
 ### Transcript-only mode (no OBS)
 
-In the Python app, you can save transcripts without sending subtitles to OBS:
+You can save transcripts without sending subtitles to OBS:
 
 1. Open the **Subtitles** tab.
 2. Turn off **Send subtitles to OBS** (config key `obs_enabled`).
 3. Transcripts are still saved to disk (JSONL and VTT).
 
 > **Note (Rust desktop app and `liveaudio-cli`):** When `obs_enabled` is `false`, the server is not bound. Transcription and the transcript keep working. The desktop app reports the WebSocket port as `0` and shows `WS: off`, and the overlay URL command returns an error. The desktop app has no UI switch for this key, so set it in the configuration file.
->
-> The Python engine also checks `obs_enabled` before it emits to the WebSocket (`liveaudio/core/engine.py`).
 
 ---
 
@@ -455,7 +515,7 @@ These visual descriptions were carried over from the previous version of this do
 
 ## 11. Customizing the overlay
 
-Edit `liveaudio/assets/subtitulos_obs.html` directly.
+Edit `assets/subtitulos_obs.html` directly (or build with custom assets).
 
 - **Font:** change `font-family` in the `body` rule of the `<style>` block.
 - **On-screen time:** change the `SUB_LIFETIME_MS` constant (default `5000`, in milliseconds).
@@ -472,8 +532,9 @@ Edit `liveaudio/assets/subtitulos_obs.html` directly.
 | Connection to the base port fails | The base port is in use | The server uses the next free port in `base` to `base + 9`. Use the effective port from the log or from `hello.port`. |
 | The WebSocket handshake fails, and the server log or the network panel shows a 403 | The page's `Origin` is not allowed | Serve the page from `http://localhost` or `http://127.0.0.1`. Do not open it from `file://`. |
 | Subtitles arrive late or in bursts | Backlog policy or pacing | Check `subtitle_backlog_policy`, `subtitle_max_live_delay_sec` and `subtitle_catchup_interval_sec`. See [section 5](#5-subtitle-delivery-backlog-policy-and-replay). |
+| Subtitles show when you open the overlay URL in a browser, but not in OBS | OBS is showing a cached copy of the overlay page | Open the Browser Source properties and press **Refresh cache of current page** (Spanish OBS: **Actualizar la caché de la página actual**). |
 | Subtitles are missing on a client | The client was too slow, or it was disconnected | Process messages without blocking. The server counts drops in `retry_drops` and `replay_drops`. |
 
 ---
 
-*Last updated against the `liveaudio-network` crate (`protocol.rs`, `server.rs`, `replay.rs`, `security.rs`, `health.rs`) and the bundled overlay `liveaudio/assets/subtitulos_obs.html`.*
+*Last updated against the `liveaudio-network` crate (`protocol.rs`, `server.rs`, `replay.rs`, `security.rs`, `health.rs`) and the bundled overlay `assets/subtitulos_obs.html`.*

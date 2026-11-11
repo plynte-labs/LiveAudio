@@ -4,6 +4,31 @@ Todos los cambios notables de LiveAudio se documentan aquí.
 
 ---
 
+## [1.6.0] - Unreleased
+
+### Agregado
+
+- **Actualizador integrado en la aplicación (In-App Updater)** — Soporte de actualizaciones automáticas seguras mediante `tauri-plugin-updater` en Windows (instalador NSIS pasivo).
+- **Protección de transmisiones (Stream Safety)** — Bloqueo estricto de descargas e instalaciones mientras la transcripción esté activa o existan clientes OBS conectados. Opción de "Instalar al cerrar" diferida.
+- **Verificación criptográfica Minisign** — Verificación obligatoria de firmas Ed25519 antes de ejecutar cualquier instalador de actualización.
+- **Control de privacidad en Ajustes** — Selector para activar o desactivar la comprobación periódica (cada 24 h) de versiones en GitHub Releases; el audio y las transcripciones permanecen 100% locales en la máquina.
+- **Arquitectura 100% Rust + Tauri 2 Nativa (Zero Python)** — Eliminación completa de dependencias de Python y de entornos virtuales. Motor de transcripción ASR migrado a Rust nativo con aceleración por hardware DirectX 12 mediante ONNX Runtime DirectML (`onnxruntime.dll` + `DirectML.dll`) en Windows y fallback CPU multi-hilo en Windows y Linux.
+
+### Cambiado
+
+- **Limpieza de restos de uv/Python** — Se elimina el subcomando `liveaudio-cli setup-runtime` (ya no aprovisiona nada), los shims de `uv`/Python en `liveaudio-core::runtime`, la variable `TORCH_HOME` del worker y la documentación de desarrollo basada en `uv`.
+- **Aviso de privacidad y alcance de red** — Documentación actualizada para reflejar con precisión la consulta periódica a GitHub Releases y la descarga de modelos en primer inicio.
+
+- **Control granular de permisos MCP (Model Context Protocol)** — Sustitución del switch único `mcp_enabled` por dos opciones independientes en Ajustes > Avanzado: `mcp_style_enabled` (bajo riesgo, lectura/escritura de temas, estilos, presets y modo de subtítulos) y `mcp_system_enabled` (riesgo medio, parámetros de modelo, VAD, dispositivo, prompts y red). Migración automática segura: configs previas con `mcp_enabled: true` activan únicamente `mcp_style_enabled` (bajo riesgo), dejando `mcp_system_enabled` apagado para requerir activación intencionada del usuario; quien utilizaba MCP para control completo del sistema debe reactivar el switch de sistema en Ajustes > Avanzado. Se retira `ws_allowed_loopback_ports` de las claves parcheables por agentes: la lista blanca de puertos para la lectura de transcripciones queda restringida exclusivamente a la UI de escritorio y Tauri IPC.
+- **ONNX Runtime 1.24.4 unificado y descargado en build** — Windows y Linux usan la misma versión; los binarios de ONNX Runtime/DirectML ya no se versionan en git: `node packaging/fetch_onnxruntime.mjs` los descarga de fuentes oficiales verificando SHA-256 (CI y release lo ejecutan). La licencia de DirectML se distribuye con la app.
+
+### Aviso de Migración
+
+- Los usuarios en la versión 1.5.1 o anterior deben instalar la versión 1.6.0 manualmente una vez desde GitHub Releases, ya que las versiones anteriores no incluyen el módulo de actualización ni la clave pública de verificación.
+- **Migración MCP:** Usuarios que tenían activado el switch anterior `mcp_enabled` mantendrán activo únicamente el switch de estilos (`mcp_style_enabled`). Quien usaba MCP completo debe reactivar manualmente el switch de sistema (`mcp_system_enabled`) en Ajustes > Avanzado.
+
+---
+
 ## [1.2.7] - 2026-10-07
 
 ### Mejorado

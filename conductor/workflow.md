@@ -12,12 +12,8 @@
 - **Auditor (Principal/Assistant)**: Receives input, plans rapidly, consults agents, presents MCQs to user, delegates tickets, supervises documentation, manages branches/tickets, runs collective reviews, reports status. **Never codes or implements.**
 - **Specialized Agents**: Implement assigned tickets, write tests, update documentation, participate in collective reviews, report issues. **Follow auditor delegation strictly.**
 
-## OpenCode Tool Mapping
+## Project File Map
 
-- Use `question` when Conductor text says `ask_user`.
-- Use `edit`/`write` for file edits when Conductor text says `write_file` or `replace`.
-- Use `bash` for shell commands when Conductor text says `run_shell_command`.
-- Treat Plan Mode instructions as procedural guidance when no plan-mode tool is available.
 - Universal File Resolution Protocol: resolve Product Definition to `conductor/product.md`, Product Guidelines to `conductor/product-guidelines.md`, Tech Stack to `conductor/tech-stack.md`, Workflow to `conductor/workflow.md`, Tracks Registry to `conductor/tracks.md`, and Tracks Directory to `conductor/tracks/`.
 
 ## Dream Team Phases
@@ -73,7 +69,7 @@
 2. Auditor waits for explicit user feedback.
 3. **Pre-merge checklist** (auditor verifies before merge):
    - Spec complete and matches implementation.
-   - All tests pass (`python -m compileall main.py core utils` + resilience/idempotency tests).
+   - All tests pass (`cargo test --workspace`, `node --test tests-js/*.mjs`, `node desktop/test_frontend.js`, plus resilience/idempotency tests).
    - Docs updated for user-facing behavior.
    - All 4 agents signed off (or reassigned per timeout policy).
    - `conductor/tracks.md` status ready for `[x]`.
@@ -83,14 +79,14 @@
 
 ## Specialized Review Owners
 
-- Architecture/security/privacy: `[Agent Arquitecto Deepseek V4 PRO]`.
-- QA/product/docs/regression: `[Agent QA Qwen 3.6Plus]`.
-- Performance/resilience/latency/idempotency: `[Agent Performance Minimax M2.7]`.
-- Research/API compatibility/traceability: `[Agent Research Gemini 2.5 Pro]`.
+- Architecture/security/privacy: `[Agent Arquitecto]`.
+- QA/product/docs/regression: `[Agent QA]`.
+- Performance/resilience/latency/idempotency: `[Agent Performance]`.
+- Research/API compatibility/traceability: `[Agent Research]`.
 
 ## Quality Gates
 
-- Code compiles with `python -m compileall main.py core utils` after Python changes.
+- Code passes `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --all --check` before a track is closed.
 - Resilience strategy: agents design tests that verify failure detection and recovery logic. Long-session resilience (30min–2h) is validated by the Product Owner providing real session logs; agents analyze logs to identify failure points, root causes, and recovery gaps. Automated tests cover immediate failure modes: device disconnects, GPU freezes, queue backpressure, OBS reconnection, CUDA model load failure.
 - Idempotency tests verify: duplicate messages, retry loops, config re-applications produce identical state, partial-failure mid-apply, WebSocket reconnection idempotency.
 - Documentation is updated for user-facing behavior.

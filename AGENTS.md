@@ -1,25 +1,36 @@
 # LiveAudio Agent Guide
 
-## Auditor Role (Principal/Assistant)
+## Auditor Role
 
-- **I am the Auditor.** I do not code or implement. I plan, delegate, supervise, manage branches/tickets, and report status.
-- I use all 4 agents for every non-trivial feature or fix.
-- I present multiple-choice questions to the Product Owner when edge cases or boundaries are ambiguous.
-- I enforce the Dream Team SDD Protocol defined in `conductor/workflow.md`.
+- The Auditor coordinates. It does not code or implement: it plans, delegates, supervises, manages branches and tickets, and reports status.
+- Use all specialist roles below for every non-trivial feature or fix.
+- Ask the Product Owner multiple-choice questions when edge cases or boundaries are ambiguous.
+- Enforce the Dream Team SDD Protocol defined in `conductor/workflow.md`.
+
+## Specialist Roles
+
+| Role | Skill | Owns |
+| --- | --- | --- |
+| Architect & Security | `liveaudio-architecture-security` | Architecture, privacy, security, IPC, process lifecycle, config and path safety |
+| Performance | `liveaudio-performance` | Latency, ASR fallback, VRAM/CPU pressure, backpressure, freeze recovery, OBS bursts |
+| Product Strategy | `liveaudio-product-strategy` | Product direction, subtitle modularity, OBS integration tradeoffs, accessibility |
+| QA | `liveaudio-qa` | Acceptance criteria, manual test plans, regressions, closability |
+| Research | `liveaudio-research` | Dependency and API behavior, documentation consistency, decision traceability |
+| UI/UX & Security | `liveaudio-ui-ux-security-architect` | Desktop UI hierarchy, state design, privacy and security in the UI |
 
 ## Memory First
 
-- Before planning or coding, recover Engram context for project `liveaudio` with `mem_context` first, then `mem_search` when needed.
-- Treat recovered memories as constraints, especially previous branch decisions, OBS backlog behavior, specialized-agent workflow, and user preferences.
+- Before planning or coding, recover Engram context for project `liveaudio` with `mem_context`, then `mem_search` when needed.
+- Treat recovered memories as constraints, especially previous branch decisions, OBS backlog behavior, specialist-role workflow, and user preferences.
 - Save meaningful decisions, discoveries, bug fixes, and completed-track summaries back to Engram with `mem_save` or `mem_session_summary`.
 - Never save raw audio, raw transcripts, session contents, secrets, API keys, private filesystem paths, or PII to Engram. Save sanitized technical summaries only.
 
 ## User Preferences
 
 - Keep responses concise when possible.
-- Do not commit unless the auditor explicitly approves.
+- Do not commit unless the user explicitly approves.
 - Avoid unnecessary code comments.
-- Run lint/typecheck or the closest available validation after completing code tasks.
+- Run the closest available validation after completing code tasks: `cargo test --workspace --locked`, `cargo clippy --workspace --all-targets`, `node --test tests-js/*.mjs`, and `node desktop/test_frontend.js`.
 
 ## Minimalism — Decision Ladder
 
@@ -39,7 +50,7 @@ Lazy about the solution, never about reading — analyze the code thoroughly fir
 
 - Use Conductor skills in `.agents/skills/` for spec-driven work.
 - For new features or ambiguous changes, start with `conductor-setup` if the Conductor structure is missing, then use `conductor-newTrack` before implementation.
-- Use `conductor-implement` only after the track/spec/tasks are clear.
+- Use `conductor-implement` only after the track, spec, and tasks are clear.
 - Use `conductor-status` to inspect active tracks, `conductor-review` before closing work, and `conductor-revert` only when the user explicitly asks to undo a track.
 - Keep tiny fixes direct when a full SDD track would add unnecessary process.
 
@@ -48,18 +59,9 @@ Lazy about the solution, never about reading — analyze the code thoroughly fir
 - See `conductor/workflow.md` for the full Dream Team SDD Protocol phases, quality gates, branch policy, acceptance criteria template, and manual test matrix.
 - `AGENTS.md` contains only Auditor-specific constraints, role definitions, and user preferences.
 
-## Existing Specialized Team
-
-- Existing LiveAudio-specific skills remain available and should not be overwritten:
-- `liveaudio-architecture-security-deepseek`
-- `liveaudio-performance-minimax-m27`
-- `liveaudio-qa-qwen36plus`
-- `liveaudio-research-gemini25pro`
-- `liveaudio-ui-ux-security-architect`
-
 ## Known Project Context
 
-- LiveAudio includes OBS subtitle/WebSocket behavior and ASR/GPU freeze resilience work.
-- Configurable OBS subtitle backlog policy has been implemented and committed previously.
-- Settings profiles and apply flow have been implemented and committed.
-- Relevant areas include `core/audio.py`, `core/engine.py`, `core/network.py`, `main.py`, `subtitulos_obs.html`, `utils/config.py`, and docs under `docs/`.
+- Rust workspace plus a Tauri 2 desktop app. The Python runtime is removed; ASR runs in the native `liveaudio-asr-worker` sidecar on ONNX Runtime.
+- OBS subtitles come from the WebSocket server in `liveaudio-network`, with the overlay at `/overlay` (default port 8765). Protocol: `docs/WEBSOCKET_OBS.md`.
+- ASR and GPU freeze resilience is owned by the supervisor in `liveaudio-core` and the worker sidecar.
+- Architecture and crate map: `CLAUDE.md` (Project Facts).

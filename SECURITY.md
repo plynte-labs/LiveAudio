@@ -11,11 +11,12 @@ We support security fixes on the latest released version only.
 
 ## Scope
 
-LiveAudio runs **100% locally**. It does not transmit audio, transcriptions, or any personal data to external servers. The attack surface is limited to:
+Audio and transcripts processed by LiveAudio **never leave your machine**. The application does not collect telemetry, analytics, or user identifiers. The attack surface is limited to:
 
-- **WebSocket server** (local, default port 8765) — accessible only within the local network by default
-- **Whisper model downloads** — fetched from Hugging Face/official sources on first run
-- **Configuration file** (`config.json`) — stored locally, not uploaded
+- **WebSocket server** (local loopback, default port 8765) — broadcasts live subtitles to local OBS browser sources
+- **In-app updater checks** — queries GitHub Releases (`latest.json`) over HTTPS every 24 hours to check for new versions (can be disabled in **Settings > Advanced**); update binaries and manifests are cryptographically verified using Minisign Ed25519 signatures before execution
+- **Whisper model downloads** — Whisper weights are fetched from `huggingface.co` the first time a model is used. The Silero VAD model is embedded in the binary and is not downloaded.
+- **Configuration file** (`config.json`) — stored locally in `%APPDATA%\LiveAudio`, never uploaded
 
 Out of scope: issues that require physical access to the machine, social engineering, or are in third-party dependencies (report those upstream).
 
