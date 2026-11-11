@@ -38,6 +38,17 @@ pub fn initialize_onnx_runtime(path: impl AsRef<Path>) -> Result<(), VadError> {
         ));
     }
 
+    if let Some(parent) = path.parent() {
+        let current_path = std::env::var_os("PATH").unwrap_or_default();
+        let mut paths: Vec<std::path::PathBuf> = std::env::split_paths(&current_path).collect();
+        if !paths.iter().any(|p| p.as_path() == parent) {
+            paths.insert(0, parent.to_path_buf());
+            if let Ok(joined) = std::env::join_paths(paths) {
+                std::env::set_var("PATH", joined);
+            }
+        }
+    }
+
     let environment = ort::init_from(path).map_err(|error| {
         let _ = error;
         VadError::RuntimeUnavailable(
@@ -70,7 +81,7 @@ pub fn cpu_runtime_library_path(resource_dir: impl AsRef<Path>) -> Result<PathBu
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     let relative = Path::new("onnxruntime/windows-x64/onnxruntime.dll");
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    let relative = Path::new("onnxruntime/linux-x64/libonnxruntime.so.1.26.0");
+    let relative = Path::new("onnxruntime/linux-x64/libonnxruntime.so.1.24.4");
     #[cfg(not(any(
         all(target_os = "windows", target_arch = "x86_64"),
         all(target_os = "linux", target_arch = "x86_64")
@@ -108,7 +119,7 @@ mod tests {
         #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
         assert!(resolved.ends_with("onnxruntime/windows-x64/onnxruntime.dll"));
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        assert!(resolved.ends_with("onnxruntime/linux-x64/libonnxruntime.so.1.26.0"));
+        assert!(resolved.ends_with("onnxruntime/linux-x64/libonnxruntime.so.1.24.4"));
 
         assert!(cpu_runtime_library_path("relative/resources").is_err());
     }

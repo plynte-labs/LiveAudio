@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 use ort::session::Session;
-use ort::value::Tensor;
+use ort::value::TensorRef;
 use std::path::Path;
 
 use crate::error::VadError;
@@ -26,6 +26,8 @@ pub struct SileroVad {
     config: VadConfig,
     state: Vec<f32>,
     context: Vec<f32>,
+    input_buf: Vec<f32>,
+    sr_buf: [i64; 1],
     is_speaking: bool,
     silence_counter: usize,
     speech_chunk_count: usize,
@@ -51,12 +53,15 @@ impl SileroVad {
         let silence_limit_chunks = config.silence_limit_chunks();
         let max_chunks_limit = config.max_chunks_limit();
         let pre_buffer_capacity = config.pre_buffer_chunks();
+        let input_buf = vec![0.0f32; CONTEXT_SIZE + config.chunk_size];
 
         Ok(Self {
             session,
             config,
             state: vec![0.0f32; STATE_SIZE],
             context: vec![0.0f32; CONTEXT_SIZE],
+            input_buf,
+            sr_buf: [SAMPLE_RATE],
             is_speaking: false,
             silence_counter: 0,
             speech_chunk_count: 0,
@@ -76,16 +81,22 @@ impl SileroVad {
 
     /// Raw forward pass through ONNX model evaluating single frame probability.
     fn forward_onnx(&mut self, chunk: &[f32]) -> Result<f32, VadError> {
-        let mut input_vec = Vec::with_capacity(CONTEXT_SIZE + chunk.len());
-        input_vec.extend_from_slice(&self.context);
-        input_vec.extend_from_slice(chunk);
+        let required_len = CONTEXT_SIZE + chunk.len();
+        if self.input_buf.len() != required_len {
+            self.input_buf.resize(required_len, 0.0f32);
+        }
+        self.input_buf[..CONTEXT_SIZE].copy_from_slice(&self.context);
+        self.input_buf[CONTEXT_SIZE..required_len].copy_from_slice(chunk);
 
-        let input_tensor = Tensor::from_array(([1, input_vec.len()], input_vec.into_boxed_slice()))
-            .map_err(|e| VadError::InferenceError(format!("Input tensor creation error: {}", e)))?;
+        let input_tensor =
+            TensorRef::from_array_view(([1, self.input_buf.len()], &self.input_buf[..]))
+                .map_err(|e| {
+                    VadError::InferenceError(format!("Input tensor creation error: {}", e))
+                })?;
 
-        let state_tensor = Tensor::from_array(([2, 1, 128], self.state.clone().into_boxed_slice()))
+        let state_tensor = TensorRef::from_array_view(([2, 1, 128], &self.state[..]))
             .map_err(|e| VadError::InferenceError(format!("state tensor creation error: {}", e)))?;
-        let sample_rate_tensor = Tensor::from_array(([1], vec![SAMPLE_RATE].into_boxed_slice()))
+        let sample_rate_tensor = TensorRef::from_array_view(([1], &self.sr_buf[..]))
             .map_err(|e| {
                 VadError::InferenceError(format!("sample rate tensor creation error: {}", e))
             })?;
@@ -102,13 +113,25 @@ impl SileroVad {
         let prob_tensor = outputs[0].try_extract_tensor::<f32>().map_err(|e| {
             VadError::InferenceError(format!("Failed to extract speech probability: {}", e))
         })?;
-        let speech_prob = prob_tensor.1[0];
+        let speech_prob = prob_tensor
+            .1
+            .first()
+            .copied()
+            .ok_or_else(|| VadError::InferenceError("Empty speech probability tensor".to_string()))?;
 
         // Silero's pinned 16 kHz op15 wrapper returns probability first and the
         // combined recurrent state second (state shape [2, 1, 128]).
         let state_output = outputs[1].try_extract_tensor::<f32>().map_err(|e| {
             VadError::InferenceError(format!("Failed to extract recurrent state: {}", e))
         })?;
+
+        if state_output.1.len() != self.state.len() {
+            return Err(VadError::InferenceError(format!(
+                "Unexpected recurrent state size: expected {}, got {}",
+                self.state.len(),
+                state_output.1.len()
+            )));
+        }
 
         self.state.copy_from_slice(state_output.1);
 
@@ -205,6 +228,7 @@ impl VadEngine for SileroVad {
     fn reset(&mut self) {
         self.state.fill(0.0);
         self.context.fill(0.0);
+        self.input_buf.fill(0.0);
         self.is_speaking = false;
         self.silence_counter = 0;
         self.speech_chunk_count = 0;
@@ -220,7 +244,83 @@ impl VadEngine for SileroVad {
         self.max_chunks_limit = config.max_chunks_limit();
         let pre_buffer_capacity = config.pre_buffer_chunks();
         self.pre_buffer = PreBuffer::new(pre_buffer_capacity);
+        if self.input_buf.len() != CONTEXT_SIZE + config.chunk_size {
+            self.input_buf.resize(CONTEXT_SIZE + config.chunk_size, 0.0f32);
+        }
         self.config = config;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::{cpu_runtime_library_path, initialize_onnx_runtime};
+
+    fn try_init_runtime() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packaging");
+        if let Ok(library) = cpu_runtime_library_path(root) {
+            let _ = initialize_onnx_runtime(library);
+        }
+    }
+
+    #[test]
+    fn test_silero_vad_allocation_and_buffer_dimensions() {
+        try_init_runtime();
+        let config = VadConfig {
+            chunk_size: 512,
+            ..Default::default()
+        };
+        if let Ok(mut vad) = SileroVad::new(config.clone()) {
+            assert_eq!(vad.input_buf.len(), CONTEXT_SIZE + 512);
+            assert_eq!(vad.sr_buf, [SAMPLE_RATE]);
+
+            let mut updated_config = config;
+            updated_config.chunk_size = 256;
+            vad.update_config(updated_config).expect("update config");
+            assert_eq!(vad.input_buf.len(), CONTEXT_SIZE + 256);
+
+            vad.reset();
+            assert!(vad.input_buf.iter().all(|&v| v == 0.0));
+        }
+    }
+
+    #[test]
+    fn test_silero_vad_evaluate_chunk_size_validation() {
+        try_init_runtime();
+        let config = VadConfig {
+            chunk_size: 512,
+            ..Default::default()
+        };
+        if let Ok(mut vad) = SileroVad::new(config) {
+            let invalid_chunk = vec![0.0f32; 100];
+            let result = vad.evaluate_chunk(&invalid_chunk);
+            assert!(matches!(
+                result,
+                Err(VadError::InvalidChunkSize {
+                    expected: 512,
+                    actual: 100
+                })
+            ));
+        }
+    }
+
+    #[test]
+    fn test_silero_vad_inference_and_prebuffer_bounded() {
+        try_init_runtime();
+        let config = VadConfig {
+            chunk_size: 512,
+            speech_pad_ms: 64,
+            threshold: 0.5,
+            ..Default::default()
+        };
+        if let Ok(mut vad) = SileroVad::new(config.clone()) {
+            let silence = vec![0.0f32; 512];
+            for _ in 0..20 {
+                let decision = vad.evaluate_chunk(&silence).expect("evaluate chunk");
+                assert!(!decision.is_speech);
+            }
+            assert!(vad.pre_buffer.len() <= vad.config.pre_buffer_chunks());
+        }
     }
 }

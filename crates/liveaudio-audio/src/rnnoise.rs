@@ -221,7 +221,7 @@ mod tests {
         assert_eq!(DenoiseState::FRAME_SIZE, 480);
         assert_eq!(INPUT_SAMPLES_PER_FRAME, 160);
         assert_eq!(0.5 * PCM_SCALE, 16_384.0);
-        assert_eq!(-1.0 * PCM_SCALE, -32_768.0);
+        assert_eq!(-PCM_SCALE, -32_768.0);
     }
 
     #[test]
@@ -244,7 +244,7 @@ mod tests {
             };
             processor.process(chunk).expect("silence processes");
             assert!(processor.input_frame_len <= 479);
-            assert!(processor.output_staging_len <= DEFAULT_CHUNK_SIZE - 1);
+            assert!(processor.output_staging_len < DEFAULT_CHUNK_SIZE);
         }
     }
 }

@@ -69,7 +69,7 @@ fn test_silero_vad_recurrent_state_preservation_and_reset() {
 
 #[test]
 fn test_pre_buffer_onset_recovery_200ms_7_chunks() {
-    // Verify 200ms @ 16kHz, 512 samples = 7 chunks (as specified in WU5/WU6 prompt and Python audio.py)
+    // Verify 200ms @ 16kHz, 512 samples = 7 chunks
     let chunks = PreBuffer::chunks_from_pad(200, 16000, 512);
     assert_eq!(chunks, 7);
 
@@ -99,7 +99,7 @@ fn test_pre_buffer_onset_recovery_200ms_7_chunks() {
 
 #[test]
 fn test_silence_timeout_boundary_parity_25_chunks() {
-    // silence_timeout: 0.8s @ 16kHz, 512 chunk = 25 chunks (Python audio.py: int(16000/512 * 0.8) = 25)
+    // silence_timeout: 0.8s @ 16kHz, 512 chunk = 25 chunks (int(16000/512 * 0.8) = 25)
     let config = VadConfig {
         silence_timeout_ms: 800,
         max_chunk_duration_sec: 10.0,
@@ -115,7 +115,7 @@ fn test_silence_timeout_boundary_parity_25_chunks() {
     let d_start = vad.evaluate_chunk(&speech).expect("start");
     assert_eq!(d_start.transition, VadTransition::SpeechStart);
 
-    // 25 silence chunks: utterance must remain open (matches Python: silence_count > silence_limit)
+    // 25 silence chunks: utterance must remain open (silence_count > silence_limit)
     for i in 1..=25 {
         let d = vad.evaluate_chunk(&silence).expect("silence frame");
         assert!(

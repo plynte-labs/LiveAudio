@@ -9,7 +9,7 @@ fn packaged_cpu_library() -> std::path::PathBuf {
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     return root.join("windows-x64/onnxruntime.dll");
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    return root.join("linux-x64/libonnxruntime.so.1.26.0");
+    return root.join("linux-x64/libonnxruntime.so.1.24.4");
     #[allow(unreachable_code)]
     root.join("unsupported-platform/onnxruntime")
 }
