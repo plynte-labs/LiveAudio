@@ -40,7 +40,7 @@ pub struct ObsEmitDecision {
     pub catchup_interval_sec: f64,
 }
 
-/// Mirrors the Python `_obs_emit_decision` policy at the Rust worker boundary.
+/// OBS emit policy at the worker boundary.
 pub fn decide_obs_emit(
     policy: BacklogPolicy,
     max_live_delay_sec: f64,
@@ -85,6 +85,7 @@ pub struct CompletedUtteranceTiming {
 
 /// Build an OBS wire cue from a worker result without treating unknown or inference-heavy
 /// timing as timely. `latency` remains the worker's inference duration; queue delay is metadata.
+#[allow(clippy::too_many_arguments)]
 pub fn subtitle_from_worker_result(
     id: impl Into<String>,
     text: impl Into<String>,

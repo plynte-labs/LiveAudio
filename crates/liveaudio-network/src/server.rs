@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, Notify};
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
@@ -65,6 +66,8 @@ pub struct WsServerConfig {
     pub health_file_path: Option<PathBuf>,
     /// Maximum time a TCP peer may take to complete the WebSocket handshake.
     pub handshake_timeout: Duration,
+    pub allowed_loopback_ports: Vec<u16>,
+    pub rejected_origins: Option<Arc<Mutex<crate::security::RejectedOriginTracker>>>,
 }
 
 impl Default for WsServerConfig {
@@ -79,6 +82,8 @@ impl Default for WsServerConfig {
             replay_buffer_capacity: REPLAY_BUFFER_MAX,
             health_file_path: None,
             handshake_timeout: Duration::from_secs(5),
+            allowed_loopback_ports: vec![1420],
+            rejected_origins: None,
         }
     }
 }
@@ -123,10 +128,37 @@ fn decrement_client_count(metrics: &NetworkMetrics) {
         });
 }
 
+pub const EMBEDDED_OBS_OVERLAY_HTML: &str =
+    include_str!("../../../assets/subtitulos_obs.html");
+
+fn load_overlay_html() -> std::borrow::Cow<'static, str> {
+    let candidates = [
+        PathBuf::from("assets/subtitulos_obs.html"),
+        PathBuf::from("../assets/subtitulos_obs.html"),
+        PathBuf::from("../../assets/subtitulos_obs.html"),
+    ];
+    for path in &candidates {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            return std::borrow::Cow::Owned(content);
+        }
+    }
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            let exe_asset = exe_dir.join("assets").join("subtitulos_obs.html");
+            if let Ok(content) = std::fs::read_to_string(exe_asset) {
+                return std::borrow::Cow::Owned(content);
+            }
+        }
+    }
+    std::borrow::Cow::Borrowed(EMBEDDED_OBS_OVERLAY_HTML)
+}
+
 struct WsServerInner {
     config: WsServerConfig,
     bound_port: RwLock<Option<u16>>,
     clients: RwLock<HashMap<u64, mpsc::Sender<String>>>,
+    /// Last theme frame (serialized) sent to every new client after its hello.
+    theme: Mutex<Option<String>>,
     replay_buffer: Mutex<WireReplayBuffer>,
     pending_replay: Mutex<WireReplayBuffer>,
     replay_notify: Notify,
@@ -139,6 +171,8 @@ struct WsServerInner {
     accept_task: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     replay_task: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     health_writer: Option<HealthFileWriter>,
+    allowed_loopback_ports: Arc<RwLock<Vec<u16>>>,
+    rejected_origins: Arc<Mutex<crate::security::RejectedOriginTracker>>,
 }
 
 /// Production WebSocket server delivering real-time subtitles and theme updates to OBS Studio.
@@ -157,11 +191,17 @@ impl WsServer {
     pub fn new(config: WsServerConfig) -> Self {
         let health_writer = config.health_file_path.as_ref().map(HealthFileWriter::new);
         let replay_cap = config.replay_buffer_capacity;
+        let allowed_loopback_ports = Arc::new(RwLock::new(config.allowed_loopback_ports.clone()));
+        let rejected_origins = config
+            .rejected_origins
+            .clone()
+            .unwrap_or_else(|| Arc::new(Mutex::new(crate::security::RejectedOriginTracker::new())));
 
         let inner = WsServerInner {
             config,
             bound_port: RwLock::new(None),
             clients: RwLock::new(HashMap::new()),
+            theme: Mutex::new(None),
             replay_buffer: Mutex::new(WireReplayBuffer::new(replay_cap)),
             pending_replay: Mutex::new(WireReplayBuffer::new(replay_cap)),
             replay_notify: Notify::new(),
@@ -174,6 +214,8 @@ impl WsServer {
             accept_task: tokio::sync::Mutex::new(None),
             replay_task: tokio::sync::Mutex::new(None),
             health_writer,
+            allowed_loopback_ports,
+            rejected_origins,
         };
 
         Self {
@@ -183,6 +225,27 @@ impl WsServer {
 
     pub fn config(&self) -> &WsServerConfig {
         &self.inner.config
+    }
+
+    pub fn update_allowed_loopback_ports(&self, ports: Vec<u16>) {
+        let mut guard = self
+            .inner
+            .allowed_loopback_ports
+            .write()
+            .unwrap_or_else(|p| p.into_inner());
+        *guard = ports;
+    }
+
+    pub fn allowed_loopback_ports(&self) -> Vec<u16> {
+        self.inner
+            .allowed_loopback_ports
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+
+    pub fn rejected_origins(&self) -> Arc<Mutex<crate::security::RejectedOriginTracker>> {
+        Arc::clone(&self.inner.rejected_origins)
     }
 
     pub fn metrics(&self) -> &Arc<NetworkMetrics> {
@@ -204,13 +267,21 @@ impl WsServer {
 
     /// Number of delayed cues awaiting paced delivery to current clients.
     pub fn pending_replay_len(&self) -> usize {
-        self.inner.pending_replay.lock().unwrap().len()
+        self.inner
+            .pending_replay
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len()
     }
 
     /// Broadcast a pre-built subtitle wire message.
     pub fn broadcast_subtitle(&self, msg: &SubtitleWireMessage) -> Result<(), NetworkError> {
         if msg.is_replay && msg.catchup_interval_sec > 0.0 {
-            let mut pending = self.inner.pending_replay.lock().unwrap();
+            let mut pending = self
+                .inner
+                .pending_replay
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             pending.push(msg.clone());
             self.inner
                 .metrics
@@ -231,7 +302,11 @@ impl WsServer {
     }
 
     fn remember_replay(&self, msg: &SubtitleWireMessage) {
-        let mut replay = self.inner.replay_buffer.lock().unwrap();
+        let mut replay = self
+            .inner
+            .replay_buffer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         replay.push(msg.clone());
         self.inner
             .metrics
@@ -243,10 +318,25 @@ impl WsServer {
             .store(replay.dropped_count() as u64, Ordering::SeqCst);
     }
 
-    /// Broadcast a dynamic CSS token theme update.
+    /// Store and broadcast a dynamic CSS token theme update. The stored theme is
+    /// sent to clients that connect later, right after their hello frame.
     pub fn broadcast_theme(&self, tokens: HashMap<String, String>) -> Result<(), NetworkError> {
         let msg = ThemeWireMessage::new(tokens);
         let json = serde_json::to_string(&msg)?;
+        // Stored under the clients lock that late joiners hold while they snapshot the theme
+        // and register, so a joiner either sees this theme in its snapshot or receives it live.
+        {
+            let _clients = self
+                .inner
+                .clients
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            *self
+                .inner
+                .theme
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(json.clone());
+        }
         self.broadcast_raw(&json)
     }
 
@@ -256,8 +346,29 @@ impl WsServer {
         &self,
         event: &AcousticSpeechEvent,
     ) -> Result<(), NetworkError> {
-        let payload = serde_json::to_string(event)?;
-        let clients = self.inner.clients.read().unwrap();
+        self.broadcast_live_only(serde_json::to_string(event)?)
+    }
+
+    /// Publish one provisional subtitle for an utterance still being spoken. The frame has no
+    /// `text` key, so overlays that predate it ignore it. Live only: never replayed or retried.
+    pub fn broadcast_subtitle_partial(
+        &self,
+        utterance_id: &str,
+        partial_text: &str,
+    ) -> Result<(), NetworkError> {
+        self.broadcast_live_only(serde_json::to_string(&serde_json::json!({
+            "type": "subtitle_partial",
+            "utterance_id": utterance_id,
+            "partial_text": partial_text,
+        }))?)
+    }
+
+    fn broadcast_live_only(&self, payload: String) -> Result<(), NetworkError> {
+        let clients = self
+            .inner
+            .clients
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         for tx in clients.values() {
             if matches!(
                 tx.try_send(payload.clone()),
@@ -282,8 +393,16 @@ impl WsServer {
     /// and receives it, in order, before anything newer. Healthy clients are never held back by
     /// a slow one, and no client receives the same payload twice.
     pub fn broadcast_raw(&self, payload: &str) -> Result<(), NetworkError> {
-        let clients = self.inner.clients.read().unwrap();
-        let mut state = self.inner.retry.lock().unwrap();
+        let clients = self
+            .inner
+            .clients
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self
+            .inner
+            .retry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let max_queue = self.inner.config.max_retry_buffer;
         let mut backpressure = 0u64;
 
@@ -355,7 +474,11 @@ impl NetworkServer for WsServer {
             for candidate in candidates {
                 match TcpListener::bind(("127.0.0.1", candidate)).await {
                     Ok(listener) => {
-                        bound_listener = Some((listener, candidate));
+                        let actual_port = listener
+                            .local_addr()
+                            .map(|a| a.port())
+                            .unwrap_or(candidate);
+                        bound_listener = Some((listener, actual_port));
                         break;
                     }
                     Err(e) if is_addr_in_use(&e) => {
@@ -387,7 +510,11 @@ impl NetworkServer for WsServer {
             };
 
             {
-                let mut p = self.inner.bound_port.write().unwrap();
+                let mut p = self
+                    .inner
+                    .bound_port
+                    .write()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
                 *p = Some(effective_port);
             }
 
@@ -431,7 +558,11 @@ impl NetworkServer for WsServer {
 
             self.inner.shutdown_token.cancel();
             self.inner.replay_notify.notify_waiters();
-            self.inner.pending_replay.lock().unwrap().clear();
+            self.inner
+                .pending_replay
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clear();
             self.inner
                 .metrics
                 .replay_buffer_size
@@ -439,30 +570,42 @@ impl NetworkServer for WsServer {
 
             // Clear bound port
             {
-                let mut p = self.inner.bound_port.write().unwrap();
+                let mut p = self
+                    .inner
+                    .bound_port
+                    .write()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
                 *p = None;
             }
 
             // Close all clients
             {
-                let mut clients = self.inner.clients.write().unwrap();
+                let mut clients = self
+                    .inner
+                    .clients
+                    .write()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
                 clients.clear();
             }
 
             self.inner.metrics.client_count.store(0, Ordering::SeqCst);
             {
-                let mut state = self.inner.retry.lock().unwrap();
+                let mut state = self
+                    .inner
+                    .retry
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
                 state.queues.clear();
                 state.publish(&self.inner.metrics);
             }
             if let Some(task) = self.inner.accept_task.lock().await.take() {
                 task.await.map_err(|error| {
-                    NetworkError::IoError(std::io::Error::new(ErrorKind::Other, error.to_string()))
+                    NetworkError::IoError(std::io::Error::other(error.to_string()))
                 })?;
             }
             if let Some(task) = self.inner.replay_task.lock().await.take() {
                 task.await.map_err(|error| {
-                    NetworkError::IoError(std::io::Error::new(ErrorKind::Other, error.to_string()))
+                    NetworkError::IoError(std::io::Error::other(error.to_string()))
                 })?;
             }
             let _ = self.write_health_file();
@@ -481,14 +624,23 @@ impl NetworkServer for WsServer {
     }
 
     fn bound_port(&self) -> Option<u16> {
-        *self.inner.bound_port.read().unwrap()
+        *self
+            .inner
+            .bound_port
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
 
 async fn run_replay_loop(inner: Arc<WsServerInner>) {
     let mut next_replay_at = tokio::time::Instant::now();
     loop {
-        if inner.pending_replay.lock().unwrap().is_empty() {
+        if inner
+            .pending_replay
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_empty()
+        {
             tokio::select! {
                 _ = inner.shutdown_token.cancelled() => break,
                 _ = inner.replay_notify.notified() => continue,
@@ -501,10 +653,17 @@ async fn run_replay_loop(inner: Arc<WsServerInner>) {
         }
 
         let _delivery = inner.replay_delivery_lock.lock().await;
-        let msg = inner.pending_replay.lock().unwrap().pop_front();
+        let msg = inner
+            .pending_replay
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .pop_front();
         let Some(msg) = msg else { continue };
         if let Ok(payload) = serde_json::to_string(&msg) {
-            let mut replay = inner.replay_buffer.lock().unwrap();
+            let mut replay = inner
+                .replay_buffer
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             replay.push(msg.clone());
             inner
                 .metrics
@@ -553,7 +712,7 @@ async fn run_accept_loop(listener: TcpListener, effective_port: u16, inner: Arc<
 }
 
 async fn handle_connection(
-    stream: TcpStream,
+    mut stream: TcpStream,
     peer_addr: SocketAddr,
     effective_port: u16,
     inner: Arc<WsServerInner>,
@@ -568,26 +727,130 @@ async fn handle_connection(
         return;
     }
 
+    // 1.5. Peek incoming bytes for loopback HTTP overlay requests
+    let mut peek_buf = [0u8; 1024];
+    let peek_timeout = inner.config.handshake_timeout.min(Duration::from_secs(2));
+    let peek_res = tokio::time::timeout(peek_timeout, stream.peek(&mut peek_buf)).await;
+    if let Ok(Ok(n)) = peek_res {
+        if n > 0 {
+            let peek_text = String::from_utf8_lossy(&peek_buf[..n]);
+            let lower = peek_text.to_ascii_lowercase();
+            let is_websocket_upgrade = lower.lines().any(|line| {
+                let trimmed = line.trim();
+                if let Some(val) = trimmed.strip_prefix("upgrade:") {
+                    val.contains("websocket")
+                } else {
+                    false
+                }
+            });
+
+            if !is_websocket_upgrade {
+                let first_line = peek_text.lines().next().unwrap_or("").trim();
+                let mut parts = first_line.split_whitespace();
+                let method = parts.next().unwrap_or("");
+                let target = parts.next().unwrap_or("");
+                let path = target.split('?').next().unwrap_or(target);
+
+                if (method == "GET" || method == "HEAD")
+                    && matches!(
+                        path,
+                        "/overlay"
+                            | "/overlay/"
+                            | "/subtitulos_obs.html"
+                            | "/assets/subtitulos_obs.html"
+                    )
+                {
+                    // Read/drain the HTTP request from stream until \r\n\r\n (bounded to max 8192 bytes)
+                    let mut drain_buf = [0u8; 1024];
+                    let mut total_drained = 0;
+                    let mut header_end = false;
+                    let mut window = [0u8; 4];
+
+                    while total_drained < 8192 {
+                        let to_read = (8192 - total_drained).min(drain_buf.len());
+                        let read_res = tokio::time::timeout(
+                            Duration::from_secs(2),
+                            stream.read(&mut drain_buf[..to_read]),
+                        )
+                        .await;
+                        match read_res {
+                            Ok(Ok(0)) | Ok(Err(_)) | Err(_) => break,
+                            Ok(Ok(read_bytes)) => {
+                                total_drained += read_bytes;
+                                for &b in &drain_buf[..read_bytes] {
+                                    window[0] = window[1];
+                                    window[1] = window[2];
+                                    window[2] = window[3];
+                                    window[3] = b;
+                                    if &window == b"\r\n\r\n"
+                                        || (window[2] == b'\n' && window[3] == b'\n')
+                                    {
+                                        header_end = true;
+                                        break;
+                                    }
+                                }
+                                if header_end {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    let body = load_overlay_html();
+                    let body_bytes = body.as_bytes();
+                    let content_length = body_bytes.len();
+                    let response_header = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n",
+                        content_length
+                    );
+
+                    if stream.write_all(response_header.as_bytes()).await.is_ok() {
+                        if method == "GET" {
+                            let _ = stream.write_all(body_bytes).await;
+                        }
+                        let _ = stream.flush().await;
+                    }
+                    return;
+                }
+            }
+        }
+    }
+
     // 2. Handshake with strict Origin filter
     #[allow(clippy::result_large_err)]
     let callback = |req: &Request, resp: Response| -> Result<Response, ErrorResponse> {
-        let origins: Vec<&str> = req
-            .headers()
-            .get_all("Origin")
-            .iter()
-            .filter_map(|v| v.to_str().ok())
-            .collect();
+        let origin_values = req.headers().get_all("Origin");
+        let origins: Vec<&str> = origin_values.iter().filter_map(|v| v.to_str().ok()).collect();
+        let allowed_ports = inner
+            .allowed_loopback_ports
+            .read()
+            .unwrap_or_else(|p| p.into_inner());
+        // A value that is not visible ASCII cannot be checked: reject it instead of dropping it.
+        let verdict = if origins.len() == origin_values.iter().count() {
+            validate_origin_headers(&origins, effective_port, &allowed_ports)
+        } else {
+            Err(NetworkError::ForbiddenOrigin("non-ASCII Origin header".to_string()))
+        };
 
-        if let Err(err) = validate_origin_headers(&origins) {
+        if let Err(err) = verdict {
             let received = origins.join(", ");
             tracing::warn!(
                 "[WebSocket] Conexion rechazada por Origin no permitido: {}",
                 received
             );
+            if let Ok(mut tracker) = inner.rejected_origins.lock() {
+                tracker.record(&received);
+            }
+            let err_body = Some(format!("Origen no permitido: {}\n", err));
             let err_resp = Response::builder()
                 .status(StatusCode::FORBIDDEN)
-                .body(Some(format!("Origen no permitido: {}\n", err)))
-                .unwrap();
+                .body(err_body.clone())
+                .unwrap_or_else(|_| {
+                    let mut fallback =
+                        tokio_tungstenite::tungstenite::http::Response::new(err_body);
+                    *fallback.status_mut() = StatusCode::FORBIDDEN;
+                    fallback
+                });
             return Err(err_resp);
         }
         Ok(resp)
@@ -646,15 +909,35 @@ async fn handle_connection(
     }
 
     // 5. Late-joining client replay burst
-    let (replayed_cues, mut rx) = {
+    let (replayed_cues, mut rx, theme) = {
         let _delivery = inner.replay_delivery_lock.lock().await;
-        let replay = inner.replay_buffer.lock().unwrap();
+        let replay = inner
+            .replay_buffer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let cues =
             replay.select_for_client(inner.config.backlog_policy, inner.config.max_live_delay_sec);
         let (tx, rx) = mpsc::channel::<String>(64);
-        inner.clients.write().unwrap().insert(client_id, tx);
-        (cues, rx)
+        let mut clients = inner
+            .clients
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let theme = inner
+            .theme
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        clients.insert(client_id, tx);
+        drop(clients);
+        (cues, rx, theme)
     };
+
+    // The theme goes before any replayed cue; live frames queue in `rx` behind it.
+    if let Some(theme_json) = theme {
+        if let Err(e) = ws_sink.send(Message::text(theme_json)).await {
+            tracing::warn!("[WebSocket] Error enviando theme inicial: {}", e);
+        }
+    }
 
     let mut next_replay_at = tokio::time::Instant::now();
     for mut cue_msg in replayed_cues {
@@ -681,8 +964,16 @@ async fn handle_connection(
                 reason: "Server shutdown".into(),
             })))
             .await;
-        inner.clients.write().unwrap().remove(&client_id);
-        inner.retry.lock().unwrap().forget(client_id);
+        inner
+            .clients
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&client_id);
+        inner
+            .retry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .forget(client_id);
         decrement_client_count(&inner.metrics);
         return;
     }
@@ -734,11 +1025,17 @@ async fn handle_connection(
 
     // 8. Cleanup upon disconnect
     {
-        let mut clients = inner.clients.write().unwrap();
+        let mut clients = inner
+            .clients
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         clients.remove(&client_id);
     }
     {
-        let mut state = inner.retry.lock().unwrap();
+        let mut state = inner
+            .retry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         state.forget(client_id);
         state.publish(&inner.metrics);
     }
@@ -867,5 +1164,257 @@ mod acoustic_event_tests {
             0
         );
         assert_eq!(server.pending_replay_len(), 0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn server_recovers_cleanly_from_poisoned_locks() {
+        let server = WsServer::default();
+
+        let inner_replay = Arc::clone(&server.inner);
+        let _ = std::thread::spawn(move || {
+            let _guard = inner_replay.replay_buffer.lock().unwrap();
+            panic!("intentional panic to poison replay_buffer");
+        })
+        .join();
+        assert!(server.inner.replay_buffer.is_poisoned());
+
+        let inner_clients = Arc::clone(&server.inner);
+        let _ = std::thread::spawn(move || {
+            let _guard = inner_clients.clients.write().unwrap();
+            panic!("intentional panic to poison clients");
+        })
+        .join();
+        assert!(server.inner.clients.is_poisoned());
+
+        let inner_pending = Arc::clone(&server.inner);
+        let _ = std::thread::spawn(move || {
+            let _guard = inner_pending.pending_replay.lock().unwrap();
+            panic!("intentional panic to poison pending_replay");
+        })
+        .join();
+        assert!(server.inner.pending_replay.is_poisoned());
+
+        let inner_retry = Arc::clone(&server.inner);
+        let _ = std::thread::spawn(move || {
+            let _guard = inner_retry.retry.lock().unwrap();
+            panic!("intentional panic to poison retry");
+        })
+        .join();
+        assert!(server.inner.retry.is_poisoned());
+
+        let inner_port = Arc::clone(&server.inner);
+        let _ = std::thread::spawn(move || {
+            let _guard = inner_port.bound_port.write().unwrap();
+            panic!("intentional panic to poison bound_port");
+        })
+        .join();
+        assert!(server.inner.bound_port.is_poisoned());
+
+        assert_eq!(server.pending_replay_len(), 0);
+        assert_eq!(server.bound_port(), None);
+        assert!(server.broadcast_raw("test payload").is_ok());
+
+        let dummy_asr = liveaudio_core::AsrTranscriptionResponse {
+            request_id: "req-1".to_string(),
+            text: "test text".to_string(),
+            language: "es".to_string(),
+            duration_sec: 1.0,
+            latency_sec: 0.1,
+            segments: vec![],
+        };
+        let cue = TranscriptionCue::new(
+            0,
+            0.0,
+            1.0,
+            "test text".to_string(),
+            dummy_asr,
+        );
+        let msg = SubtitleWireMessage::from_cue(&cue, None, false, 0.0);
+        assert!(server.broadcast_subtitle(&msg).is_ok());
+
+        let event = AcousticSpeechEvent::SpeechActivityStart {
+            event_version: 1,
+            run_id: "run".into(),
+            attempt_id: 1,
+            utterance_id: "utterance".into(),
+            seq: 1,
+            monotonic_ms: 0,
+        };
+        assert!(server.broadcast_acoustic_event(&event).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod http_overlay_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn loopback_http_overlay_serving_and_ws_origin_security() {
+        let mut server = WsServer::default();
+        let effective_port = server
+            .start(0)
+            .await
+            .expect("Server should bind to ephemeral port 0");
+        assert!(effective_port > 0);
+        assert_eq!(server.bound_port(), Some(effective_port));
+
+        // 1. Raw TCP GET /overlay?port=8765
+        let mut http_client = TcpStream::connect(("127.0.0.1", effective_port))
+            .await
+            .expect("Failed to connect HTTP client to server");
+        let http_request =
+            "GET /overlay?port=8765 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+        http_client
+            .write_all(http_request.as_bytes())
+            .await
+            .expect("Failed to write HTTP request");
+
+        let mut http_response = Vec::new();
+        http_client
+            .read_to_end(&mut http_response)
+            .await
+            .expect("Failed to read HTTP response");
+        let http_resp_str = String::from_utf8_lossy(&http_response);
+
+        assert!(
+            http_resp_str.starts_with("HTTP/1.1 200 OK"),
+            "Expected HTTP 200 OK, got: {}",
+            http_resp_str
+        );
+        assert!(
+            http_resp_str.contains("Content-Type: text/html; charset=utf-8"),
+            "Missing HTML content type header"
+        );
+        assert!(
+            http_resp_str.contains("WebSocket"),
+            "HTML body should contain 'WebSocket'"
+        );
+
+        // 2. WebSocket client with allowed Origin: http://127.0.0.1:<port>
+        let mut ws_client = TcpStream::connect(("127.0.0.1", effective_port))
+            .await
+            .expect("Failed to connect WS client to server");
+        let ws_handshake = format!(
+            "GET / HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nOrigin: http://127.0.0.1:{}\r\n\r\n",
+            effective_port, effective_port
+        );
+        ws_client
+            .write_all(ws_handshake.as_bytes())
+            .await
+            .expect("Failed to write WS handshake");
+
+        let mut ws_buf = [0u8; 1024];
+        let n = ws_client
+            .read(&mut ws_buf)
+            .await
+            .expect("Failed to read WS handshake response");
+        let ws_resp_str = String::from_utf8_lossy(&ws_buf[..n]);
+        assert!(
+            ws_resp_str.starts_with("HTTP/1.1 101 Switching Protocols"),
+            "Expected 101 Switching Protocols for loopback Origin, got: {}",
+            ws_resp_str
+        );
+
+        // 3. WebSocket client with forbidden Origin: null
+        let mut null_ws_client = TcpStream::connect(("127.0.0.1", effective_port))
+            .await
+            .expect("Failed to connect null Origin WS client");
+        let null_handshake = format!(
+            "GET / HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nOrigin: null\r\n\r\n",
+            effective_port
+        );
+        null_ws_client
+            .write_all(null_handshake.as_bytes())
+            .await
+            .expect("Failed to write null Origin WS handshake");
+
+        let mut null_buf = [0u8; 1024];
+        let n = null_ws_client
+            .read(&mut null_buf)
+            .await
+            .expect("Failed to read null Origin response");
+        let null_resp_str = String::from_utf8_lossy(&null_buf[..n]);
+        assert!(
+            null_resp_str.starts_with("HTTP/1.1 403 Forbidden"),
+            "Expected 403 Forbidden for Origin: null, got: {}",
+            null_resp_str
+        );
+
+        server.stop().await.expect("Server should stop cleanly");
+    }
+
+    /// Sends a raw WebSocket handshake whose Origin header is `origin` and returns the status line.
+    async fn handshake_status_line(port: u16, origin: &[u8]) -> String {
+        let mut client = TcpStream::connect(("127.0.0.1", port))
+            .await
+            .expect("Failed to connect WS client to server");
+        let mut request = format!(
+            "GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nOrigin: "
+        )
+        .into_bytes();
+        request.extend_from_slice(origin);
+        request.extend_from_slice(b"\r\n\r\n");
+        client
+            .write_all(&request)
+            .await
+            .expect("Failed to write WS handshake");
+        let mut buf = [0u8; 1024];
+        let n = client
+            .read(&mut buf)
+            .await
+            .expect("Failed to read WS handshake response");
+        String::from_utf8_lossy(&buf[..n])
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn loopback_origin_on_another_port_is_forbidden() {
+        let mut server = WsServer::default();
+        let port = server
+            .start(0)
+            .await
+            .expect("Server should bind to ephemeral port 0");
+        let other_port = if port == u16::MAX { port - 1 } else { port + 1 };
+
+        let other = handshake_status_line(port, format!("http://127.0.0.1:{other_port}").as_bytes()).await;
+        assert!(
+            other.starts_with("HTTP/1.1 403 Forbidden"),
+            "Loopback Origin on another port must be forbidden, got: {other}"
+        );
+
+        let bound = handshake_status_line(port, format!("http://127.0.0.1:{port}").as_bytes()).await;
+        assert!(
+            bound.starts_with("HTTP/1.1 101"),
+            "Loopback Origin on the bound port must upgrade, got: {bound}"
+        );
+
+        server.stop().await.expect("Server should stop cleanly");
+    }
+
+    #[tokio::test]
+    async fn non_ascii_origin_header_fails_closed() {
+        let mut server = WsServer::default();
+        let port = server
+            .start(0)
+            .await
+            .expect("Server should bind to ephemeral port 0");
+
+        let mut origin = format!("http://127.0.0.1:{port}").into_bytes();
+        origin.extend_from_slice("\u{e9}".as_bytes());
+        let status = handshake_status_line(port, &origin).await;
+        assert!(
+            status.starts_with("HTTP/1.1 403 Forbidden"),
+            "Non-ASCII Origin header must be rejected, got: {status}"
+        );
+
+        server.stop().await.expect("Server should stop cleanly");
     }
 }
