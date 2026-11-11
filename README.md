@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) [![Rust 2021](https://img.shields.io/badge/Rust-2021%20Edition-orange.svg)](https://www.rust-lang.org/) [![Tauri v2](https://img.shields.io/badge/Tauri-v2-blue.svg)](https://tauri.app/) [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux-lightgrey.svg)](#system-requirements)
 
-[Coming next week LiveAudio v1.6.0]
+[Coming next week LiveAudio v1.6.0] It's testing in branch develop, you can try
 
 **Real-time, 100% local subtitles for streamers.** LiveAudio captures your mic or system audio, transcribes it on your own GPU or CPU with Whisper, and shows it live in OBS. Nothing is sent to the cloud.
 
