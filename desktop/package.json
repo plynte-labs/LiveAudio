@@ -1,6 +1,6 @@
 {
   "name": "liveaudio-desktop",
-  "version": "0.1.0",
+  "version": "1.6.0",
   "description": "LiveAudio Desktop Client (Tauri 2)",
   "type": "module",
   "scripts": {
@@ -9,6 +9,6 @@
     "build:release": "tauri build --config src-tauri/tauri.release.conf.json",
     "test": "node test_frontend.js"
   },
-  "author": "LiveAudio Team",
+  "author": "Plynte Labs / FranGuh",
   "license": "MIT"
 }

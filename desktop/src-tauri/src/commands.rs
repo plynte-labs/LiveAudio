@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -13,18 +13,30 @@ use liveaudio_core::asr::worker::{
     presentation_text, transcript_text_from_result, worker_init_payload,
 };
 use liveaudio_core::asr::AsrTranscriptionResponse;
-use liveaudio_core::config::{get_data_home, save_config as save_config_core, LiveAudioConfig};
+use liveaudio_core::config::{
+    get_data_home, save_config as save_config_core, LiveAudioConfig, SubtitlePreset,
+};
 use liveaudio_core::job_object::JobObject;
+use liveaudio_core::usage_stats::UsageStats;
+use liveaudio_core::{
+    cuda_driver_version, detect_gpu_adapters, license_urls,
+    nvidia_runtime_dir, nvidia_runtime_status, AsrBackendKind,
+    GpuAdapter, GpuVendor, NvidiaRuntimeStatus,
+};
 use liveaudio_core::runtime::{
-    discover_managed_python, managed_runtime_root, preflight_asr_runtime,
-    provision_runtime_with_uv_cancellable, AsrBackend, RuntimeError, RuntimeSetupProgress,
+    discover_ct2_worker, discover_native_worker, discover_ort_dylib, preflight_asr_runtime,
+    RuntimeError,
+    RuntimeSetupProgress,
 };
 use liveaudio_core::service_lock::{service_lock_holder, ServiceLock, ServiceLockHolder};
 use liveaudio_core::sink::{
-    last_cue_counter, CompositeSink, JsonlSink, SinkError, SinkStats, TranscriptionCue,
-    TranscriptionSink, WebVttSink,
+    last_cue_counter, CompositeSink, CueFileSink, JsonlSink, SinkError, SinkStats, TranscriptionCue,
+    TranscriptionSink,
 };
-use liveaudio_core::supervisor::{ProcessSupervisor, WorkerProcessConfig};
+use liveaudio_core::backend::{
+    backend_name, ct2_fallback, effective_backend_pref, ort_fallback_config, prepare_worker, select_backend, Ct2Failure,
+};
+use liveaudio_core::supervisor::ProcessSupervisor;
 use liveaudio_network::{
     candidate_ports, start_if_enabled, subtitle_from_worker_result, BacklogPolicy, NetworkServer,
     PendingUtteranceTracker, SubtitleWireMessage, WsServer, WsServerConfig,
@@ -57,6 +69,8 @@ fn initialize_bundled_cpu_runtime(app: &AppHandle) -> Result<(), String> {
             current_dir.as_ref().map(|d| d.join("packaging")),
             // packaging in workspace root if running from desktop directory
             current_dir.as_ref().map(|d| d.join("../packaging")),
+            // packaging in workspace root if running from target/release or target/debug
+            exe_dir.as_ref().map(|d| d.join("../../packaging")),
             // packaging next to executable
             exe_dir.as_ref().map(|d| d.join("packaging")),
             // directly next to executable or target/debug
@@ -72,6 +86,8 @@ fn initialize_bundled_cpu_runtime(app: &AppHandle) -> Result<(), String> {
                 }
             }
         }
+
+        let found = found.or_else(discover_ort_dylib);
 
         found.ok_or_else(|| {
             "LiveAudio's bundled CPU audio runtime is unavailable. Repair or reinstall the application.".to_string()
@@ -210,7 +226,7 @@ pub(crate) fn admit_worker_event_generation(
 pub(crate) fn desktop_runtime_preflight_error(error: &RuntimeError) -> String {
     match error {
         RuntimeError::DependenciesUnavailable { .. } => {
-            "The managed ASR Python environment is incomplete or invalid. Use Repair ASR Runtime in Settings to prepare it.".to_string()
+            "The ASR runtime is incomplete or invalid. Use Repair ASR Runtime in Settings to prepare it.".to_string()
         }
         _ => format!("ASR runtime check failed. Use Repair ASR Runtime in Settings. Details: {error}"),
     }
@@ -223,6 +239,50 @@ pub(crate) fn asr_progress_update_for_worker_event(
         "download_progress" => asr_progress_from_worker_event(value).map(Some),
         "ready" | "error" => Some(None),
         _ => None,
+    }
+}
+
+pub(crate) async fn update_worker_ready_hardware(
+    state: &AppState,
+    payload: Option<&serde_json::Value>,
+) {
+    let Some(payload) = payload else { return };
+    let device = payload
+        .get("device")
+        .and_then(|v| v.as_str())
+        .map(ToString::to_string);
+    let compute_type = payload
+        .get("compute_type")
+        .and_then(|v| v.as_str())
+        .map(ToString::to_string);
+    let fallback_occurred = payload
+        .get("fallback_occurred")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let fallback_reason = payload
+        .get("fallback_reason")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string);
+
+    *state.effective_device.write().await = device.clone();
+    *state.compute_type.write().await = compute_type.clone();
+    state.fallback_occurred.store(fallback_occurred, Ordering::SeqCst);
+    *state.fallback_reason.write().await = fallback_reason.clone();
+
+    if fallback_occurred {
+        tracing::warn!(
+            "ASR worker fallback occurred: device={:?}, compute_type={:?}, reason={:?}",
+            device,
+            compute_type,
+            fallback_reason
+        );
+    } else {
+        tracing::info!(
+            "ASR worker ready: effective_device={:?}, compute_type={:?}",
+            device,
+            compute_type
+        );
     }
 }
 
@@ -249,6 +309,14 @@ async fn forward_startup_worker_event(
         "download_progress" => {
             if let Some(progress) = asr_progress_from_worker_event(value) {
                 *state.asr_state.write().await = progress.phase.clone();
+                let _ = app.emit(
+                    "runtime_setup_progress",
+                    RuntimeSetupProgress {
+                        phase: progress.phase.clone(),
+                        text: progress.text.clone(),
+                        percent: progress.percent,
+                    },
+                );
                 *state.asr_progress.write().await = Some(progress);
             }
         }
@@ -257,17 +325,27 @@ async fn forward_startup_worker_event(
                 if let Some(worker_state) = payload.get("state").and_then(|v| v.as_str()) {
                     *state.asr_state.write().await = worker_state.to_string();
                     if worker_state == "downloading" {
+                        let phase = payload
+                            .get("phase")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("downloading")
+                            .to_string();
+                        let text = payload
+                            .get("text")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("Preparing the ASR model…")
+                            .to_string();
+                        let _ = app.emit(
+                            "runtime_setup_progress",
+                            RuntimeSetupProgress {
+                                phase: phase.clone(),
+                                text: text.clone(),
+                                percent: None,
+                            },
+                        );
                         *state.asr_progress.write().await = Some(AsrProgressDto {
-                            phase: payload
-                                .get("phase")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("downloading")
-                                .to_string(),
-                            text: payload
-                                .get("text")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("Preparing the ASR model…")
-                                .to_string(),
+                            phase,
+                            text,
                             percent: None,
                             bytes_downloaded: None,
                             bytes_total: None,
@@ -280,8 +358,17 @@ async fn forward_startup_worker_event(
             }
         }
         "ready" => {
+            update_worker_ready_hardware(state, payload).await;
             *state.asr_state.write().await = "ready".to_string();
             *state.asr_progress.write().await = None;
+            let _ = app.emit(
+                "runtime_setup_progress",
+                RuntimeSetupProgress {
+                    phase: "ready".to_string(),
+                    text: "ASR runtime is ready.".to_string(),
+                    percent: Some(100.0),
+                },
+            );
         }
         "error" => {
             let code = payload
@@ -293,12 +380,16 @@ async fn forward_startup_worker_event(
         }
         _ => return,
     }
-    if let Ok(status) = get_service_status_internal(state).await {
-        let _ = app.emit("service_status_changed", &status);
+    if event_type != "download_progress" {
+        if let Ok(status) = get_service_status_internal(state).await {
+            let _ = app.emit("service_status_changed", &status);
+        }
     }
 }
 
 use crate::dto::{
+    AllowedConnectionsDto,
+    GpuAdapterDto, GpuBackendStatusDto,
     AsrProgressDto, AudioDeviceDto, DiagnosticsExportDto, ObsOverlayDto, ProfilePresetDto,
     ServiceStatusDto, SubtitleCueDto,
 };
@@ -311,33 +402,86 @@ pub async fn get_config(state: State<'_, AppState>) -> Result<LiveAudioConfig, S
     Ok(guard.clone())
 }
 
-/// Validate, normalize, and atomically save LiveAudio configuration.
+/// Save the settings form: fields it changed win, all other fields keep the on-disk value.
 #[tauri::command]
 pub async fn save_config(
     config: LiveAudioConfig,
+    base: Option<LiveAudioConfig>,
     state: State<'_, AppState>,
-) -> Result<bool, String> {
-    let mut normalized_config = config;
-    normalized_config.normalize();
+) -> Result<LiveAudioConfig, String> {
+    let _write_guard = state.config_write_lock.lock().await;
+    // Fields the form did not change keep their on-disk value (see config_sync::save_settings_form).
+    // The saved config is returned so the form can show it, including any external edits.
+    crate::config_sync::save_settings_form(state.inner(), base, config).await
+}
 
-    persist_config_and_apply(state.inner(), normalized_config, |config| {
-        save_config_core(config).map_err(|e| format!("Failed to save config: {}", e))
-    })
-    .await?;
+/// Returns `incoming` with the subtitle style, theme and presets taken from `current`. The general
+/// form never owns the style, so a stale form copy cannot overwrite a saved style.
+pub(crate) fn keep_subtitle_style(
+    mut incoming: LiveAudioConfig,
+    current: &LiveAudioConfig,
+) -> LiveAudioConfig {
+    incoming.subtitle_style = current.subtitle_style.clone();
+    incoming.subtitle_theme = current.subtitle_theme.clone();
+    incoming.subtitle_presets = current.subtitle_presets.clone();
+    incoming
+}
 
-    Ok(true)
+/// Returns `base` with the built-in style (when given), the theme and the presets replaced. The
+/// style name is validated by `normalize`, so an unknown name falls back to the default style.
+pub(crate) fn with_subtitle_style(
+    base: &LiveAudioConfig,
+    theme: BTreeMap<String, String>,
+    presets: Vec<SubtitlePreset>,
+    subtitle_style: Option<String>,
+) -> LiveAudioConfig {
+    let mut config = base.clone();
+    if let Some(style) = subtitle_style {
+        config.subtitle_style = style;
+    }
+    config.subtitle_theme = theme;
+    config.subtitle_presets = presets;
+    config.normalize();
+    config
+}
+
+/// Saves only the subtitle style, theme and presets, pushes the theme to the OBS overlay, and
+/// returns the normalized configuration so the form can keep its copy in sync.
+#[tauri::command]
+pub async fn save_subtitle_style(
+    theme: BTreeMap<String, String>,
+    presets: Vec<SubtitlePreset>,
+    subtitle_style: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<LiveAudioConfig, String> {
+    let _write_guard = state.config_write_lock.lock().await;
+    crate::config_sync::save_style_fields(state.inner(), theme, presets, subtitle_style).await
 }
 
 /// Reset configuration to system defaults.
 #[tauri::command]
 pub async fn reset_config_defaults(state: State<'_, AppState>) -> Result<LiveAudioConfig, String> {
+    reset_config_to_defaults(state.inner(), |config| {
+        save_config_core(config).map_err(|e| format!("Failed to save config: {}", e))
+    })
+    .await
+}
+
+/// Writes the default config. This is a full overwrite on purpose: "restore defaults" replaces
+/// every setting, including ones changed on disk since the last load. The write lock is held so
+/// a concurrent save cannot interleave and restore the previous subtitle style.
+pub(crate) async fn reset_config_to_defaults<F>(
+    state: &AppState,
+    persist: F,
+) -> Result<LiveAudioConfig, String>
+where
+    F: FnOnce(&LiveAudioConfig) -> Result<bool, String>,
+{
+    let _write_guard = state.config_write_lock.lock().await;
     let mut defaults = LiveAudioConfig::default();
     defaults.normalize();
 
-    persist_config_and_apply(state.inner(), defaults.clone(), |config| {
-        save_config_core(config).map_err(|e| format!("Failed to save config: {}", e))
-    })
-    .await?;
+    persist_config_and_apply(state, defaults.clone(), persist).await?;
 
     Ok(defaults)
 }
@@ -355,8 +499,123 @@ where
     }
 
     let mut guard = state.config.write().await;
-    *guard = config.clone();
+    crate::config_sync::replace_runtime_config(state, &mut guard, config).await;
     Ok(())
+}
+
+/// Sends the saved subtitle theme to the OBS server. It is stored there, so clients
+/// that connect later receive it too.
+pub(crate) fn broadcast_subtitle_theme(ws: &WsServer, config: &LiveAudioConfig) {
+    let tokens = config.subtitle_theme.clone().into_iter().collect();
+    if let Err(error) = ws.broadcast_theme(tokens) {
+        tracing::warn!("Failed to broadcast subtitle theme: {}", error);
+    }
+}
+
+#[tauri::command]
+pub(crate) async fn save_allowed_ports(
+    state: &AppState,
+    ports: Vec<u16>,
+) -> Result<LiveAudioConfig, String> {
+    let _write_guard = state.config_write_lock.lock().await;
+    let stored = {
+        let guard = state.config.read().await;
+        guard.clone()
+    };
+    let mut next = stored.clone();
+    next.ws_allowed_loopback_ports = ports;
+    next.normalize();
+    let saved = crate::config_sync::save_settings_form(state, Some(stored), next).await?;
+    if let Some(ws) = state.ws_server.lock().await.as_ref() {
+        ws.update_allowed_loopback_ports(saved.ws_allowed_loopback_ports.clone());
+    }
+    Ok(saved)
+}
+
+#[tauri::command]
+pub async fn get_allowed_connections(
+    state: State<'_, AppState>,
+) -> Result<AllowedConnectionsDto, String> {
+    let guard = state.config.read().await;
+    let allowed_ports = guard.ws_allowed_loopback_ports.clone();
+    drop(guard);
+    let recent_rejected = state
+        .rejected_origins
+        .lock()
+        .map(|t| t.snapshot())
+        .unwrap_or_default();
+    Ok(AllowedConnectionsDto {
+        allowed_ports,
+        recent_rejected,
+    })
+}
+
+#[tauri::command]
+pub async fn allow_loopback_port(
+    port: u16,
+    state: State<'_, AppState>,
+) -> Result<AllowedConnectionsDto, String> {
+    if port == 0 {
+        return Err("Port must be between 1 and 65535".to_string());
+    }
+
+    let mut current_ports = {
+        let guard = state.config.read().await;
+        guard.ws_allowed_loopback_ports.clone()
+    };
+
+    if !current_ports.contains(&port) {
+        if current_ports.len() >= liveaudio_core::config::MAX_ALLOWED_LOOPBACK_PORTS {
+            return Err(format!(
+                "Cannot allow port: maximum of {} ports allowed",
+                liveaudio_core::config::MAX_ALLOWED_LOOPBACK_PORTS
+            ));
+        }
+        current_ports.push(port);
+    }
+
+    let saved = save_allowed_ports(state.inner(), current_ports).await?;
+
+    if let Ok(mut tracker) = state.rejected_origins.lock() {
+        tracker.remove_by_port(port);
+    }
+
+    let recent_rejected = state
+        .rejected_origins
+        .lock()
+        .map(|t| t.snapshot())
+        .unwrap_or_default();
+
+    Ok(AllowedConnectionsDto {
+        allowed_ports: saved.ws_allowed_loopback_ports,
+        recent_rejected,
+    })
+}
+
+#[tauri::command]
+pub async fn revoke_loopback_port(
+    port: u16,
+    state: State<'_, AppState>,
+) -> Result<AllowedConnectionsDto, String> {
+    let mut current_ports = {
+        let guard = state.config.read().await;
+        guard.ws_allowed_loopback_ports.clone()
+    };
+
+    current_ports.retain(|&p| p != port);
+
+    let saved = save_allowed_ports(state.inner(), current_ports).await?;
+
+    let recent_rejected = state
+        .rejected_origins
+        .lock()
+        .map(|t| t.snapshot())
+        .unwrap_or_default();
+
+    Ok(AllowedConnectionsDto {
+        allowed_ports: saved.ws_allowed_loopback_ports,
+        recent_rejected,
+    })
 }
 
 #[tauri::command]
@@ -383,7 +642,7 @@ pub(crate) fn profile_presets() -> Vec<ProfilePresetDto> {
             description: "Recomendado para la mayoría de sesiones.".into(),
             device: "cuda".into(),
             model_size: "small (Balance CPU)".into(),
-            silence_timeout: 0.8,
+            silence_timeout: 0.5,
             subtitle_backlog_policy: "auto".into(),
             subtitle_max_live_delay_sec: 10.0,
             subtitle_catchup_interval_sec: 1.5,
@@ -424,10 +683,39 @@ pub(crate) fn log_transcription_metadata(payload: &serde_json::Value) {
         .unwrap_or("utt");
 
     tracing::info!(
-        "📝 [ASR Transcripción] [{}] ({:.2}s)",
+        "[ASR Transcripción] [{}] ({:.2}s)",
         utterance_id,
         duration_sec
     );
+}
+
+/// Shortest utterance (300 ms at 16 kHz) worth sending to the ASR worker.
+const MIN_UTTERANCE_SAMPLES: usize = 4800;
+/// How long Stop waits for utterances already sent to the worker to be delivered.
+const SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(3);
+/// Bound on handing the in-progress utterance to the worker when Stop cancels capture.
+const FLUSH_SEND_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Whether cancelling capture must still send the utterance being recorded.
+pub(crate) fn should_flush_utterance(is_in_utterance: bool, samples: usize) -> bool {
+    is_in_utterance && samples >= MIN_UTTERANCE_SAMPLES
+}
+
+/// Waits until no sent utterance is pending, up to `timeout`. Returns whether all were delivered.
+pub(crate) async fn wait_for_pending_drain(
+    pending: &std::sync::Mutex<PendingUtteranceTracker>,
+    timeout: Duration,
+) -> bool {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if pending.lock().unwrap_or_else(|p| p.into_inner()).is_empty() {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
 }
 
 pub(crate) async fn rollback_failed_audio_start(
@@ -438,6 +726,9 @@ pub(crate) async fn rollback_failed_audio_start(
     error: String,
 ) -> String {
     cancel_token.cancel();
+    if let Some(token) = state.events_cancel_token.lock().await.take() {
+        token.cancel();
+    }
 
     let _ = event_task.await;
 
@@ -445,22 +736,14 @@ pub(crate) async fn rollback_failed_audio_start(
         token.cancel();
     }
     if let Some(supervisor) = state.supervisor.lock().await.take() {
-        match Arc::try_unwrap(supervisor) {
-            Ok(mut supervisor) => {
-                if let Err(error) = supervisor
-                    .stop_internal(std::time::Duration::from_secs(2))
-                    .await
-                {
-                    tracing::warn!(
-                        "Failed to stop ASR worker after audio startup failure: {}",
-                        error
-                    );
-                }
-            }
-            Err(supervisor) => {
-                supervisor.cancellation_token().cancel();
-                tracing::error!("ASR supervisor remained shared after audio startup failure");
-            }
+        if let Err(error) = supervisor
+            .stop_internal(std::time::Duration::from_secs(3))
+            .await
+        {
+            tracing::warn!(
+                "Failed to stop ASR worker after audio startup failure: {}",
+                error
+            );
         }
     }
     if ws_created_here {
@@ -491,6 +774,13 @@ pub(crate) async fn rollback_failed_audio_start(
     *state.asr_progress.write().await = None;
     *state.start_time.write().await = None;
     state.active_port.store(0, Ordering::SeqCst);
+    *state.audio_state.write().await = liveaudio_audio::AudioSourceStatus::Stopped;
+    *state.effective_device.write().await = None;
+    *state.compute_type.write().await = None;
+    state.fallback_occurred.store(false, Ordering::SeqCst);
+    *state.fallback_reason.write().await = None;
+
+    *state.active_backend.write().await = None;
 
     error
 }
@@ -515,6 +805,12 @@ async fn rollback_failed_start_before_audio(
     state.is_running.store(false, Ordering::SeqCst);
     *state.asr_state.write().await = "stopped".to_string();
     *state.asr_progress.write().await = None;
+    *state.effective_device.write().await = None;
+    *state.compute_type.write().await = None;
+    state.fallback_occurred.store(false, Ordering::SeqCst);
+    *state.fallback_reason.write().await = None;
+
+    *state.active_backend.write().await = None;
     error
 }
 
@@ -527,12 +823,15 @@ pub(crate) async fn ensure_startup_websocket(
 ) -> Result<(WsServer, bool), String> {
     let mut ws_guard = state.ws_server.lock().await;
     if let Some(ref existing) = *ws_guard {
+        broadcast_subtitle_theme(existing, config);
         return Ok((existing.clone(), false));
     }
     let mut ws = WsServer::new(WsServerConfig {
         base_port: config.ws_port,
         backlog_policy: BacklogPolicy::from_config(&config.subtitle_backlog_policy),
         max_live_delay_sec: config.subtitle_max_live_delay_sec as f32,
+        allowed_loopback_ports: config.ws_allowed_loopback_ports.clone(),
+        rejected_origins: Some(Arc::clone(&state.rejected_origins)),
         ..Default::default()
     });
     let effective_port = match start_if_enabled(&mut ws, config.obs_enabled, config.ws_port).await {
@@ -549,6 +848,7 @@ pub(crate) async fn ensure_startup_websocket(
             .await);
         }
     };
+    broadcast_subtitle_theme(&ws, config);
     state.active_port.store(effective_port, Ordering::SeqCst);
     tracing::info!("Servidor WebSocket iniciado en puerto {}", effective_port);
     *ws_guard = Some(ws.clone());
@@ -673,7 +973,7 @@ pub(crate) async fn stop_active_websocket(state: &AppState) -> Result<(), String
 }
 
 pub(crate) fn log_unknown_worker_event(event_type: &str, _payload: &serde_json::Value) {
-    tracing::debug!("🔍 [ASR Worker Event] {}", event_type);
+    tracing::debug!("[ASR Worker Event] {}", event_type);
 }
 
 pub(crate) fn create_session_sinks(
@@ -718,8 +1018,12 @@ pub(crate) fn create_session_sinks(
         )));
     }
     if config.save_vtt_enabled {
-        sinks.push(Arc::new(WebVttSink::new(
+        sinks.push(Arc::new(CueFileSink::webvtt(
             canonical.join("subtitles.vtt"),
+            32,
+        )));
+        sinks.push(Arc::new(CueFileSink::srt(
+            canonical.join("subtitles.srt"),
             32,
         )));
     }
@@ -727,7 +1031,7 @@ pub(crate) fn create_session_sinks(
 }
 
 /// Timeline origin and last written cue number for a session. A resumed continuous
-/// session keeps both, so cue numbers and capture offsets continue (`engine.py`).
+/// session keeps both, so cue numbers and capture offsets continue.
 pub(crate) fn session_timeline(
     session_path: Option<&Path>,
     previous_origin: Option<Instant>,
@@ -821,7 +1125,7 @@ pub fn encode_f32_le_base64(samples: &[f32]) -> String {
     for s in samples {
         bytes.extend_from_slice(&s.to_le_bytes());
     }
-    let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     let mut i = 0;
     while i < bytes.len() {
         let b0 = bytes[i];
@@ -861,13 +1165,14 @@ pub async fn get_service_status_internal(state: &AppState) -> Result<ServiceStat
             .and_then(|holder| holder.ws_port)
             .unwrap_or(own_port)
     };
-    let ws_clients = {
-        let ws_guard = state.ws_server.lock().await;
-        if let Some(ref ws) = *ws_guard {
-            ws.client_count()
-        } else {
-            0
-        }
+    let ws_clients = state.ws_clients().await;
+    let effective_device = state.effective_device.read().await.clone();
+    let compute_type = state.compute_type.read().await.clone();
+    let fallback_occurred = state.fallback_occurred.load(Ordering::SeqCst);
+    let fallback_reason = state.fallback_reason.read().await.clone();
+    let (active_backend, backend_reason) = match state.active_backend.read().await.clone() {
+        Some((backend, reason)) => (Some(backend), Some(reason)),
+        None => (None, None),
     };
 
     let config_snapshot = if is_running {
@@ -941,6 +1246,12 @@ pub async fn get_service_status_internal(state: &AppState) -> Result<ServiceStat
         },
         monitor_mode: foreign_service.is_some(),
         foreign_service_pid: foreign_service.and_then(|holder| holder.pid),
+        effective_device,
+        compute_type,
+        fallback_occurred,
+        fallback_reason,
+        active_backend,
+        backend_reason,
     })
 }
 
@@ -950,7 +1261,7 @@ pub async fn get_service_status(state: State<'_, AppState>) -> Result<ServiceSta
     get_service_status_internal(state.inner()).await
 }
 
-/// Start the LiveAudio transcription service, binding audio capture, Silero VAD, Faster-Whisper worker, and OBS WebSocket.
+/// Start the LiveAudio transcription service, binding audio capture, Silero VAD, ASR Worker, and OBS WebSocket.
 #[tauri::command]
 pub async fn start_service(
     app: AppHandle,
@@ -1002,6 +1313,13 @@ async fn start_pipeline_locked(
 ) -> Result<ServiceStatusDto, String> {
     initialize_bundled_cpu_runtime(app)?;
 
+    *state.effective_device.write().await = None;
+    *state.compute_type.write().await = None;
+    state.fallback_occurred.store(false, Ordering::SeqCst);
+    *state.fallback_reason.write().await = None;
+
+    *state.active_backend.write().await = None;
+
     *state.asr_state.write().await = "starting".to_string();
     *state.asr_progress.write().await = None;
     if let Ok(starting_status) = get_service_status_internal(state).await {
@@ -1034,51 +1352,35 @@ async fn start_pipeline_locked(
     } else {
         &config.whisper_context_prompt_es
     };
-    if discover_managed_python(&managed_runtime_root()).is_none() {
-        let backend = if config.device.eq_ignore_ascii_case("cuda") {
-            AsrBackend::Cu121
-        } else {
-            AsrBackend::Cpu
-        };
-        let runtime_token = startup_token.child_token();
-        if let Err(error) = prepare_managed_runtime(app, state, backend, runtime_token).await {
+
+    let mut selected = match prepare_worker(liveaudio_core::backend::effective_backend_pref(&config.asr_backend, &config.device)).await {
+        Ok(selected) => selected,
+        Err(error) => {
             *state.asr_state.write().await = "stopped".to_string();
+            let _ = app.emit(
+                "runtime_setup_progress",
+                RuntimeSetupProgress {
+                    phase: "error".to_string(),
+                    text: "ASR runtime is unavailable. Choose Repair ASR Runtime and retry."
+                        .to_string(),
+                    percent: None,
+                },
+            );
             if let Ok(status) = get_service_status_internal(state).await {
                 let _ = app.emit("service_status_changed", &status);
             }
-            return Err(format!("ASR runtime preparation failed: {error}"));
+            return Err(desktop_runtime_preflight_error(&error));
         }
-    }
-
-    let mut worker_config = WorkerProcessConfig::discover_asr_worker();
-    worker_config.init_payload = Some(worker_init_payload(
+    };
+    selected.config.init_payload = Some(worker_init_payload(
         &config,
         &clean_model_name,
         &clean_lang,
         Some(prompt.as_str()).filter(|prompt| !prompt.is_empty()),
     ));
-    worker_config.decode_timeout = Some(Duration::from_secs(config.asr_decode_timeout_sec.into()));
-    if let Err(error) = preflight_asr_runtime(
-        std::path::Path::new(&worker_config.command),
-        worker_config.working_dir.as_deref(),
-    )
-    .await
-    {
-        *state.asr_state.write().await = "stopped".to_string();
-        let _ = app.emit(
-            "runtime_setup_progress",
-            RuntimeSetupProgress {
-                phase: "error".to_string(),
-                text: "ASR runtime is unavailable. Choose Repair ASR Runtime and retry."
-                    .to_string(),
-                percent: None,
-            },
-        );
-        if let Ok(status) = get_service_status_internal(state).await {
-            let _ = app.emit("service_status_changed", &status);
-        }
-        return Err(desktop_runtime_preflight_error(&error));
-    }
+    selected.config.decode_timeout =
+        Some(Duration::from_secs(config.asr_decode_timeout_sec.into()));
+    set_active_backend(state, selected.kind, &selected.reason).await;
 
     *state.session_error.write().await = None;
 
@@ -1093,9 +1395,9 @@ async fn start_pipeline_locked(
         }
     };
 
-    tracing::info!("🚀 Iniciando servicio de transcripción LiveAudio...");
+    tracing::info!("Iniciando servicio de transcripción LiveAudio...");
     tracing::info!(
-        "⚙️ Configuración: modelo='{}', dispositivo='{}', idioma='{}', puerto_ws={}",
+        "Configuración: modelo='{}', dispositivo='{}', idioma='{}', puerto_ws={}",
         clean_model_name,
         config.device,
         clean_lang,
@@ -1103,8 +1405,8 @@ async fn start_pipeline_locked(
     );
 
     tracing::info!(
-        "🐍 Arrancando proceso supervisado Faster-Whisper (timeout handshake: {}s)...",
-        worker_config.ready_timeout.as_secs()
+        "Arrancando proceso supervisado LiveAudio ORT ASR (timeout handshake: {}s)...",
+        selected.config.ready_timeout.as_secs()
     );
     let _ = app.emit(
         "runtime_setup_progress",
@@ -1115,13 +1417,80 @@ async fn start_pipeline_locked(
         },
     );
 
-    let mut supervisor = match ProcessSupervisor::new(worker_config, std::process::id(), 0, None) {
-        Ok(supervisor) => supervisor,
-        Err(error) => {
+    // A failed ct2 start is retried once on the ORT worker for this session.
+    let supervisor = loop {
+        let mut supervisor = match ProcessSupervisor::new(selected.config.clone(), std::process::id(), 0, None) {
+            Ok(supervisor) => supervisor,
+            Err(error) => {
+                let err_msg = rollback_failed_start_before_audio(
+                    state,
+                    ws_created_here,
+                    format!("Error inicializando supervisor ASR: {}", error),
+                )
+                .await;
+                if let Ok(status) = get_service_status_internal(state).await {
+                    let _ = app.emit("service_status_changed", &status);
+                }
+                return Err(err_msg);
+            }
+        };
+
+        let mut startup_events = supervisor.subscribe_worker_events();
+        let startup_events_cancel = tokio_util::sync::CancellationToken::new();
+        let startup_events_stop = startup_events_cancel.clone();
+        let app_startup_events = app.clone();
+        let state_startup_events = state.clone();
+        let startup_event_task = tokio::spawn(async move {
+            let mut latest_attempt = None;
+            loop {
+                tokio::select! {
+                    _ = startup_events_stop.cancelled() => break,
+                    message = startup_events.recv() => match message {
+                        Ok(value) => forward_startup_worker_event(
+                            &app_startup_events,
+                            &state_startup_events,
+                            &value,
+                            &mut latest_attempt,
+                        ).await,
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+            }
+        });
+
+        let start_result = supervisor
+            .start_internal_cancellable(startup_token.clone())
+            .await;
+        startup_events_cancel.cancel();
+        if let Err(error) = startup_event_task.await {
+            tracing::warn!("Startup ASR event dispatcher failed: {error}");
+        }
+
+        if let Err(error) = start_result {
+            *state.asr_progress.write().await = None;
+            if let Err(stop_error) = supervisor
+                .stop_internal(std::time::Duration::from_secs(2))
+                .await
+            {
+                tracing::warn!("Failed to reap worker after startup error: {}", stop_error);
+            }
+            if selected.kind == AsrBackendKind::Ct2Cuda && !startup_token.is_cancelled() {
+                let (kind, reason) = ct2_fallback(Ct2Failure::Start);
+                tracing::warn!("ct2 CUDA worker failed to start ({error}); falling back to the ORT worker");
+                selected.config = ort_fallback_config(&selected.config);
+                selected.kind = kind;
+                selected.reason = reason.to_string();
+                set_active_backend(state, kind, reason).await;
+                if let Ok(status) = get_service_status_internal(state).await {
+                    let _ = app.emit("service_status_changed", &status);
+                }
+                continue;
+            }
             let err_msg = rollback_failed_start_before_audio(
                 state,
                 ws_created_here,
-                format!("Error inicializando supervisor ASR: {}", error),
+                format!("Error al arrancar proceso del motor ASR ONNX: {}", error),
             )
             .await;
             if let Ok(status) = get_service_status_internal(state).await {
@@ -1129,59 +1498,8 @@ async fn start_pipeline_locked(
             }
             return Err(err_msg);
         }
+        break supervisor;
     };
-
-    let mut startup_events = supervisor.subscribe_worker_events();
-    let startup_events_cancel = tokio_util::sync::CancellationToken::new();
-    let startup_events_stop = startup_events_cancel.clone();
-    let app_startup_events = app.clone();
-    let state_startup_events = state.clone();
-    let startup_event_task = tokio::spawn(async move {
-        let mut latest_attempt = None;
-        loop {
-            tokio::select! {
-                _ = startup_events_stop.cancelled() => break,
-                message = startup_events.recv() => match message {
-                    Ok(value) => forward_startup_worker_event(
-                        &app_startup_events,
-                        &state_startup_events,
-                        &value,
-                        &mut latest_attempt,
-                    ).await,
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                }
-            }
-        }
-    });
-
-    let start_result = supervisor
-        .start_internal_cancellable(startup_token.clone())
-        .await;
-    startup_events_cancel.cancel();
-    if let Err(error) = startup_event_task.await {
-        tracing::warn!("Startup ASR event dispatcher failed: {error}");
-    }
-
-    if let Err(error) = start_result {
-        *state.asr_progress.write().await = None;
-        if let Err(stop_error) = supervisor
-            .stop_internal(std::time::Duration::from_secs(2))
-            .await
-        {
-            tracing::warn!("Failed to reap worker after startup error: {}", stop_error);
-        }
-        let err_msg = rollback_failed_start_before_audio(
-            state,
-            ws_created_here,
-            format!("Error al arrancar proceso Faster-Whisper: {}", error),
-        )
-        .await;
-        if let Ok(status) = get_service_status_internal(state).await {
-            let _ = app.emit("service_status_changed", &status);
-        }
-        return Err(err_msg);
-    }
     *state.asr_state.write().await = "ready".to_string();
     *state.asr_progress.write().await = None;
     let mut worker_events = supervisor.subscribe_worker_events();
@@ -1192,24 +1510,18 @@ async fn start_pipeline_locked(
     // 3. Setup Cancellation Token
     let cancel_token = tokio_util::sync::CancellationToken::new();
     *state.cancel_token.lock().await = Some(cancel_token.clone());
-
-    state.is_running.store(true, Ordering::SeqCst);
-    {
-        let mut asr = state.asr_state.write().await;
-        *asr = "listening".to_string();
-    }
-    {
-        let mut start_guard = state.start_time.write().await;
-        *start_guard = Some(Instant::now());
-    }
     *state.previous_transcript.write().await = None;
 
     // 4. Background Task: Worker events dispatcher (subtitles, model status)
     let app_events = app.clone();
     let state_events = state.clone();
     let ws_events = ws_server.clone();
-    let cancel_events = cancel_token.clone();
-    let pending_utterances = Arc::new(std::sync::Mutex::new(PendingUtteranceTracker::default()));
+    let partial_gate = Arc::new(PartialSubtitleGate::default());
+    let partial_gate_events = partial_gate.clone();
+    let cancel_events = tokio_util::sync::CancellationToken::new();
+    *state.events_cancel_token.lock().await = Some(cancel_events.clone());
+    *state.pending_utterances.lock().unwrap_or_else(|p| p.into_inner()) = PendingUtteranceTracker::default();
+    let pending_utterances = state.pending_utterances.clone();
     let pending_events = pending_utterances.clone();
     let backlog_policy = BacklogPolicy::from_config(&config.subtitle_backlog_policy);
     let max_live_delay_sec = config.subtitle_max_live_delay_sec;
@@ -1233,7 +1545,7 @@ async fn start_pipeline_locked(
                                     "status" => {
                                         if let Some(st) = val.get("payload").and_then(|p| p.get("state")).and_then(|s| s.as_str()) {
                                             let text = val.get("payload").and_then(|p| p.get("text")).and_then(|t| t.as_str()).unwrap_or("");
-                                            tracing::info!("📡 [ASR Worker Status] {} - {}", st, text);
+                                            tracing::info!("[ASR Worker Status] {} - {}", st, text);
                                             *state_events.asr_state.write().await = st.to_string();
                                             if st == "ready" {
                                                 *state_events.asr_progress.write().await = None;
@@ -1247,16 +1559,22 @@ async fn start_pipeline_locked(
                                     }
                                     "download_progress" => {
                                         if let Some(progress) = asr_progress_from_worker_event(&val) {
-                                            tracing::info!("📥 [ASR Download] {}", progress.text);
+                                            tracing::info!("[ASR Download] {}", progress.text);
                                             *state_events.asr_state.write().await = progress.phase.clone();
+                                            let _ = app_events.emit(
+                                                "runtime_setup_progress",
+                                                RuntimeSetupProgress {
+                                                    phase: progress.phase.clone(),
+                                                    text: progress.text.clone(),
+                                                    percent: progress.percent,
+                                                },
+                                            );
                                             *state_events.asr_progress.write().await = Some(progress);
-                                            if let Ok(current_status) = get_service_status_internal(&state_events).await {
-                                                let _ = app_events.emit("service_status_changed", &current_status);
-                                            }
                                         }
                                     }
                                     "ready" => {
-                                        tracing::info!("✅ [ASR Worker Ready] Faster-Whisper inicializado y listo para inferencia");
+                                        tracing::info!("[ASR Worker Ready] Motor ASR ONNX inicializado y listo para inferencia");
+                                        update_worker_ready_hardware(&state_events, val.get("payload")).await;
                                         *state_events.asr_state.write().await = "ready".to_string();
                                         *state_events.asr_progress.write().await = None;
                                         if let Ok(current_status) = get_service_status_internal(&state_events).await {
@@ -1267,11 +1585,29 @@ async fn start_pipeline_locked(
                                         if let Some(payload) = val.get("payload") {
                                             let code = payload.get("code").and_then(|c| c.as_str()).unwrap_or("unknown");
                                             let msg = payload.get("message").and_then(|m| m.as_str()).unwrap_or("Unknown error");
-                                            tracing::error!("❌ [ASR Worker Error] {}: {}", code, msg);
+                                            tracing::error!("[ASR Worker Error] {}: {}", code, msg);
                                             *state_events.asr_state.write().await = format!("error: {}", code);
                                             *state_events.asr_progress.write().await = None;
                                             if let Ok(current_status) = get_service_status_internal(&state_events).await {
                                                 let _ = app_events.emit("service_status_changed", &current_status);
+                                            }
+                                        }
+                                    }
+                                    "transcription_result"
+                                        if val.pointer("/payload/partial").and_then(|p| p.as_bool()) == Some(true) =>
+                                    {
+                                        let payload = &val["payload"];
+                                        let utt_id = payload.get("utterance_id").and_then(|u| u.as_str()).unwrap_or("utt");
+                                        let seq = utterance_seq(utt_id);
+                                        if partial_gate_events.finish(seq) {
+                                            let text = transcript_text_from_result(payload);
+                                            let text = text.trim();
+                                            if !text.is_empty() {
+                                                let blacklist = state_events.config.read().await.blacklist.clone();
+                                                if !is_text_blacklisted(text, &blacklist) {
+                                                    partial_gate_events.mark_shown(seq);
+                                                    publish_partial(&app_events, &ws_events, utt_id, &presentation_text(text));
+                                                }
                                             }
                                         }
                                     }
@@ -1283,15 +1619,17 @@ async fn start_pipeline_locked(
                                             let utt_id = payload.get("utterance_id").and_then(|u| u.as_str()).unwrap_or("utt");
                                             let inference_sec = payload.get("inference_sec").and_then(|d| d.as_f64())
                                                 .or_else(|| payload.get("latency_sec").and_then(|d| d.as_f64())).unwrap_or(0.0);
+                                            let had_partial = partial_gate_events.take_shown(utterance_seq(utt_id));
+                                            let mut final_published = false;
                                             let (capture_offset_sec, timing) = {
-                                                let mut pending = pending_events.lock().unwrap();
+                                                let mut pending = pending_events.lock().unwrap_or_else(|p| p.into_inner());
                                                 (pending.capture_offset_sec(utt_id), pending.complete(utt_id, inference_sec))
                                             };
 
                                             if !text.is_empty() {
                                                 let blacklist = state_events.config.read().await.blacklist.clone();
                                                 if is_text_blacklisted(text, &blacklist) {
-                                                    tracing::info!("🚫 [Blacklist Filter] Descartando transcripción alucinada [{}] ({} caracteres)", utt_id, text.chars().count());
+                                                    tracing::info!("[Blacklist Filter] Descartando transcripción alucinada [{}] ({} caracteres)", utt_id, text.chars().count());
                                                 } else {
                                                     let trimmed_text = {
                                                         let prev_guard = state_events.previous_transcript.read().await;
@@ -1303,7 +1641,7 @@ async fn start_pipeline_locked(
                                                     };
 
                                                     if trimmed_text.trim().is_empty() {
-                                                        tracing::debug!("🔇 [ASR Solapamiento descartado] [{}] (todo el texto era duplicado del chunk anterior)", utt_id);
+                                                        tracing::debug!("[ASR Solapamiento descartado] [{}] (todo el texto era duplicado del chunk anterior)", utt_id);
                                                     } else {
                                                         *state_events.previous_transcript.write().await = Some(text.to_string());
                                                         let text_to_emit = trimmed_text;
@@ -1337,6 +1675,7 @@ async fn start_pipeline_locked(
                                                             *state_events.session_error.write().await = session_sink_failure(&sink.stats());
                                                         }
                                                         log_transcription_metadata(payload);
+                                                        state_events.usage_stats.record_subtitle(dur_sec, unix_now());
                                                         let now_ms = SystemTime::now()
                                                             .duration_since(UNIX_EPOCH)
                                                             .map(|d| d.as_millis() as u64)
@@ -1367,12 +1706,17 @@ async fn start_pipeline_locked(
                                                             catchup_interval_sec,
                                                         );
                                                         if let Some(wire_msg) = wire_msg {
+                                                            final_published = true;
                                                             let _ = ws_events.broadcast_subtitle(&wire_msg);
                                                         }
                                                     }
                                                 }
                                             } else {
-                                                tracing::debug!("🔇 [ASR Transcripción vacía] [{}] (silencio/ruido descartado)", utt_id);
+                                                tracing::debug!("[ASR Transcripción vacía] [{}] (silencio/ruido descartado)", utt_id);
+                                            }
+                                            // A final that produced no subtitle must not leave provisional text behind.
+                                            if had_partial && !final_published {
+                                                publish_partial(&app_events, &ws_events, utt_id, "");
                                             }
                                         }
                                     }
@@ -1490,14 +1834,16 @@ async fn start_pipeline_locked(
     state.session_cue_counter.store(last_cue, Ordering::SeqCst);
     *state.session_sink.lock().await = session_sink;
     *state.session_path.write().await = session_path;
+    state.usage_stats.record_session(unix_now());
 
-    // 7. Background Task: Real-time Audio VAD + Speech Chunking -> Faster-Whisper Worker
+    // 7. Background Task: Real-time Audio VAD + Speech Chunking -> ASR Worker
     let app_audio = app.clone();
     let state_audio = state.clone();
     let cancel_audio = cancel_token.clone();
     let supervisor_audio = supervisor_arc.clone();
     let ws_audio = ws_server.clone();
     let acoustic_events_enabled = config.acoustic_events_enabled;
+    let live_partial_enabled = config.live_partial_subtitles_enabled;
     let decode_timeout_ms = u64::from(config.asr_decode_timeout_sec) * 1000;
 
     let pre_buffer_capacity = vad.config().pre_buffer_chunks().max(1);
@@ -1507,6 +1853,12 @@ async fn start_pipeline_locked(
     let initial_audio_state = *audio_state_rx.borrow_and_update();
     *state.audio_state.write().await = initial_audio_state;
 
+    state.is_running.store(true, Ordering::SeqCst);
+    *state.asr_state.write().await = "listening".to_string();
+    *state.start_time.write().await = Some(Instant::now());
+
+    let status_emit_inflight = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
     let audio_task = tokio::spawn(async move {
         let mut utterance_samples: Vec<f32> = Vec::with_capacity(max_samples.max(16000 * 5));
         let mut pre_roll_chunks: VecDeque<Vec<f32>> =
@@ -1514,8 +1866,10 @@ async fn start_pipeline_locked(
         let mut is_in_utterance = false;
         let mut utterance_started_at = Instant::now();
         let mut utterance_seq = 0u64;
+        let mut last_partial_len = 0usize;
         let mut acoustic_lifecycle = AcousticEventLifecycle::new();
         let mut close_reason = AcousticSpeechEndReason::ServiceStopped;
+        let status_emit_inflight_audio = status_emit_inflight.clone();
 
         'capture: loop {
             tokio::select! {
@@ -1556,21 +1910,33 @@ async fn start_pipeline_locked(
                                     decision.transition,
                                 );
                                 let prev_onset = state_audio.vad_onset.swap(decision.is_speech, Ordering::SeqCst);
-                                if prev_onset != decision.is_speech {
-                                    if let Ok(current_status) = get_service_status_internal(&state_audio).await {
-                                        let _ = app_audio.emit("service_status_changed", &current_status);
-                                    }
+                                if prev_onset != decision.is_speech
+                                    && status_emit_inflight_audio
+                                        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                                        .is_ok()
+                                {
+                                    let app_status = app_audio.clone();
+                                    let state_status = state_audio.clone();
+                                    let inflight = status_emit_inflight_audio.clone();
+                                    tokio::spawn(async move {
+                                        if let Ok(current_status) = get_service_status_internal(&state_status).await {
+                                            let _ = app_status.emit("service_status_changed", &current_status);
+                                        }
+                                        inflight.store(false, Ordering::SeqCst);
+                                    });
                                 }
 
                                 match decision.transition {
                                     VadTransition::SpeechStart => {
-                                        tracing::debug!("🎙️ [VAD] Voz detectada (SpeechStart)");
+                                        tracing::debug!("[VAD] Voz detectada (SpeechStart)");
                                         is_in_utterance = true;
                                         utterance_samples.clear();
                                         for pre in pre_roll_chunks.drain(..) {
                                             utterance_samples.extend_from_slice(&pre);
                                         }
                                         utterance_samples.extend_from_slice(frame);
+                                        partial_gate.reset();
+                                        last_partial_len = 0;
                                         // Pre-roll audio was captured before this frame was evaluated.
                                         let buffered = Duration::from_secs_f64(utterance_samples.len() as f64 / 16000.0);
                                         utterance_started_at = Instant::now().checked_sub(buffered).unwrap_or_else(Instant::now);
@@ -1581,33 +1947,13 @@ async fn start_pipeline_locked(
                                             is_in_utterance = false;
 
                                             // Only dispatch utterances with >= 300ms of audio (4800 samples)
-                                            if utterance_samples.len() >= 4800 {
+                                            if utterance_samples.len() >= MIN_UTTERANCE_SAMPLES {
                                                 utterance_seq += 1;
-                                                tracing::info!("🎙️ [VAD] Voz finalizada: {}ms ({} muestras) -> enviando utt_{} a Faster-Whisper", duration_ms, utterance_samples.len(), utterance_seq);
+                                                tracing::info!("[VAD] Voz finalizada: {}ms ({} muestras) -> enviando utt_{} al motor ASR ONNX", duration_ms, utterance_samples.len(), utterance_seq);
+                                                partial_gate.reset();
                                                 let b64_audio = encode_f32_le_base64(&utterance_samples);
-                                                let (clean_lang, context_prompt) = {
-                                                    let cfg = state_audio.config.read().await;
-                                                    let clean_lang = if !cfg.asr_language.is_empty() {
-                                                        cfg.asr_language.clone()
-                                                    } else {
-                                                        cfg.language
-                                                            .as_deref()
-                                                            .filter(|language| !language.is_empty() && *language != "auto")
-                                                            .unwrap_or("es")
-                                                            .to_string()
-                                                    };
-                                                    let prompt = if clean_lang == "en" {
-                                                        cfg.whisper_context_prompt_en.trim()
-                                                    } else {
-                                                        cfg.whisper_context_prompt_es.trim()
-                                                    };
-                                                    let context_prompt = if prompt.is_empty() {
-                                                        None
-                                                    } else {
-                                                        Some(prompt.to_string())
-                                                    };
-                                                    (clean_lang, context_prompt)
-                                                };
+                                                let (clean_lang, context_prompt) =
+                                                    asr_language_and_prompt(&*state_audio.config.read().await);
 
                                                 let cmd = serde_json::json!({
                                                     "version": 1,
@@ -1635,7 +1981,7 @@ async fn start_pipeline_locked(
                                                 let capture_offset_sec = utterance_started_at
                                                     .saturating_duration_since(session_origin)
                                                     .as_secs_f64();
-                                                pending_utterances.lock().unwrap().track_with_capture_offset(
+                                                pending_utterances.lock().unwrap_or_else(|p| p.into_inner()).track_with_capture_offset(
                                                     utterance_id.clone(),
                                                     created_at_sec,
                                                     capture_offset_sec,
@@ -1646,11 +1992,11 @@ async fn start_pipeline_locked(
                                                     &cancel_audio,
                                                     &cmd,
                                                 ).await {
-                                                    pending_utterances.lock().unwrap().remove(&utterance_id);
-                                                    tracing::error!("Error enviando audio a Faster-Whisper: {}", e);
+                                                    pending_utterances.lock().unwrap_or_else(|p| p.into_inner()).remove(&utterance_id);
+                                                    tracing::error!("Error enviando audio al motor ASR ONNX: {}", e);
                                                 }
                                             } else {
-                                                tracing::debug!("🎙️ [VAD] Segmento ignorado por ser menor a 300ms ({} muestras)", utterance_samples.len());
+                                                tracing::debug!("[VAD] Segmento ignorado por ser menor a 300ms ({} muestras)", utterance_samples.len());
                                             }
                                             utterance_samples.clear();
                                         }
@@ -1658,6 +2004,40 @@ async fn start_pipeline_locked(
                                     VadTransition::None => {
                                         if is_in_utterance {
                                             utterance_samples.extend_from_slice(frame);
+                                            if utterance_samples.len() >= max_samples {
+                                                utterance_samples.truncate(max_samples);
+                                            }
+                                            if live_partial_enabled
+                                                && partial_due(true, utterance_samples.len(), last_partial_len)
+                                                && partial_gate.try_begin(utterance_seq + 1)
+                                            {
+                                                last_partial_len = utterance_samples.len();
+                                                let (clean_lang, context_prompt) =
+                                                    asr_language_and_prompt(&*state_audio.config.read().await);
+                                                let partial_cmd = serde_json::json!({
+                                                    "version": 1,
+                                                    "cmd": "transcribe",
+                                                    "timestamp_ms": SystemTime::now()
+                                                        .duration_since(UNIX_EPOCH)
+                                                        .map(|d| d.as_millis() as u64)
+                                                        .unwrap_or(0),
+                                                    "payload": {
+                                                        "utterance_id": format!("utt_{}", utterance_seq + 1),
+                                                        "sequence": utterance_seq + 1,
+                                                        "audio_data": encode_f32_le_base64(&utterance_samples),
+                                                        "sample_rate": 16000,
+                                                        "channels": 1,
+                                                        "language": clean_lang,
+                                                        "context_prompt": context_prompt,
+                                                        "timeout_ms": decode_timeout_ms,
+                                                        "partial": true,
+                                                    }
+                                                });
+                                                // Never wait: a full worker queue just skips this partial.
+                                                if supervisor_audio.try_send_command(&partial_cmd).await.is_err() {
+                                                    partial_gate.finish(utterance_seq + 1);
+                                                }
+                                            }
                                         } else {
                                             if pre_roll_chunks.len() >= pre_buffer_capacity {
                                                 pre_roll_chunks.pop_front();
@@ -1669,10 +2049,46 @@ async fn start_pipeline_locked(
                             }
                             Err(e) => {
                                 tracing::warn!("Silero VAD evaluation error: {}", e);
+                                is_in_utterance = false;
+                                utterance_samples.clear();
+                                vad.reset();
                             }
                         }
                     }
                 }
+            }
+        }
+
+        // Stop must not lose the sentence being spoken: hand it to the worker; shutdown waits for its result.
+        if cancel_audio.is_cancelled() && should_flush_utterance(is_in_utterance, utterance_samples.len()) {
+            utterance_seq += 1;
+            let utterance_id = format!("utt_{}", utterance_seq);
+            let (clean_lang, context_prompt) = asr_language_and_prompt(&*state_audio.config.read().await);
+            let cmd = serde_json::json!({
+                "version": 1,
+                "cmd": "transcribe",
+                "timestamp_ms": SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0),
+                "payload": {
+                    "utterance_id": utterance_id,
+                    "sequence": utterance_seq,
+                    "audio_data": encode_f32_le_base64(&utterance_samples),
+                    "sample_rate": 16000,
+                    "channels": 1,
+                    "duration_ms": utterance_samples.len() as u64 * 1000 / 16000,
+                    "language": clean_lang,
+                    "context_prompt": context_prompt,
+                    "timeout_ms": decode_timeout_ms,
+                }
+            });
+            pending_utterances.lock().unwrap_or_else(|p| p.into_inner()).track_with_capture_offset(
+                utterance_id.clone(),
+                SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0),
+                utterance_started_at.saturating_duration_since(session_origin).as_secs_f64(),
+            );
+            let sent = tokio::time::timeout(FLUSH_SEND_TIMEOUT, supervisor_audio.send_command(&cmd)).await;
+            if !matches!(sent, Ok(Ok(_))) {
+                pending_utterances.lock().unwrap_or_else(|p| p.into_inner()).remove(&utterance_id);
+                tracing::warn!("Could not send the last utterance on stop: {:?}", sent.map(|r| r.err()));
             }
         }
 
@@ -1688,16 +2104,43 @@ async fn start_pipeline_locked(
         audio_capture.stop().await;
     });
 
-    state.background_tasks.lock().await.push(event_task);
-    state.background_tasks.lock().await.push(audio_task);
+    {
+        let mut tasks = state.background_tasks.lock().await;
+        tasks.retain(|handle| !handle.is_finished());
+        tasks.push(event_task);
+        tasks.push(audio_task);
+    }
     state
         .active_port
         .store(ws_server.bound_port().unwrap_or(0), Ordering::SeqCst);
     *state.active_config.write().await = Some(config.clone());
-    let status = get_service_status_internal(state).await?;
+    let status = match get_service_status_internal(state).await {
+        Ok(status) => status,
+        Err(e) => {
+            let _ = shutdown_service_resources(state).await;
+            return Err(e);
+        }
+    };
     let _ = app.emit("service_status_changed", &status);
 
     tracing::info!("Pipeline de transcripción iniciado correctamente");
+    Ok(status)
+}
+
+/// Prepare or verify the native ASR environment.
+#[tauri::command]
+pub async fn prepare_asr_runtime(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    let _transition_guard = state.transition_lock.lock().await;
+    if state.is_running.load(Ordering::SeqCst) {
+        return Err("Stop the transcription service before repairing its ASR runtime".to_string());
+    }
+    let worker_path = discover_native_worker()
+        .ok_or_else(|| "Native ASR worker binary not found".to_string())?;
+    let ort_dylib = discover_ort_dylib();
+    preflight_asr_runtime(&worker_path, ort_dylib.as_deref())
+        .await
+        .map_err(|error| desktop_runtime_preflight_error(&error))?;
+
     let _ = app.emit(
         "runtime_setup_progress",
         RuntimeSetupProgress {
@@ -1706,94 +2149,156 @@ async fn start_pipeline_locked(
             percent: Some(100.0),
         },
     );
-    Ok(status)
+    Ok(())
 }
 
-/// Bundled uv resource path, relative to the app resource directory.
-pub(crate) const BUNDLED_UV_RESOURCE: &str = if cfg!(windows) {
-    "packaging/vendor/uv.exe"
-} else {
-    "packaging/vendor/uv"
-};
-
-/// Prefer the bundled uv when it exists on disk, otherwise fall back to discovery (bundle roots, PATH).
-pub(crate) fn select_uv_executable(
-    bundled: Option<PathBuf>,
-    fallback: impl FnOnce() -> Option<PathBuf>,
-) -> Result<PathBuf, String> {
-    bundled
-        .filter(|path| path.is_file())
-        .or_else(fallback)
-        .ok_or_else(|| {
-            format!(
-                "uv executable not found: expected the bundled {BUNDLED_UV_RESOURCE} or uv on PATH; reinstall LiveAudio or install uv"
-            )
-        })
+async fn set_active_backend(state: &AppState, kind: AsrBackendKind, reason: &str) {
+    tracing::info!("ASR backend: {} ({reason})", backend_name(kind));
+    *state.active_backend.write().await = Some((backend_name(kind).to_string(), reason.to_string()));
 }
 
-async fn prepare_managed_runtime(
-    app: &AppHandle,
-    state: &AppState,
-    backend: AsrBackend,
-    cancellation: tokio_util::sync::CancellationToken,
-) -> Result<(), String> {
-    {
-        let mut active = state.runtime_setup_token.lock().await;
-        if active.is_some() {
-            return Err("ASR runtime preparation is already running".to_string());
-        }
-        *active = Some(cancellation.clone());
+/// Pure assembly of the GPU/backend status (testable without hardware).
+pub(crate) fn build_gpu_backend_status(
+    pref: &str,
+    adapters: &[GpuAdapter],
+    cuda_driver_version: Option<i32>,
+    nvidia_runtime: NvidiaRuntimeStatus,
+    ct2_worker: Option<&std::path::Path>,
+) -> GpuBackendStatusDto {
+    let (backend, reason) =
+        select_backend(pref, adapters, cuda_driver_version, &nvidia_runtime, ct2_worker);
+    GpuBackendStatusDto {
+        adapters: adapters
+            .iter()
+            .map(|a| GpuAdapterDto {
+                vendor: match a.vendor {
+                    GpuVendor::Nvidia => "nvidia",
+                    GpuVendor::Amd => "amd",
+                    GpuVendor::Intel => "intel",
+                    GpuVendor::Other(_) => "other",
+                }
+                .to_string(),
+                name: a.name.clone(),
+                dedicated_vram_mb: a.dedicated_vram_mb,
+            })
+            .collect(),
+        cuda_driver_version,
+        nvidia_runtime,
+        license_urls: license_urls(),
+        selected_backend: backend_name(backend).to_string(),
+        reason: reason.to_string(),
     }
-
-    let setup_result = async {
-        let bundled = app
-            .path()
-            .resolve(BUNDLED_UV_RESOURCE, tauri::path::BaseDirectory::Resource)
-            .ok();
-        let uv = select_uv_executable(bundled, liveaudio_core::runtime::find_uv_executable)?;
-        let worker = WorkerProcessConfig::find_asr_worker_source()
-            .ok_or_else(|| "Bundled ASR worker package is unavailable".to_string())?;
-        let package_root = WorkerProcessConfig::find_package_root(&Some(worker))
-            .ok_or_else(|| "Bundled ASR worker package root is unavailable".to_string())?;
-        let app_events = app.clone();
-        provision_runtime_with_uv_cancellable(
-            &managed_runtime_root(),
-            &package_root,
-            backend,
-            &uv,
-            cancellation,
-            move |progress: RuntimeSetupProgress| {
-                let _ = app_events.emit("runtime_setup_progress", &progress);
-            },
-        )
-        .await
-        .map_err(|error| error.to_string())
-    }
-    .await;
-    *state.runtime_setup_token.lock().await = None;
-    setup_result
 }
 
-/// Prepare or repair the managed ASR environment from the runtime bundled with the desktop app.
+/// Backend preference the next start will use, so the pre-start status matches it (device cpu forces ORT).
+pub(crate) fn gpu_status_pref(config: &LiveAudioConfig) -> String {
+    effective_backend_pref(&config.asr_backend, &config.device).to_string()
+}
+
 #[tauri::command]
-pub async fn prepare_asr_runtime(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
-    let _transition_guard = state.transition_lock.lock().await;
-    if state.is_running.load(Ordering::SeqCst) {
-        return Err("Stop the transcription service before repairing its ASR runtime".to_string());
-    }
-    let config = state.config.read().await.clone();
-    let backend = if config.device.eq_ignore_ascii_case("cuda") {
-        AsrBackend::Cu121
-    } else {
-        AsrBackend::Cpu
-    };
-    prepare_managed_runtime(
-        &app,
-        state.inner(),
-        backend,
-        tokio_util::sync::CancellationToken::new(),
-    )
+pub async fn get_gpu_backend_status(
+    state: State<'_, AppState>,
+) -> Result<GpuBackendStatusDto, String> {
+    let pref = gpu_status_pref(&*state.config.read().await);
+    tokio::task::spawn_blocking(move || {
+        build_gpu_backend_status(
+            &pref,
+            &detect_gpu_adapters(),
+            cuda_driver_version(),
+            nvidia_runtime_status(&nvidia_runtime_dir()),
+            discover_ct2_worker().as_deref(),
+        )
+    })
     .await
+    .map_err(|e| e.to_string())
+}
+
+/// Installed font families for the Style tab picker; empty off Windows or when DirectWrite fails.
+#[tauri::command]
+pub async fn list_system_fonts() -> Result<Vec<String>, String> {
+    tokio::task::spawn_blocking(liveaudio_core::system_fonts::installed_font_families)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// `nvidia_runtime_progress` payload: setup progress plus download byte counts for the MB readout.
+#[derive(Clone, serde::Serialize)]
+struct NvidiaRuntimeProgress {
+    phase: String,
+    text: String,
+    percent: Option<f64>,
+    downloaded_bytes: Option<u64>,
+    total_bytes: Option<u64>,
+}
+
+/// Download and install the NVIDIA CUDA runtime. Only ever invoked by an explicit user action.
+#[tauri::command]
+pub async fn install_nvidia_runtime(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<NvidiaRuntimeStatus, String> {
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    {
+        let mut slot = state.nvidia_install_cancel.lock().await;
+        if slot.is_some() {
+            return Err("An NVIDIA runtime install is already running".to_string());
+        }
+        *slot = Some(cancel.clone());
+    }
+    let emit = |phase: &str, text: String, percent: Option<f64>, bytes: Option<(u64, u64)>| {
+        let _ = app.emit(
+            "nvidia_runtime_progress",
+            NvidiaRuntimeProgress {
+                phase: phase.to_string(),
+                text,
+                percent,
+                downloaded_bytes: bytes.map(|(done, _)| done),
+                total_bytes: bytes.map(|(_, total)| total),
+            },
+        );
+    };
+    let dir = nvidia_runtime_dir();
+    let mut last_pct = -1i64;
+    let result = liveaudio_core::install_nvidia_runtime(
+        &dir,
+        |done, total| {
+            let pct = if total > 0 { done as f64 * 100.0 / total as f64 } else { 0.0 };
+            if pct as i64 != last_pct {
+                last_pct = pct as i64;
+                emit("downloading", "Downloading NVIDIA runtime...".to_string(), Some(pct), Some((done, total)));
+            }
+        },
+        &cancel,
+    )
+    .await;
+    *state.nvidia_install_cancel.lock().await = None;
+    match result {
+        Ok(()) => {
+            emit("ready", "NVIDIA runtime is installed.".to_string(), Some(100.0), None);
+            Ok(nvidia_runtime_status(&dir))
+        }
+        Err(error) => {
+            emit("error", error.to_string(), None, None);
+            Err(error.to_string())
+        }
+    }
+}
+
+/// Cancel the running NVIDIA runtime install; the partial download is kept for resume.
+#[tauri::command]
+pub async fn cancel_nvidia_runtime_install(state: State<'_, AppState>) -> Result<bool, String> {
+    Ok(cancel_nvidia_install(&state).await)
+}
+
+/// Asks the running NVIDIA runtime install to stop. Returns whether one was running.
+pub(crate) async fn cancel_nvidia_install(state: &AppState) -> bool {
+    match state.nvidia_install_cancel.lock().await.as_ref() {
+        Some(flag) => {
+            flag.store(true, Ordering::SeqCst);
+            true
+        }
+        None => false,
+    }
 }
 
 /// Cancel active runtime preparation or the startup readiness handshake without taking the transition lock.
@@ -1809,6 +2314,104 @@ pub async fn cancel_runtime_setup(state: State<'_, AppState>) -> Result<bool, St
         cancelled = true;
     }
     Ok(cancelled)
+}
+
+/// Smallest in-utterance audio (and spacing between partials): 16 VAD frames, about 0.5 s.
+const PARTIAL_INTERVAL_SAMPLES: usize = 16 * 512;
+
+/// A partial is due once the phrase has `PARTIAL_INTERVAL_SAMPLES` of audio and that much
+/// new audio since the previous partial.
+pub(crate) fn partial_due(in_utterance: bool, len: usize, last_partial_len: usize) -> bool {
+    in_utterance
+        && len >= PARTIAL_INTERVAL_SAMPLES
+        && len - last_partial_len.min(len) >= PARTIAL_INTERVAL_SAMPLES
+}
+
+/// Keeps at most one partial decode in flight and drops results for a phrase that already ended.
+/// `current` is the utterance sequence allowed to publish (0 = none); `shown` is the sequence
+/// whose provisional text reached clients and has not been cleared yet.
+#[derive(Default)]
+pub(crate) struct PartialSubtitleGate {
+    inflight: std::sync::atomic::AtomicBool,
+    current: std::sync::atomic::AtomicU64,
+    shown: std::sync::atomic::AtomicU64,
+}
+
+impl PartialSubtitleGate {
+    pub(crate) fn try_begin(&self, seq: u64) -> bool {
+        if self
+            .inflight
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return false;
+        }
+        self.current.store(seq, Ordering::SeqCst);
+        true
+    }
+
+    /// Frees the slot for `seq`; true when that phrase is still the current one.
+    pub(crate) fn finish(&self, seq: u64) -> bool {
+        if self.current.load(Ordering::SeqCst) != seq {
+            return false;
+        }
+        self.inflight.store(false, Ordering::SeqCst);
+        true
+    }
+
+    /// The phrase ended or restarted: forget in-flight work so late results are dropped.
+    pub(crate) fn reset(&self) {
+        self.current.store(0, Ordering::SeqCst);
+        self.inflight.store(false, Ordering::SeqCst);
+    }
+
+    pub(crate) fn mark_shown(&self, seq: u64) {
+        self.shown.store(seq, Ordering::SeqCst);
+    }
+
+    /// True once if provisional text for `seq` is on screen, so the caller can clear it.
+    pub(crate) fn take_shown(&self, seq: u64) -> bool {
+        seq != 0
+            && self
+                .shown
+                .compare_exchange(seq, 0, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+    }
+}
+
+fn utterance_seq(utterance_id: &str) -> u64 {
+    utterance_id
+        .strip_prefix("utt_")
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0)
+}
+
+fn asr_language_and_prompt(cfg: &LiveAudioConfig) -> (String, Option<String>) {
+    let clean_lang = if !cfg.asr_language.is_empty() {
+        cfg.asr_language.clone()
+    } else {
+        cfg.language
+            .as_deref()
+            .filter(|language| !language.is_empty() && *language != "auto")
+            .unwrap_or("es")
+            .to_string()
+    };
+    let prompt = if clean_lang == "en" {
+        cfg.whisper_context_prompt_en.trim()
+    } else {
+        cfg.whisper_context_prompt_es.trim()
+    };
+    let context_prompt = (!prompt.is_empty()).then(|| prompt.to_string());
+    (clean_lang, context_prompt)
+}
+
+/// Shows (or, with empty text, clears) the provisional line in the preview and the overlays.
+fn publish_partial(app: &AppHandle, ws: &WsServer, utterance_id: &str, text: &str) {
+    let _ = app.emit(
+        "subtitle_partial",
+        serde_json::json!({ "utterance_id": utterance_id, "text": text }),
+    );
+    let _ = ws.broadcast_subtitle_partial(utterance_id, text);
 }
 
 pub(crate) async fn send_audio_command_until_cancelled(
@@ -1848,6 +2451,12 @@ async fn stop_service_locked(
     }
 
     let shutdown = shutdown_service_resources(state).await;
+    *state.effective_device.write().await = None;
+    *state.compute_type.write().await = None;
+    state.fallback_occurred.store(false, Ordering::SeqCst);
+    *state.fallback_reason.write().await = None;
+
+    *state.active_backend.write().await = None;
     let status = get_service_status_internal(state).await?;
     let _ = app.emit("service_status_changed", &status);
     shutdown?;
@@ -1861,6 +2470,10 @@ pub(crate) async fn stop_service_for_exit(app: &AppHandle, state: &AppState) {
     if let Some(token) = state.startup_cancel_token.lock().await.as_ref() {
         token.cancel();
     }
+    if let Some(token) = state.runtime_setup_token.lock().await.as_ref() {
+        token.cancel();
+    }
+    cancel_nvidia_install(state).await;
     let _transition_guard = state.transition_lock.lock().await;
     if let Err(error) = stop_service_locked(app, state).await {
         tracing::warn!("Service did not stop cleanly on exit: {}", error);
@@ -1872,11 +2485,18 @@ pub(crate) async fn stop_service_for_exit(app: &AppHandle, state: &AppState) {
 pub(crate) async fn shutdown_service_resources(state: &AppState) -> Result<(), String> {
     state.is_running.store(false, Ordering::SeqCst);
     state.vad_onset.store(false, Ordering::SeqCst);
+    state.usage_stats.flush();
     {
         let mut start_guard = state.start_time.write().await;
         *start_guard = None;
     }
     *state.previous_transcript.write().await = None;
+    *state.effective_device.write().await = None;
+    *state.compute_type.write().await = None;
+    state.fallback_occurred.store(false, Ordering::SeqCst);
+    *state.fallback_reason.write().await = None;
+
+    *state.active_backend.write().await = None;
 
     // 1. Cancel audio capture and background tasks
     if let Some(token) = state.cancel_token.lock().await.take() {
@@ -1884,7 +2504,20 @@ pub(crate) async fn shutdown_service_resources(state: &AppState) -> Result<(), S
     }
 
     // 2. Join background capture/event tasks before stopping their shared resources.
-    let tasks = std::mem::take(&mut *state.background_tasks.lock().await);
+    // The audio task is pushed last: it ends first (after flushing its utterance), then pending finals
+    // get a bounded time to reach the sinks and OBS before the event task is stopped.
+    let mut tasks = std::mem::take(&mut *state.background_tasks.lock().await);
+    if let Some(audio_task) = tasks.pop() {
+        if let Err(error) = audio_task.await {
+            tracing::warn!("Background service task ended with an error: {}", error);
+        }
+    }
+    if !wait_for_pending_drain(&state.pending_utterances, SHUTDOWN_DRAIN_TIMEOUT).await {
+        tracing::warn!("Stop timed out waiting for pending transcriptions");
+    }
+    if let Some(token) = state.events_cancel_token.lock().await.take() {
+        token.cancel();
+    }
     for task in tasks {
         if let Err(error) = task.await {
             tracing::warn!("Background service task ended with an error: {}", error);
@@ -1908,7 +2541,7 @@ pub(crate) async fn shutdown_service_resources(state: &AppState) -> Result<(), S
     // 4. Terminate ASR worker supervisor cleanly.
     if let Some(supervisor) = state.supervisor.lock().await.take() {
         match Arc::try_unwrap(supervisor) {
-            Ok(mut supervisor) => {
+            Ok(supervisor) => {
                 if let Err(error) = supervisor
                     .stop_internal(std::time::Duration::from_secs(3))
                     .await
@@ -2025,13 +2658,124 @@ pub async fn open_author_profile() -> Result<(), String> {
     Ok(())
 }
 
-const OBS_OVERLAY_RELATIVE: &str = "liveaudio/assets/subtitulos_obs.html";
+/// Only the pinned NVIDIA license pages may be opened; the URL comes from the frontend.
+pub(crate) fn is_nvidia_license_url(url: &str) -> bool {
+    license_urls().contains(&url.to_string())
+}
+
+/// Open a pinned NVIDIA license page in the default browser.
+#[tauri::command]
+pub async fn open_nvidia_license_url(url: String) -> Result<(), String> {
+    if !is_nvidia_license_url(&url) {
+        return Err("URL is not an NVIDIA license page".to_string());
+    }
+    #[cfg(target_os = "windows")]
+    let mut command = std::process::Command::new("rundll32.exe");
+    #[cfg(target_os = "windows")]
+    command.args(["url.dll,FileProtocolHandler", url.as_str()]);
+    #[cfg(target_os = "macos")]
+    let mut command = std::process::Command::new("open");
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    let mut command = std::process::Command::new("xdg-open");
+    #[cfg(not(target_os = "windows"))]
+    command.arg(url.as_str());
+    command
+        .spawn()
+        .map_err(|error| format!("Failed to open license page: {error}"))?;
+    Ok(())
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+/// Fixed support destinations keyed by id; the frontend never supplies a URL.
+pub(crate) fn support_link_url(id: &str) -> Option<&'static str> {
+    match id {
+        "issues" => Some("https://github.com/plynte-labs/LiveAudio/issues/new/choose"),
+        "repo" => Some("https://github.com/plynte-labs/LiveAudio"),
+        "sponsor" => Some("https://github.com/sponsors/FranGuh/"),
+        _ => None,
+    }
+}
+
+/// Open one of the fixed support pages in the default browser.
+#[tauri::command]
+pub async fn open_support_link(id: String) -> Result<(), String> {
+    let url = support_link_url(&id).ok_or_else(|| "Unknown support link".to_string())?;
+    #[cfg(target_os = "windows")]
+    let mut command = std::process::Command::new("rundll32.exe");
+    #[cfg(target_os = "windows")]
+    command.args(["url.dll,FileProtocolHandler", url]);
+    #[cfg(target_os = "macos")]
+    let mut command = std::process::Command::new("open");
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    let mut command = std::process::Command::new("xdg-open");
+    #[cfg(not(target_os = "windows"))]
+    command.arg(url);
+    command
+        .spawn()
+        .map_err(|error| format!("Failed to open support link: {error}"))?;
+    Ok(())
+}
+
+/// Local usage counters (never transcript text).
+#[tauri::command]
+pub async fn get_usage_stats(state: State<'_, AppState>) -> Result<UsageStats, String> {
+    Ok(state.usage_stats.snapshot())
+}
+
+/// Short plain-text environment block for bug reports: no paths, user names, config or transcripts.
+pub(crate) fn support_environment_text(
+    version: &str,
+    backend: Option<&str>,
+    gpus: &[GpuAdapter],
+) -> String {
+    let gpu = if gpus.is_empty() {
+        "none detected".to_string()
+    } else {
+        gpus.iter().map(|g| g.name.as_str()).collect::<Vec<_>>().join(", ")
+    };
+    format!(
+        "LiveAudio {version}
+OS: {} {}
+ASR backend: {}
+GPU: {gpu}",
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        backend.unwrap_or("not running"),
+    )
+}
+
+#[tauri::command]
+pub async fn get_support_environment(state: State<'_, AppState>) -> Result<String, String> {
+    let backend = state.active_backend.read().await.as_ref().map(|(name, _)| name.clone());
+    let gpus = tokio::task::spawn_blocking(detect_gpu_adapters)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(support_environment_text(env!("CARGO_PKG_VERSION"), backend.as_deref(), &gpus))
+}
+
+pub(crate) const OBS_OVERLAY_RELATIVE: &str = "assets/subtitulos_obs.html";
 
 /// Find the OBS overlay: bundled resource directory first, then dev checkout fallbacks.
 pub(crate) fn resolve_obs_overlay_path(resource_dir: Option<&Path>) -> Option<PathBuf> {
+    let exe_candidates: Vec<PathBuf> = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|p| p.to_path_buf()))
+        .map(|dir| {
+            vec![
+                dir.join(OBS_OVERLAY_RELATIVE),
+                dir.join("..").join(OBS_OVERLAY_RELATIVE),
+                dir.join("../..").join(OBS_OVERLAY_RELATIVE),
+            ]
+        })
+        .unwrap_or_default();
+
     resource_dir
         .map(|dir| dir.join(OBS_OVERLAY_RELATIVE))
         .into_iter()
+        .chain(exe_candidates)
         .chain(
             ["", "../", "../../"]
                 .iter()
@@ -2041,14 +2785,12 @@ pub(crate) fn resolve_obs_overlay_path(resource_dir: Option<&Path>) -> Option<Pa
         .map(|path| std::path::absolute(&path).unwrap_or(path))
 }
 
-/// Build a percent-encoded `file:///` URL for the overlay with the `?port=` query.
+/// Build a loopback HTTP URL for the overlay with the `?port=` query.
 pub(crate) fn obs_overlay_url(path: &Path, port: u16) -> Result<String, String> {
-    let raw = path.to_string_lossy();
-    let clean = raw.strip_prefix(r"\\?\").unwrap_or(&raw);
-    let mut url = tauri::Url::from_file_path(clean)
-        .map_err(|_| format!("OBS overlay path is not absolute: {}", path.display()))?;
-    url.set_query(Some(&format!("port={port}")));
-    Ok(url.to_string())
+    if !path.is_absolute() {
+        return Err(format!("OBS overlay path is not absolute: {}", path.display()));
+    }
+    Ok(format!("http://127.0.0.1:{port}/overlay?port={port}"))
 }
 
 /// Resolve OBS overlay URL and browser source recommendations.
@@ -2084,7 +2826,7 @@ pub async fn get_obs_overlay_info(
         port,
         width: 1920,
         height: 1080,
-        instructions: "En OBS Studio: Añadir fuente -> 'Navegador' (Browser Source). Marca 'Archivo local' desmarcado, pega la URL en el campo URL, y establece Ancho: 1920, Alto: 1080, FPS: 60.".to_string(),
+        instructions: "En OBS Studio: Añadir fuente -> 'Navegador' (Browser Source). Desmarca 'Archivo local', pega la URL en el campo URL, y establece Ancho: 1920, Alto: 1080, FPS: 60.".to_string(),
     })
 }
 
@@ -2124,6 +2866,20 @@ pub async fn export_diagnostics(
     let job_object_support = JobObject::create().is_ok();
     let ports = candidate_ports(config.ws_port, Some(5));
 
+    let logs_dir = get_data_home().join("logs");
+    let read_log_tail = |path: PathBuf| -> Option<String> {
+        let mut file = std::fs::File::open(path).ok()?;
+        let len = file.metadata().ok()?.len();
+        let offset = len.saturating_sub(65_536);
+        use std::io::{Read, Seek, SeekFrom};
+        let _ = file.seek(SeekFrom::Start(offset));
+        let mut buf = Vec::new();
+        let _ = file.read_to_end(&mut buf);
+        Some(String::from_utf8_lossy(&buf).to_string())
+    };
+    let current_log = read_log_tail(logs_dir.join("liveaudio-desktop.log"));
+    let prev_log = read_log_tail(logs_dir.join("liveaudio-desktop.prev.log"));
+
     let mut report = serde_json::json!({
         "timestamp_epoch": now,
         "os": std::env::consts::OS,
@@ -2133,6 +2889,10 @@ pub async fn export_diagnostics(
         "candidate_ports": ports,
         "config": config,
         "service_status": status,
+        "logs": {
+            "current": current_log,
+            "previous": prev_log,
+        },
     });
     crate::diagnostics::scrub_diagnostics_value(&mut report);
 
@@ -2205,6 +2965,8 @@ pub async fn send_test_subtitle(
 /// Retrieve recent lines from the application log file.
 #[tauri::command]
 pub async fn get_recent_logs(max_lines: Option<usize>) -> Result<Vec<String>, String> {
+    use std::io::{Read, Seek, SeekFrom};
+
     let limit = max_lines.unwrap_or(100);
     let data_home = liveaudio_core::config::get_data_home();
     let log_file_path = data_home.join("logs").join("liveaudio-desktop.log");
@@ -2213,14 +2975,27 @@ pub async fn get_recent_logs(max_lines: Option<usize>) -> Result<Vec<String>, St
         return Ok(Vec::new());
     }
 
-    let content = std::fs::read_to_string(&log_file_path).map_err(|e| e.to_string())?;
-    let lines: Vec<String> = content
-        .lines()
+    let mut file = std::fs::File::open(&log_file_path).map_err(|e| e.to_string())?;
+    let file_len = file.metadata().map_err(|e| e.to_string())?.len();
+    let offset = file_len.saturating_sub(65_536);
+    file.seek(SeekFrom::Start(offset)).map_err(|e| e.to_string())?;
+
+    let mut buf = Vec::new();
+    file.read_to_end(&mut buf).map_err(|e| e.to_string())?;
+
+    let text = String::from_utf8_lossy(&buf);
+    let mut lines: Vec<&str> = text.lines().collect();
+    if offset > 0 && !lines.is_empty() {
+        lines.remove(0);
+    }
+
+    let result_lines: Vec<String> = lines
+        .into_iter()
         .rev()
         .take(limit)
         .map(|s| s.to_string())
         .collect();
-    let mut reversed = lines;
+    let mut reversed = result_lines;
     reversed.reverse();
     Ok(reversed)
 }
@@ -2249,7 +3024,7 @@ pub fn is_text_blacklisted(text: &str, blacklist_csv: &str) -> bool {
     }
     let text_folded = fold_diacritics(trimmed);
     blacklist_csv
-        .split(|c| c == ',' || c == ';' || c == '\n' || c == '\r')
+        .split([',', ';', '\n', '\r'])
         .map(|entry| {
             entry
                 .trim()
@@ -2389,4 +3164,65 @@ pub fn trim_boundary_overlap_with_max(prev: &str, curr: &str, max_words: usize) 
     }
 
     curr_trimmed.to_string()
+}
+
+#[tauri::command]
+pub async fn check_for_updates(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    force: bool,
+) -> Result<Option<crate::dto::UpdateMetadataDto>, String> {
+    crate::updater::check_for_updates_internal(&app, &state, force).await
+}
+
+#[tauri::command]
+pub async fn install_update_now(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    crate::updater::install_update_now_internal(&app, &state).await
+}
+
+#[tauri::command]
+pub async fn set_install_on_close(
+    state: tauri::State<'_, AppState>,
+    enabled: bool,
+) -> Result<(), String> {
+    state
+        .updater_install_on_close
+        .store(enabled, std::sync::atomic::Ordering::SeqCst);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_updater_status(
+    state: tauri::State<'_, AppState>,
+) -> Result<crate::dto::UpdaterStatusDto, String> {
+    Ok(crate::updater::get_updater_status_internal(&state).await)
+}
+
+/// Returns the backup name of a corrupt `config.json` once, then `None`.
+#[tauri::command]
+pub fn take_startup_warning(state: tauri::State<'_, AppState>) -> Option<String> {
+    state.startup_warning.lock().ok()?.take()
+}
+
+#[cfg(test)]
+mod commands_tests {
+    use super::*;
+
+    #[test]
+    fn test_obs_overlay_relative_path() {
+        assert_eq!(OBS_OVERLAY_RELATIVE, "assets/subtitulos_obs.html");
+    }
+
+    #[test]
+    fn test_desktop_runtime_preflight_error_wording() {
+        let error = RuntimeError::DependenciesUnavailable {
+            details: "ort.dll".to_string(),
+        };
+        let message = desktop_runtime_preflight_error(&error);
+        assert!(!message.contains("Python"));
+        assert!(message.contains("ASR runtime"));
+    }
 }

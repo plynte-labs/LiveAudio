@@ -7,6 +7,7 @@
   <title data-i18n="app_title">LiveAudio Desktop</title>
   <link rel="icon" type="image/png" href="assets/logo.png">
   <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="overlay-preview.css">
 </head>
 <body>
   <div id="app-container" class="asr-lang-es">
@@ -15,8 +16,11 @@
       <div class="brand" data-tauri-drag-region>
         <img src="assets/logo.png" alt="LiveAudio Fran" class="brand-logo" data-tauri-drag-region>
         <h1>LiveAudio</h1>
-        <span class="brand-badge" data-i18n="app_version">v1.5.1</span>
-        <a id="author-profile-link" class="author-profile-link" href="https://github.com/franguh" target="_blank" rel="noopener noreferrer" data-i18n="author_credit" data-i18n-aria-label="author_credit_accessible">by Franguh</a>
+        <button type="button" id="btn-about" class="brand-badge" aria-label="About LiveAudio" data-i18n-aria-label="btn_about" title="About LiveAudio" data-i18n-title="btn_about" aria-haspopup="dialog"><span data-i18n="app_version">v1.6.0</span><span class="brand-badge-more"><span aria-hidden="true">&middot;</span> <span data-i18n="badge_info_label">Info y estadísticas</span></span><svg class="lucide lucide-chevron-right" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></button>
+        <button type="button" id="badge-header-update" class="badge-header-update" role="status" aria-live="polite" title="Actualización disponible" data-i18n-title="lbl_group_updates" hidden>
+          <span class="badge-update-dot"></span>
+          <span id="badge-header-update-text">Update</span>
+        </button>
       </div>
 
       <div class="header-right">
@@ -92,12 +96,46 @@
           <nav class="tab-nav" role="tablist" data-i18n-aria-label="settings_tabs_label" aria-label="Configuración">
             <button type="button" id="tab-setup-tab" class="tab-btn active" role="tab" aria-selected="true" aria-controls="tab-setup" tabindex="0" data-tab="tab-setup" data-i18n="tab_setup">Inicio</button>
             <button type="button" id="tab-subtitles-tab" class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-subtitles" tabindex="-1" data-tab="tab-subtitles" data-i18n="tab_subtitles">Subtítulos</button>
+            <button type="button" id="tab-style-tab" class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-style" tabindex="-1" data-tab="tab-style" data-i18n="tab_style">Estilo</button>
             <button type="button" id="tab-advanced-tab" class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-advanced" tabindex="-1" data-tab="tab-advanced" data-i18n="tab_advanced">Avanzado</button>
             <button type="button" id="tab-files-tab" class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-files" tabindex="-1" data-tab="tab-files" data-i18n="tab_files">Archivos</button>
           </nav>
 
           <div class="tab-content">
             <section id="tab-setup" class="tab-pane active" role="tabpanel" aria-labelledby="tab-setup-tab" tabindex="0">
+              <div id="card-nvidia-runtime" class="release-notes-card nvidia-card" hidden>
+                <div class="release-notes-header">
+                  <span class="release-notes-badge" data-i18n="nvidia_card_title">Tu tarjeta NVIDIA puede transcribir más rápido</span>
+                </div>
+                <div id="nvidia-offer">
+                  <p class="form-hint" data-i18n="nvidia_card_benefit">Subtítulos hasta 3 veces más rápidos usando tu GPU.</p>
+                  <p class="form-hint"><strong id="nvidia-gpu-name"></strong> · <span data-i18n="nvidia_card_size">Descarga única de ~1,2 GB desde NVIDIA.</span></p>
+                  <div class="nvidia-card-actions">
+                    <button id="btn-nvidia-enable" class="btn-primary-action" type="button" data-i18n="btn_nvidia_enable">Activar aceleración</button>
+                    <button id="btn-nvidia-dismiss" class="btn-link" type="button" data-i18n="btn_nvidia_dismiss">Ahora no</button>
+                  </div>
+                </div>
+                <div id="nvidia-install-progress" hidden>
+                  <span id="nvidia-install-detail" class="form-hint" role="status" aria-live="polite"></span>
+                  <progress id="nvidia-install-meter" max="100"></progress>
+                  <div class="nvidia-card-actions">
+                    <button id="btn-nvidia-cancel" class="btn-secondary btn-compact" type="button" data-i18n="btn_nvidia_cancel">Cancelar descarga</button>
+                  </div>
+                </div>
+                <div id="nvidia-result" role="status" aria-live="polite" hidden>
+                  <p class="form-hint"><strong id="nvidia-result-title"></strong></p>
+                  <span id="nvidia-result-text" class="form-hint"></span>
+                  <details id="nvidia-error-details" hidden>
+                    <summary data-i18n="btn_nvidia_error_details">Ver detalles</summary>
+                    <pre id="nvidia-error-text" class="nvidia-error-text"></pre>
+                  </details>
+                  <div class="nvidia-card-actions">
+                    <button id="btn-nvidia-restart" class="btn-primary-action" type="button" data-i18n="btn_nvidia_restart" hidden>Reiniciar servicio</button>
+                    <button id="btn-nvidia-retry" class="btn-secondary" type="button" data-i18n="btn_nvidia_retry" hidden>Reintentar</button>
+                  </div>
+                </div>
+              </div>
+
               <div class="form-group">
                 <label for="select-audio-device" data-i18n="lbl_audio_device">Fuente de audio</label>
                 <select id="select-audio-device" class="form-control">
@@ -133,20 +171,6 @@
             <section id="tab-subtitles" class="tab-pane" role="tabpanel" aria-labelledby="tab-subtitles-tab" tabindex="0" hidden>
               <div class="form-row">
                 <div class="form-group">
-                  <label for="select-subtitle-style" data-i18n="lbl_sub_style">Tema de Subtítulos</label>
-                  <select id="select-subtitle-style" class="form-control">
-                    <option value="default" selected data-i18n="opt_style_default">Default (Limpio con sombra)</option>
-                    <option value="karaoke" data-i18n="opt_style_karaoke">Karaoke (Palabra por palabra dorado)</option>
-                    <option value="neon" data-i18n="opt_style_neon">Neon Cyberpunk (Cian brillante)</option>
-                    <option value="minimal" data-i18n="opt_style_minimal">Minimalista (Sin bordes)</option>
-                    <option value="bold" data-i18n="opt_style_bold">Bold Impact (Mayúsculas oscuras)</option>
-                    <option value="rgb" data-i18n="opt_style_rgb">RGB Fade (Suave vertical)</option>
-                    <option value="typewriter" data-i18n="opt_style_typewriter">Typewriter (Máquina de escribir)</option>
-                  </select>
-                  <span class="form-hint" data-i18n="hint_sub_style">Estilo visual del subtítulo (tipografía y colores) renderizado en OBS.</span>
-                </div>
-
-                <div class="form-group">
                   <label for="select-display-mode" data-i18n="lbl_display_mode">Modo de Visualización</label>
                   <select id="select-display-mode" class="form-control">
                     <option value="adaptive" selected data-i18n="opt_mode_adaptive">Adaptive (Inteligente)</option>
@@ -168,127 +192,384 @@
 
             </section>
 
-            <section id="tab-advanced" class="tab-pane" role="tabpanel" aria-labelledby="tab-advanced-tab" tabindex="0" hidden>
-              <div class="form-row">
+            <section id="tab-style" class="tab-pane" role="tabpanel" aria-labelledby="tab-style-tab" tabindex="0" hidden>
+              <div class="card style-card" id="card-style-choose">
+                <div class="card-title"><span data-i18n="title_style_card_style">Estilo</span></div>
                 <div class="form-group">
-                  <label for="select-model-size" data-i18n="lbl_model_size">Tamaño del modelo Whisper</label>
-                  <select id="select-model-size" class="form-control">
-                    <option value="tiny (Más rápido, baja precisión)" data-i18n="opt_model_tiny">tiny (Más rápido, baja precisión)</option>
-                    <option value="base (Rápido)" data-i18n="opt_model_base">base (Rápido)</option>
-                    <option value="small (Balance CPU)" selected data-i18n="opt_model_small">small (Balance CPU / GPU equilibrado)</option>
-                    <option value="turbo (Máxima precisión GPU)" data-i18n="opt_model_turbo">turbo (Máxima precisión GPU)</option>
+                  <label for="select-subtitle-style" data-i18n="lbl_sub_builtin_style">Estilo predefinido</label>
+                  <select id="select-subtitle-style" class="form-control">
+                    <option value="default" selected data-i18n="opt_style_default">Default (Limpio con sombra)</option>
+                    <option value="karaoke" data-i18n="opt_style_karaoke">Karaoke (Palabra por palabra dorado)</option>
+                    <option value="neon" data-i18n="opt_style_neon">Neon Cyberpunk (Cian brillante)</option>
+                    <option value="minimal" data-i18n="opt_style_minimal">Minimalista (Sin bordes)</option>
+                    <option value="bold" data-i18n="opt_style_bold">Bold Impact (Mayúsculas oscuras)</option>
+                    <option value="rgb" data-i18n="opt_style_rgb">RGB Fade (Suave vertical)</option>
+                    <option value="typewriter" data-i18n="opt_style_typewriter">Typewriter (Máquina de escribir)</option>
+                    <optgroup id="optgroup-sub-presets" label="Mis estilos" hidden></optgroup>
                   </select>
-                  <span class="form-hint" data-i18n="hint_model_size">Los modelos grandes pueden consumir más memoria de GPU.</span>
+                  <span class="form-hint" data-i18n="hint_sub_builtin_style">Al elegir un estilo se guarda y se envía a OBS al instante; aplica a los próximos subtítulos y a la prueba.</span>
                 </div>
                 <div class="form-group">
-                  <label for="select-compute-device" data-i18n="lbl_compute_device">Dispositivo de cómputo</label>
-                  <select id="select-compute-device" class="form-control">
-                    <option value="cuda" id="device-cuda" data-i18n="opt_cuda">CUDA (GPU Nvidia - Recomendado)</option>
-                    <option value="cpu" id="device-cpu" data-i18n="opt_cpu" selected>CPU (Sin GPU dedicada)</option>
-                  </select>
-                  <span class="form-hint" data-i18n="hint_compute_device">CUDA usa la GPU compatible; CPU es una alternativa si no hay GPU disponible.</span>
+                  <label for="input-sub-preset-name" data-i18n="lbl_sub_preset_name">Nombre del preset</label>
+                  <input type="text" id="input-sub-preset-name" class="form-control" maxlength="40">
                 </div>
-              </div>
-              <div class="form-group" id="group-cpu-threads">
-                <label for="slider-cpu-threads" data-i18n="lbl_cpu_threads">Hilos de CPU</label>
-                <div class="slider-container">
-                  <input type="range" id="slider-cpu-threads" min="1" max="16" step="1" value="8">
-                  <span id="val-cpu-threads" class="slider-value">8</span>
+                <div class="style-actions">
+                  <button type="button" id="btn-sub-preset-save" class="btn-secondary btn-compact" data-i18n="btn_sub_preset_save">Guardar</button>
+                  <button type="button" id="btn-sub-preset-delete" class="btn-secondary btn-compact" data-i18n="btn_sub_preset_delete">Eliminar</button>
+                  <button type="button" id="btn-sub-style-reset" class="btn-secondary btn-compact" data-i18n="btn_sub_style_reset">Restablecer estilo</button>
+                  <span id="chip-sub-style-unsaved" class="chip-unsaved" role="status" aria-live="polite" data-i18n="sub_style_unsaved" hidden>Cambios sin guardar</span>
                 </div>
-                <span class="form-hint" data-i18n="hint_cpu_threads">Número de hilos que se usarán al transcribir con CPU.</span>
-              </div>
-              <div class="form-row">
-                <div class="form-group">
-                  <label for="slider-silence-timeout" data-i18n="lbl_silence_timeout">Pausa para cerrar una frase</label>
-                  <div class="slider-container"><input type="range" id="slider-silence-timeout" min="0.3" max="2.0" step="0.1" value="0.8"><span id="val-silence-timeout" class="slider-value">0.8s</span></div>
-                  <span class="form-hint" data-i18n="hint_silence_timeout">Pausa de voz antes de procesar la frase.</span>
-                </div>
-                <div class="form-group">
-                  <label for="slider-max-chunk" data-i18n="lbl_max_chunk">Duración máxima del segmento</label>
-                  <div class="slider-container"><input type="range" id="slider-max-chunk" min="1.0" max="60.0" step="0.5" value="5.0"><span id="val-max-chunk" class="slider-value">5.0s</span></div>
-                  <span class="form-hint" data-i18n="hint_max_chunk">Límite antes de procesar un segmento de audio.</span>
-                </div>
-              </div>
-              <div class="form-row">
-                <div class="form-group">
-                  <label for="slider-vad-pad" data-i18n="lbl_vad_pad">Audio previo a la voz (VAD)</label>
-                  <div class="slider-container"><input type="range" id="slider-vad-pad" min="0" max="500" step="25" value="200"><span id="val-vad-pad" class="slider-value">200ms</span></div>
-                  <span class="form-hint" data-i18n="hint_vad_pad">Audio previo incluido para evitar cortar el inicio de una palabra.</span>
-                </div>
-                <div class="form-group">
-                  <label for="slider-vad-threshold" data-i18n="lbl_vad_threshold">Sensibilidad de voz</label>
-                  <div class="slider-container"><input type="range" id="slider-vad-threshold" min="0.1" max="0.9" step="0.05" value="0.5"><span id="val-vad-threshold" class="slider-value">0.5</span></div>
-                  <span class="form-hint" data-i18n="hint_vad_threshold">Un valor mayor requiere una voz más fuerte para activarse.</span>
-                </div>
-              </div>
-              <div class="form-group">
-                <label class="switch-label">
-                  <span class="switch-track"><input type="checkbox" id="check-rnnoise-enabled" class="switch-input" aria-describedby="hint-rnnoise-enabled"><span class="switch-slider"></span></span>
-                  <span data-i18n="lbl_rnnoise_enabled">Local RNNoise noise suppression</span>
-                </label>
-                <span id="hint-rnnoise-enabled" class="form-hint" data-i18n="hint_rnnoise_enabled">When enabled, local RNNoise runs before VAD after the service restarts.</span>
-              </div>
-              <div class="form-group">
-                <label class="switch-label">
-                  <span class="switch-track"><input type="checkbox" id="check-acoustic-events-enabled" class="switch-input" aria-describedby="hint-acoustic-events-enabled"><span class="switch-slider"></span></span>
-                  <span data-i18n="lbl_acoustic_events_enabled">Acoustic speech metadata events</span>
-                </label>
-                <span id="hint-acoustic-events-enabled" class="form-hint" data-i18n="hint_acoustic_events_enabled">VAD start/end events containing metadata only are sent to connected WebSocket clients after restart.</span>
-              </div>
-              <div class="form-group">
-                <label for="select-backlog-policy" data-i18n="lbl_backlog_policy">Entrega de subtítulos atrasados</label>
-                <select id="select-backlog-policy" class="form-control">
-                  <option value="auto" selected data-i18n="opt_backlog_auto">Automática (Recomendado)</option>
-                  <option value="live_only" data-i18n="opt_backlog_live_only">Solo subtítulos en vivo</option>
-                  <option value="send_all" data-i18n="opt_backlog_send_all">Enviar todos</option>
-                </select>
-                <span class="form-hint" data-i18n="hint_backlog_policy">Controla cómo se entregan a OBS los subtítulos que se acumulan.</span>
-              </div>
-              <div class="form-row">
-                <div class="form-group">
-                  <label for="slider-max-live-delay" data-i18n="lbl_max_live_delay">Retraso máximo</label>
-                  <div class="slider-container"><input type="range" id="slider-max-live-delay" min="1.0" max="60.0" step="1.0" value="10.0"><span id="val-max-live-delay" class="slider-value">10.0s</span></div>
-                  <span class="form-hint" data-i18n="hint_max_live_delay">Retraso permitido antes de descartar subtítulos acumulados.</span>
-                </div>
-                <div class="form-group">
-                  <label for="slider-catchup-interval" data-i18n="lbl_catchup_interval">Pausa entre subtítulos atrasados</label>
-                  <div class="slider-container"><input type="range" id="slider-catchup-interval" min="0.1" max="5.0" step="0.1" value="1.5"><span id="val-catchup-interval" class="slider-value">1.5s</span></div>
-                  <span class="form-hint" data-i18n="hint_catchup_interval">Pausa entre elementos históricos enviados a OBS.</span>
-                </div>
-              </div>
-              <div class="form-group">
-                <label for="input-ws-port" data-i18n="lbl_ws_port">Puerto local de OBS</label>
-                  <input type="number" id="input-ws-port" class="form-control" value="8765" min="1024" max="65535">
-                <span class="form-hint" data-i18n="hint_ws_port">Puerto local que usa la conexión WebSocket para OBS.</span>
+                <span id="sub-style-status" class="form-hint" role="status" aria-live="polite"></span>
               </div>
 
-              <div class="form-group" id="group-blacklist">
-                <div class="lang-header-row" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-                  <div style="display: flex; align-items: center; gap: 8px;">
-                    <label for="input-blacklist" id="lbl-blacklist" data-i18n="lbl_blacklist">Filtro de Frases Alucinadas (Blacklist)</label>
-                    <span id="badge-blacklist-lang" class="badge-lang-indicator">🇪🇸 ES</span>
+              <div class="card style-card" id="card-style-preview">
+                <div class="card-title"><span data-i18n="title_style_card_preview">Vista previa</span></div>
+                <div class="sub-preview-row">
+                  <div id="sub-style-preview" class="sub-style-preview" aria-label="Así se verán tus subtítulos">
+                    <span id="sub-style-preview-text" class="sub-box visible style-default" data-i18n="sub_style_preview_text">Así se verán tus subtítulos</span>
+                  </div>
+                  <button type="button" id="btn-sub-preview-play" class="btn-secondary btn-compact" title="Reproducir animación" data-i18n-title="title_sub_preview_play" data-i18n-aria-label="title_sub_preview_play" aria-label="Reproducir animación">
+                    <svg class="lucide lucide-play" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"/></svg>
+                  </button>
+                </div>
+                <span class="form-hint" data-i18n="hint_sub_style_live">Los cambios se envían a OBS al instante.</span>
+              </div>
+
+              <div class="card style-card" id="card-style-text">
+                <div class="card-title"><span data-i18n="title_style_card_text">Texto</span></div>
+                <div class="form-row">
+                  <div class="form-group">
+                    <label for="select-sub-font" data-i18n="lbl_sub_font">Tipografía</label>
+                    <select id="select-sub-font" class="form-control"></select>
+                  </div>
+
+                  <div class="form-group">
+                    <label for="input-sub-font-size" data-i18n="lbl_sub_font_size">Tamaño (px)</label>
+                    <input type="number" id="input-sub-font-size" class="form-control" min="12" max="120" step="1" value="42">
+                  </div>
+
+                  <div class="form-group">
+                    <label for="select-sub-weight" data-i18n="lbl_sub_weight">Grosor</label>
+                    <select id="select-sub-weight" class="form-control">
+                      <option value="400" data-i18n="opt_weight_400">Normal (400)</option>
+                      <option value="700" data-i18n="opt_weight_700">Negrita (700)</option>
+                      <option value="900" selected data-i18n="opt_weight_900">Extra negrita (900)</option>
+                    </select>
+                  </div>
+
+                  <div class="form-group">
+                    <label for="input-sub-color" data-i18n="lbl_sub_color">Color del texto</label>
+                    <input type="color" id="input-sub-color" class="form-control" value="#ffffff">
+                  </div>
+
+                  <div class="form-group">
+                    <label for="input-sub-letter-spacing" data-i18n="lbl_sub_letter_spacing">Espaciado entre letras (px)</label>
+                    <div class="slider-container">
+                      <input type="range" id="input-sub-letter-spacing" min="-2" max="10" step="0.5" value="0">
+                      <span id="val-sub-letter-spacing" class="slider-val">0px</span>
+                    </div>
+                  </div>
+
+                  <div class="form-group">
+                    <label for="input-sub-word-spacing" data-i18n="lbl_sub_word_spacing">Espaciado entre palabras</label>
+                    <div class="slider-container">
+                      <input type="range" id="input-sub-word-spacing" min="-2" max="20" step="0.5" value="0">
+                      <span id="val-sub-word-spacing" class="slider-val">0px</span>
+                    </div>
                   </div>
                 </div>
-                <textarea id="input-blacklist" class="form-control" rows="2" placeholder="Palabras separadas por comas que se omitirán si Whisper las genera en silencio..."></textarea>
-                <span id="hint-blacklist" class="form-hint" data-i18n="hint_blacklist">Palabras separadas por comas que se omitirán si Whisper las genera en silencio.</span>
               </div>
 
-              <div class="form-group" id="group-prompt">
-                <div class="lang-header-row">
-                  <div class="lang-field-title"><label for="prompt-es" id="lbl-prompt-title" data-i18n="lbl_prompt">Vocabulario y contexto</label><span id="badge-prompt-lang" class="badge-lang-indicator">🇪🇸 ES</span></div>
-                  <button type="button" id="btn-suggest-prompt-es" class="btn-link" data-i18n="btn_use_preset_prompt">Cargar sugerencia</button>
+              <div class="card style-card" id="card-style-background">
+                <div class="card-title"><span data-i18n="title_style_card_background">Fondo</span></div>
+                <div class="form-group">
+                  <label class="switch-label">
+                    <span class="switch-track"><input type="checkbox" id="check-sub-bg-custom" class="switch-input"><span class="switch-slider"></span></span>
+                    <span data-i18n="lbl_sub_bg_custom">Usar fondo personalizado</span>
+                  </label>
                 </div>
-                <textarea id="prompt-es" class="form-control" rows="3" placeholder="Términos técnicos, jerga de juego, nombres propios..." data-i18n-placeholder="ph_prompt_es"></textarea>
-                <span id="hint-prompt" class="form-hint" data-i18n="hint_prompt_es">Añade vocabulario que ayude al reconocimiento en el idioma seleccionado.</span>
+                <div class="form-row">
+                  <div class="form-group">
+                    <label for="input-sub-bg" data-i18n="lbl_sub_bg">Color de fondo</label>
+                    <input type="color" id="input-sub-bg" class="form-control" value="#000000" disabled>
+                  </div>
+                  <div class="form-group">
+                    <label for="input-sub-bg-opacity" data-i18n="lbl_sub_bg_opacity">Opacidad del fondo (%)</label>
+                    <input type="range" id="input-sub-bg-opacity" min="0" max="100" step="5" value="70" disabled>
+                  </div>
+                </div>
               </div>
 
-              <div class="form-group" id="group-runtime-maintenance">
-                <label data-i18n="lbl_runtime_maintenance">Entorno y Mantenimiento de ASR</label>
-                <div class="button-row" style="display: flex; gap: 8px; margin-top: 6px;">
-                  <button id="btn-runtime-repair" class="btn-secondary" type="button" data-i18n="btn_runtime_repair">Reparar entorno de ASR</button>
-                  <button id="btn-runtime-cancel" class="btn-secondary" type="button" data-i18n="btn_runtime_cancel" hidden>Cancelar preparación</button>
+              <div class="card style-card" id="card-style-animation">
+                <div class="card-title"><span data-i18n="title_style_card_animation">Animación</span></div>
+                <div class="form-row">
+                  <div class="form-group">
+                    <label for="select-sub-animation" data-i18n="lbl_sub_animation">Animación</label>
+                    <select id="select-sub-animation" class="form-control">
+                      <option value="pop" selected data-i18n="opt_anim_pop">Aparecer (pop)</option>
+                      <option value="fade" data-i18n="opt_anim_fade">Desvanecer (fade)</option>
+                      <option value="none" data-i18n="opt_anim_none">Ninguna</option>
+                    </select>
+                  </div>
+
+                  <div class="form-group">
+                    <label for="input-sub-anim-duration" data-i18n="lbl_sub_anim_duration">Duración de animación (s)</label>
+                    <input type="number" id="input-sub-anim-duration" class="form-control" min="0.1" max="2" step="0.1" value="0.3">
+                  </div>
+
+                  <div class="form-group">
+                    <label for="input-sub-lifetime" data-i18n="lbl_sub_lifetime">Tiempo en pantalla (s)</label>
+                    <input type="number" id="input-sub-lifetime" class="form-control" min="1.5" max="15" step="0.5" value="5">
+                  </div>
                 </div>
-                <span class="form-hint" data-i18n="hint_runtime_maintenance">Instala o sincroniza las dependencias de Python y modelos para reconocimiento local.</span>
+              </div>
+            </section>
+
+            <section id="tab-advanced" class="tab-pane" role="tabpanel" aria-labelledby="tab-advanced-tab" tabindex="0" hidden>
+              <div class="style-actions adv-actions">
+                <span class="form-hint" data-i18n="adv_intro">Los cambios se aplican al pulsar Guardar. Los ajustes marcados con "Requiere reinicio" se activan cuando el servicio se reinicia.</span>
+                <span id="chip-adv-unsaved" class="chip-unsaved" role="status" aria-live="polite" data-i18n="adv_unsaved" hidden>Cambios sin guardar</span>
+              </div>
+
+              <div class="card adv-card" id="card-adv-engine">
+                <div class="card-title"><span data-i18n="title_adv_engine">Motor y rendimiento</span><span class="badge-restart" data-i18n="badge_restart">Requiere reinicio</span></div>
+                <div class="form-row">
+                  <div class="form-group">
+                    <label for="select-model-size" data-i18n="lbl_model_size">Tamaño del modelo Whisper</label>
+                    <select id="select-model-size" class="form-control">
+                      <option value="tiny (Más rápido, baja precisión)" data-i18n="opt_model_tiny">tiny (Más rápido, baja precisión)</option>
+                      <option value="base (Rápido)" data-i18n="opt_model_base">base (Rápido)</option>
+                      <option value="small (Balance CPU)" selected data-i18n="opt_model_small">small (Balance CPU / GPU equilibrado)</option>
+                      <option value="turbo (Máxima precisión GPU)" data-i18n="opt_model_turbo">turbo (Máxima precisión GPU)</option>
+                    </select>
+                    <span class="form-hint" data-i18n="hint_model_size">Los modelos grandes pueden consumir más memoria de GPU.</span>
+                  </div>
+                  <div class="form-group">
+                    <label for="select-compute-device" data-i18n="lbl_compute_device">Dispositivo de cómputo</label>
+                    <select id="select-compute-device" class="form-control">
+                      <option value="cuda" id="device-cuda" data-i18n="opt_cuda">CUDA (GPU Nvidia - Recomendado)</option>
+                      <option value="cpu" id="device-cpu" data-i18n="opt_cpu" selected>CPU (Sin GPU dedicada)</option>
+                    </select>
+                    <span class="form-hint" data-i18n="hint_compute_device">CUDA usa la GPU compatible; CPU es una alternativa si no hay GPU disponible.</span>
+                  </div>
+                </div>
+                <div class="form-group" id="group-cpu-threads">
+                  <label for="slider-cpu-threads" data-i18n="lbl_cpu_threads">Hilos de CPU</label>
+                  <div class="slider-container">
+                    <input type="range" id="slider-cpu-threads" min="1" max="16" step="1" value="8">
+                    <span id="val-cpu-threads" class="slider-value">8</span>
+                  </div>
+                  <span class="form-hint" data-i18n="hint_cpu_threads">Número de hilos que se usarán al transcribir con CPU.</span>
+                </div>
+                <div class="form-group engine-summary">
+                  <label data-i18n="lbl_gpu_status">Estado del motor</label>
+                  <div class="engine-summary-row">
+                    <div id="engine-status-pill" class="pill state-stopped" role="status" aria-live="polite">
+                      <span class="pill-dot"></span>
+                      <span id="engine-status-text"></span>
+                    </div>
+                    <button id="btn-nvidia-advanced" class="btn-link" type="button" data-i18n="btn_nvidia_enable_link" hidden>Activar aceleración NVIDIA</button>
+                  </div>
+                  <span id="engine-status-reason" class="form-hint"></span>
+                </div>
+                <div class="form-group">
+                  <label for="select-asr-backend" data-i18n="lbl_asr_backend">Motor de transcripción</label>
+                  <select id="select-asr-backend" class="form-control">
+                    <option value="auto" selected data-i18n="opt_asr_backend_auto">Automático (recomendado)</option>
+                    <option value="ort" data-i18n="opt_asr_backend_ort">Compatible (DirectML / CPU)</option>
+                    <option value="ct2_cuda" data-i18n="opt_asr_backend_ct2">NVIDIA CUDA</option>
+                  </select>
+                  <span class="form-hint" data-i18n="hint_asr_backend">Automático usa NVIDIA CUDA cuando está disponible; si no, el modo compatible.</span>
+                </div>
+                <div class="form-group">
+                  <details id="engine-technical-details">
+                    <summary data-i18n="engine_technical_details">Detalles técnicos</summary>
+                    <div id="gpu-status-text" class="form-hint" role="status" style="white-space: pre-line;"></div>
+                  </details>
+                </div>
+                <div class="form-group" id="group-runtime-maintenance">
+                  <label data-i18n="lbl_runtime_maintenance">Entorno y Mantenimiento de ASR</label>
+                  <div class="button-row" style="display: flex; gap: 8px; margin-top: 6px;">
+                    <button id="btn-runtime-repair" class="btn-secondary" type="button" data-i18n="btn_runtime_repair">Reparar entorno de ASR</button>
+                    <button id="btn-runtime-cancel" class="btn-secondary" type="button" data-i18n="btn_runtime_cancel" hidden>Cancelar preparación</button>
+                  </div>
+                  <span class="form-hint" data-i18n="hint_runtime_maintenance">Instala o sincroniza el motor nativo de ASR ONNX y modelos para reconocimiento local.</span>
+                </div>
+              </div>
+
+              <div class="card adv-card" id="card-adv-voice">
+                <div class="card-title"><span data-i18n="title_adv_voice">Detección de voz</span><span class="badge-restart" data-i18n="badge_restart">Requiere reinicio</span></div>
+                <div class="form-row">
+                  <div class="form-group">
+                    <label for="slider-silence-timeout" data-i18n="lbl_silence_timeout">Pausa para cerrar una frase</label>
+                    <div class="slider-container"><input type="range" id="slider-silence-timeout" min="0.3" max="2.0" step="0.1" value="0.5"><span id="val-silence-timeout" class="slider-value">0.5s</span></div>
+                    <span class="form-hint" data-i18n="hint_silence_timeout">Pausa de voz antes de procesar la frase.</span>
+                  </div>
+                  <div class="form-group">
+                    <label for="slider-max-chunk" data-i18n="lbl_max_chunk">Duración máxima del segmento</label>
+                    <div class="slider-container"><input type="range" id="slider-max-chunk" min="1.0" max="30.0" step="0.5" value="3.0"><span id="val-max-chunk" class="slider-value">3.0s</span></div>
+                    <span class="form-hint" data-i18n="hint_max_chunk">Límite antes de procesar un segmento de audio.</span>
+                  </div>
+                </div>
+                <div class="form-row">
+                  <div class="form-group">
+                    <label for="slider-vad-pad" data-i18n="lbl_vad_pad">Audio previo a la voz (VAD)</label>
+                    <div class="slider-container"><input type="range" id="slider-vad-pad" min="0" max="500" step="25" value="200"><span id="val-vad-pad" class="slider-value">200ms</span></div>
+                    <span class="form-hint" data-i18n="hint_vad_pad">Audio previo incluido para evitar cortar el inicio de una palabra.</span>
+                  </div>
+                  <div class="form-group">
+                    <label for="slider-vad-threshold" data-i18n="lbl_vad_threshold">Sensibilidad de voz</label>
+                    <div class="slider-container"><input type="range" id="slider-vad-threshold" min="0.1" max="0.9" step="0.05" value="0.5"><span id="val-vad-threshold" class="slider-value">0.5</span></div>
+                    <span class="form-hint" data-i18n="hint_vad_threshold">Un valor mayor requiere una voz más fuerte para activarse.</span>
+                  </div>
+                </div>
+                <div class="form-group">
+                  <label class="switch-label">
+                    <span class="switch-track"><input type="checkbox" id="check-rnnoise-enabled" class="switch-input" aria-describedby="hint-rnnoise-enabled"><span class="switch-slider"></span></span>
+                    <span data-i18n="lbl_rnnoise_enabled">Local RNNoise noise suppression</span>
+                  </label>
+                  <span id="hint-rnnoise-enabled" class="form-hint" data-i18n="hint_rnnoise_enabled">When enabled, local RNNoise runs before VAD after the service restarts.</span>
+                </div>
+              </div>
+
+              <div class="card adv-card" id="card-adv-subtitles">
+                <div class="card-title"><span data-i18n="title_adv_subtitles">Subtítulos en vivo</span><span class="badge-restart" data-i18n="badge_restart">Requiere reinicio</span></div>
+                <div class="form-group">
+                  <label class="switch-label">
+                    <span class="switch-track"><input type="checkbox" id="check-live-partial-subtitles-enabled" class="switch-input" aria-describedby="hint-live-partial-subtitles"><span class="switch-slider"></span></span>
+                    <span data-i18n="lbl_live_partial_subtitles">Live partial subtitles</span>
+                  </label>
+                  <span id="hint-live-partial-subtitles" class="form-hint" data-i18n="hint_live_partial_subtitles">Shows provisional text while you speak after restart; adds GPU/CPU load.</span>
+                </div>
+                <div class="form-group">
+                  <label for="select-backlog-policy" data-i18n="lbl_backlog_policy">Entrega de subtítulos atrasados</label>
+                  <select id="select-backlog-policy" class="form-control">
+                    <option value="auto" selected data-i18n="opt_backlog_auto">Automática (Recomendado)</option>
+                    <option value="live_only" data-i18n="opt_backlog_live_only">Solo subtítulos en vivo</option>
+                    <option value="send_all" data-i18n="opt_backlog_send_all">Enviar todos</option>
+                  </select>
+                  <span class="form-hint" data-i18n="hint_backlog_policy">Controla cómo se entregan a OBS los subtítulos que se acumulan.</span>
+                </div>
+                <div class="form-row">
+                  <div class="form-group">
+                    <label for="slider-max-live-delay" data-i18n="lbl_max_live_delay">Retraso máximo</label>
+                    <div class="slider-container"><input type="range" id="slider-max-live-delay" min="1.0" max="60.0" step="1.0" value="10.0"><span id="val-max-live-delay" class="slider-value">10.0s</span></div>
+                    <span class="form-hint" data-i18n="hint_max_live_delay">Retraso permitido antes de descartar subtítulos acumulados.</span>
+                  </div>
+                  <div class="form-group">
+                    <label for="slider-catchup-interval" data-i18n="lbl_catchup_interval">Pausa entre subtítulos atrasados</label>
+                    <div class="slider-container"><input type="range" id="slider-catchup-interval" min="0.1" max="5.0" step="0.1" value="1.5"><span id="val-catchup-interval" class="slider-value">1.5s</span></div>
+                    <span class="form-hint" data-i18n="hint_catchup_interval">Pausa entre elementos históricos enviados a OBS.</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="card adv-card" id="card-adv-vocab">
+                <div class="card-title"><span data-i18n="title_adv_vocab">Vocabulario y filtros</span></div>
+                <div class="form-group" id="group-prompt">
+                  <div class="lang-header-row">
+                    <div class="lang-field-title"><label for="prompt-es" id="lbl-prompt-title" data-i18n="lbl_prompt">Vocabulario y contexto</label><span id="badge-prompt-lang" class="badge-lang-indicator">🇪🇸 ES</span><span class="badge-restart" data-i18n="badge_restart">Requiere reinicio</span></div>
+                    <button type="button" id="btn-suggest-prompt-es" class="btn-link" data-i18n="btn_use_preset_prompt">Cargar sugerencia</button>
+                  </div>
+                  <textarea id="prompt-es" class="form-control" rows="3" placeholder="Términos técnicos, jerga de juego, nombres propios..." data-i18n-placeholder="ph_prompt_es"></textarea>
+                  <span id="hint-prompt" class="form-hint" data-i18n="hint_prompt_es">Añade vocabulario que ayude al reconocimiento en el idioma seleccionado.</span>
+                </div>
+                <div class="form-group" id="group-blacklist">
+                  <div class="lang-header-row" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                      <label for="input-blacklist" id="lbl-blacklist" data-i18n="lbl_blacklist">Filtro de Frases Alucinadas (Blacklist)</label>
+                      <span id="badge-blacklist-lang" class="badge-lang-indicator">🇪🇸 ES</span>
+                    </div>
+                  </div>
+                  <textarea id="input-blacklist" class="form-control" rows="2" placeholder="Palabras separadas por comas que se omitirán si Whisper las genera en silencio..."></textarea>
+                  <span id="hint-blacklist" class="form-hint" data-i18n="hint_blacklist">Palabras separadas por comas que se omitirán si Whisper las genera en silencio.</span>
+                </div>
+              </div>
+
+              <div class="card adv-card" id="card-adv-network">
+                <div class="card-title"><span data-i18n="title_adv_network">OBS e integraciones</span></div>
+                <div class="form-group">
+                  <div class="field-label-row"><label for="input-ws-port" data-i18n="lbl_ws_port">Puerto local de OBS</label><span class="badge-restart" data-i18n="badge_restart">Requiere reinicio</span></div>
+                  <input type="number" id="input-ws-port" class="form-control" value="8765" min="1024" max="65535">
+                  <span class="form-hint" data-i18n="hint_ws_port">Puerto local que usa la conexión WebSocket para OBS.</span>
+                </div>
+                <div class="form-group">
+                  <label class="switch-label">
+                    <span class="switch-track"><input type="checkbox" id="check-acoustic-events-enabled" class="switch-input" aria-describedby="hint-acoustic-events-enabled"><span class="switch-slider"></span></span>
+                    <span data-i18n="lbl_acoustic_events_enabled">Acoustic speech metadata events</span>
+                    <span class="badge-restart" data-i18n="badge_restart">Requiere reinicio</span>
+                  </label>
+                  <span id="hint-acoustic-events-enabled" class="form-hint" data-i18n="hint_acoustic_events_enabled">VAD start/end events containing metadata only are sent to connected WebSocket clients after restart.</span>
+                </div>
+                <div class="form-group">
+                  <label class="switch-label">
+                    <span class="switch-track"><input type="checkbox" id="check-mcp-style-enabled" class="switch-input" aria-describedby="hint-mcp-style-enabled"><span class="switch-slider"></span></span>
+                    <span data-i18n="lbl_mcp_style_enabled">Permitir control de estilos a agentes de IA (MCP - Bajo riesgo)</span>
+                  </label>
+                  <span id="hint-mcp-style-enabled" class="form-hint" data-i18n="hint_mcp_style_enabled">Permite que un asistente de IA local lea y cambie únicamente colores, temas, presets y modo de subtítulos. Desactivado por defecto.</span>
+                </div>
+                <div class="form-group">
+                  <label class="switch-label">
+                    <span class="switch-track"><input type="checkbox" id="check-mcp-system-enabled" class="switch-input" aria-describedby="hint-mcp-system-enabled"><span class="switch-slider"></span></span>
+                    <span data-i18n="lbl_mcp_system_enabled">Permitir control del sistema a agentes de IA (MCP - Riesgo medio)</span>
+                  </label>
+                  <span id="hint-mcp-system-enabled" class="form-hint" data-i18n="hint_mcp_system_enabled">Permite que un asistente de IA local lea y cambie modelo, VAD, dispositivo, prompts y red. La lista de puertos permitidos y rutas nunca son modificables por MCP. Desactivado por defecto.</span>
+                </div>
+              </div>
+
+              <div class="card adv-card" id="card-adv-allowed-origins">
+                <div class="card-title"><span data-i18n="title_allowed_connections">Conexiones locales permitidas</span></div>
+                <span class="form-hint" data-i18n="hint_allowed_connections">Solo para aplicaciones en esta PC. Permitir un puerto deja que cualquier página o app en ese puerto lea los subtítulos en vivo.</span>
+
+                <div class="form-group" style="margin-top: 12px;">
+                  <label data-i18n="lbl_allowed_ports">Puertos permitidos</label>
+                  <div id="allowed-ports-list" class="ports-list" role="list"></div>
+                </div>
+
+                <div class="form-group" style="margin-top: 12px;">
+                  <label for="input-add-allowed-port" data-i18n="lbl_add_port">Añadir puerto</label>
+                  <div style="display: flex; gap: 8px; margin-top: 4px;">
+                    <input type="number" id="input-add-allowed-port" class="form-control" min="1" max="65535" placeholder="5173" aria-describedby="error-add-allowed-port" style="max-width: 140px;">
+                    <button type="button" id="btn-add-allowed-port" class="btn-secondary" data-i18n="btn_add_port">Permitir</button>
+                  </div>
+                  <span id="error-add-allowed-port" class="form-error" role="alert" aria-live="polite" hidden></span>
+                </div>
+
+                <div class="form-group" style="margin-top: 14px;">
+                  <label data-i18n="lbl_recent_blocked">Intentos bloqueados recientes</label>
+                  <div id="recent-blocked-list" class="blocked-list" role="list"></div>
+                </div>
+              </div>
+
+              <div class="card adv-card" id="card-adv-updates">
+                <div class="card-title"><span data-i18n="title_adv_updates">Actualizaciones</span></div>
+                <div class="form-group" id="group-updates">
+                  <label class="switch-label">
+                    <span class="switch-track">
+                      <input type="checkbox" id="check-updates-enabled" class="switch-input" checked>
+                      <span class="switch-slider"></span>
+                    </span>
+                    <span data-i18n="lbl_check_updates_auto">Buscar actualizaciones automáticamente</span>
+                  </label>
+                  <span class="form-hint" data-i18n="hint_check_updates_auto">LiveAudio busca actualizaciones en GitHub Releases cada 24 h. El audio y las transcripciones nunca salen de tu ordenador.</span>
+
+                  <div class="updater-actions-row" style="display: flex; align-items: center; gap: 8px; margin-top: 8px;">
+                    <button id="btn-check-now" class="btn-secondary" type="button" data-i18n="btn_check_now">Buscar ahora</button>
+                    <span id="updater-status" class="updater-status-text" role="status" aria-live="polite"></span>
+                  </div>
+
+                  <div id="card-release-notes" class="release-notes-card" hidden>
+                    <div class="release-notes-header">
+                      <span id="update-available-title" class="release-notes-badge" data-i18n="status_update_available">Nueva versión disponible</span>
+                    </div>
+                    <div id="release-notes-body" class="release-notes-body"></div>
+                    <div class="release-notes-actions">
+                      <button id="btn-install-now" class="btn-primary" type="button" data-i18n="btn_install_now">Instalar y reiniciar</button>
+                      <button id="btn-install-on-close" class="btn-secondary" type="button" data-i18n="btn_install_on_close">Instalar al cerrar</button>
+                    </div>
+                    <span id="status-update-busy" class="form-hint update-busy-hint" data-i18n="status_update_deferred_busy" hidden>Instalación en espera (transmisión activa)</span>
+                  </div>
+                </div>
               </div>
             </section>
 
@@ -368,6 +649,7 @@
             <div class="feed-title-group">
               <span data-i18n="title_subtitles_feed">Feed de Subtítulos en Vivo</span>
               <span id="feed-count-badge" class="badge-counter" title="Subtítulos en búfer" data-i18n-title="title_feed_count">0</span>
+              <span id="feed-live-badge" class="badge badge-feed-idle" data-i18n="feed_badge_idle">Inactivo</span>
             </div>
             <div class="feed-controls">
               <button id="btn-test-subtitle" class="btn-secondary btn-compact" type="button" data-i18n="btn_test_subtitle" title="Enviar subtítulo de prueba" data-i18n-title="title_test_subtitle">
@@ -384,6 +666,7 @@
               Los subtítulos transcritos aparecerán aquí en tiempo real como un chat en vivo...
             </div>
           </div>
+          <div id="feed-partial-line" class="feed-partial-line" hidden aria-hidden="true"></div>
         </div>
 
         <!-- OBS Studio Integration Card -->
@@ -395,7 +678,7 @@
           <div class="form-group">
             <label for="input-obs-url" data-i18n="lbl_obs_url">URL de Fuente de Navegador (Browser Source)</label>
             <div class="obs-url-container">
-              <input type="text" id="input-obs-url" class="obs-url-input" readonly value="file:///E:/LiveAudio/liveaudio/assets/subtitulos_obs.html?port=8765">
+              <input type="text" id="input-obs-url" class="obs-url-input" readonly value="http://127.0.0.1:8765/overlay?port=8765">
               <button id="btn-copy-obs-url" class="btn-secondary btn-copy-url" data-i18n="btn_copy_url">Copiar URL</button>
             </div>
           </div>
@@ -407,7 +690,8 @@
               1. En OBS, haz clic en el botón <strong>+</strong> en Fuentes y selecciona <strong>Navegador</strong>.<br>
               2. Desmarca "Archivo local" y pega la URL de arriba en el campo <strong>URL</strong>.<br>
               3. Ajusta <strong>Ancho: 1920</strong> y <strong>Alto: 1080</strong>, FPS: 60.<br>
-              4. Los subtítulos se mostrarán en vivo con fondo transparente.
+              4. Los subtítulos se mostrarán en vivo con fondo transparente.<br>
+              5. ¿Se ven al abrir la URL en el navegador pero no en OBS? Abre las propiedades de la fuente Navegador y pulsa <strong>Actualizar la caché de la página actual</strong>.
             </div>
           </details>
         </div>
@@ -437,7 +721,7 @@
       <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title" aria-describedby="modal-message">
         <div class="modal-header">
           <div class="modal-header-title">
-            <span id="modal-icon" class="modal-icon">⚠️</span>
+            <span id="modal-icon" class="modal-icon"><svg class="lucide lucide-triangle-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg></span>
             <h3 id="modal-title" class="modal-title">Confirmar Acción</h3>
           </div>
           <button id="modal-btn-close" class="modal-btn-close" type="button" aria-label="Cerrar modal">×</button>
@@ -445,6 +729,7 @@
         <div class="modal-body">
           <p id="modal-message" class="modal-message">¿Estás seguro de continuar?</p>
           <p id="modal-detail" class="modal-detail" hidden></p>
+          <div id="modal-links" class="modal-links" hidden></div>
         </div>
         <div class="modal-footer">
           <button id="modal-btn-cancel" class="btn-secondary" type="button">Cancelar</button>
@@ -452,6 +737,47 @@
         </div>
       </div>
     </div>
+
+    <div id="about-modal" class="modal-backdrop" hidden>
+      <div class="modal-card about-card" role="dialog" aria-modal="true" aria-labelledby="about-title">
+        <div class="modal-header">
+          <h3 id="about-title" class="modal-title"><span data-i18n="about_title">Acerca de LiveAudio</span> <span class="about-version" data-i18n="app_version">v1.6.0</span></h3>
+          <button id="btn-about-close" class="modal-btn-close" type="button" aria-label="Cerrar" data-i18n-aria-label="about_close">×</button>
+        </div>
+        <div class="modal-body about-body">
+          <section class="about-stats" aria-labelledby="about-stats-title">
+            <h4 id="about-stats-title" class="about-section-title" data-i18n="about_stats_title">Tu uso</h4>
+            <dl id="about-stats-grid" class="about-stats-grid">
+              <div class="about-stat"><dt data-i18n="about_stat_time">Tiempo transcrito</dt><dd id="about-stat-time">0 min</dd></div>
+              <div class="about-stat"><dt data-i18n="about_stat_subtitles">Subtítulos generados</dt><dd id="about-stat-subtitles">0</dd></div>
+              <div class="about-stat"><dt data-i18n="about_stat_sessions">Sesiones</dt><dd id="about-stat-sessions">0</dd></div>
+            </dl>
+            <p id="about-empty" class="about-note" data-i18n="about_stats_empty" hidden>Aún no hay datos.</p>
+            <p class="about-note"><span id="about-since"></span> <span data-i18n="about_stats_local">Estas cifras se guardan solo en este equipo.</span></p>
+          </section>
+          <section class="about-support" aria-labelledby="about-support-title">
+            <h4 id="about-support-title" class="about-section-title" data-i18n="about_support_title">Ayuda y apoyo</h4>
+            <button id="btn-about-report" class="about-action" type="button">
+              <svg class="lucide lucide-bug" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m8 2 1.88 1.88"/><path d="M14.12 3.88 16 2"/><path d="M9 7.13v-1a3.003 3.003 0 1 1 6 0v1"/><path d="M12 20c-3.3 0-6-2.7-6-6v-3a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v3c0 3.3-2.7 6-6 6"/><path d="M12 20v-9"/><path d="M6.53 9C4.6 8.8 3 7.1 3 5"/><path d="M6 13H2"/><path d="M3 21c0-2.1 1.7-3.9 3.8-4"/><path d="M20.97 5c0 2.1-1.6 3.8-3.5 4"/><path d="M22 13h-4"/><path d="M17.2 17c2.1.1 3.8 1.9 3.8 4"/></svg>
+              <span data-i18n="about_report">Reportar un problema</span>
+            </button>
+            <button id="btn-about-star" class="about-action" type="button">
+              <svg class="lucide lucide-star" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z"/></svg>
+              <span data-i18n="about_star">Dar una estrella en GitHub</span>
+            </button>
+            <button id="btn-about-sponsor" class="about-action" type="button">
+              <svg class="lucide lucide-heart" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></svg>
+              <span data-i18n="about_sponsor">Apoyar el proyecto</span>
+            </button>
+            <p class="about-note" data-i18n="about_support_note">LiveAudio es gratis y de código abierto.</p>
+          </section>
+        </div>
+        <div class="modal-footer about-footer">
+          <span>MIT · Plynte Labs / <a id="author-profile-link" class="author-profile-link" href="https://github.com/franguh" target="_blank" rel="noopener noreferrer" data-i18n-aria-label="author_credit_accessible">FranGuh</a></span>
+        </div>
+      </div>
+    </div>
+    <!-- /about-modal -->
 
     <!-- Stream-Chat Subtitle Action Dropdown Menu -->
     <div id="feed-action-menu" class="feed-action-dropdown" hidden role="menu" aria-label="Opciones de subtítulo" data-i18n-aria-label="feed_item_menu_title">

@@ -3,6 +3,7 @@ name = "liveaudio-desktop"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
+publish = false
 license.workspace = true
 description = "Real-time local transcription with OBS subtitle overlay"
 repository.workspace = true
@@ -24,6 +25,8 @@ tokio-util = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = "0.3.23"
 tauri-plugin-single-instance = "2"
+tauri-plugin-updater = "2"
+semver = "1.0"
 
 [build-dependencies]
 tauri-build = "=2.7.0"
