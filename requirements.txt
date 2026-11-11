@@ -1,9 +1,0 @@
-# LiveAudio dependencies are declared in pyproject.toml (this file is kept
-# only so existing links do not break).
-#
-# Install with uv (https://docs.astral.sh/uv/):
-#   uv sync --extra cpu     # CPU-only PyTorch backend
-#   uv sync --extra cu121   # CUDA 12.1 PyTorch backend
-#
-# To export a pinned requirements file from uv.lock:
-#   uv export --extra cpu --no-hashes -o requirements-cpu.txt
