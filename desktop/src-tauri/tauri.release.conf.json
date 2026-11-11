@@ -1,6 +1,12 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "bundle": {
-    "externalBin": ["binaries/liveaudio-cli"]
+    "externalBin": [
+      "binaries/liveaudio-cli",
+      "binaries/liveaudio-asr-worker"
+    ],
+    "resources": {
+      "../../THIRD_PARTY_LICENSES.html": "THIRD_PARTY_LICENSES.html"
+    }
   }
 }

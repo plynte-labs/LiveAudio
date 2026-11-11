@@ -378,6 +378,38 @@ FunctionEnd
     Sleep 500
   ${EndIf}
 
+  nsis_tauri_utils::FindProcessCurrentUser "liveaudio-cli.exe"
+  Pop $R0
+  ${If} $R0 = 0
+    DetailPrint "Stopping running liveaudio-cli.exe process..."
+    nsis_tauri_utils::KillProcessCurrentUser "liveaudio-cli.exe"
+    Sleep 500
+  ${EndIf}
+
+  nsis_tauri_utils::FindProcessCurrentUser "liveaudio-cli-x86_64-pc-windows-msvc.exe"
+  Pop $R0
+  ${If} $R0 = 0
+    DetailPrint "Stopping running liveaudio-cli-x86_64-pc-windows-msvc.exe process..."
+    nsis_tauri_utils::KillProcessCurrentUser "liveaudio-cli-x86_64-pc-windows-msvc.exe"
+    Sleep 500
+  ${EndIf}
+
+  nsis_tauri_utils::FindProcessCurrentUser "liveaudio-asr-worker.exe"
+  Pop $R0
+  ${If} $R0 = 0
+    DetailPrint "Stopping running liveaudio-asr-worker.exe process..."
+    nsis_tauri_utils::KillProcessCurrentUser "liveaudio-asr-worker.exe"
+    Sleep 500
+  ${EndIf}
+
+  nsis_tauri_utils::FindProcessCurrentUser "liveaudio-asr-worker-x86_64-pc-windows-msvc.exe"
+  Pop $R0
+  ${If} $R0 = 0
+    DetailPrint "Stopping running liveaudio-asr-worker-x86_64-pc-windows-msvc.exe process..."
+    nsis_tauri_utils::KillProcessCurrentUser "liveaudio-asr-worker-x86_64-pc-windows-msvc.exe"
+    Sleep 500
+  ${EndIf}
+
   ; 2. Inspect 64-bit registry keys (HKCU & HKLM)
   ${If} ${RunningX64}
     SetRegView 64

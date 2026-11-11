@@ -35,6 +35,20 @@ pub struct ServiceStatusDto {
     pub monitor_mode: bool,
     /// PID of that owner, when its lock metadata names one.
     pub foreign_service_pid: Option<u32>,
+    #[serde(default)]
+    pub effective_device: Option<String>,
+    #[serde(default)]
+    pub compute_type: Option<String>,
+    #[serde(default)]
+    pub fallback_occurred: bool,
+    #[serde(default)]
+    pub fallback_reason: Option<String>,
+    /// "ort" or "ct2_cuda" while a session runs.
+    #[serde(default)]
+    pub active_backend: Option<String>,
+    /// Why that backend runs (e.g. `nvidia_cuda_ready`, `ct2_start_failed`).
+    #[serde(default)]
+    pub backend_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -72,6 +86,13 @@ pub struct ObsOverlayDto {
     pub instructions: String,
 }
 
+/// Allowed local loopback ports and recent rejected connection attempts.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AllowedConnectionsDto {
+    pub allowed_ports: Vec<u16>,
+    pub recent_rejected: Vec<liveaudio_network::RejectedOriginEntry>,
+}
+
 /// Diagnostics export summary.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DiagnosticsExportDto {
@@ -89,4 +110,47 @@ pub struct SubtitleCueDto {
     pub text: String,
     pub style: String,
     pub timestamp_ms: u64,
+}
+
+/// Information about an available application update.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UpdateMetadataDto {
+    pub version: String,
+    pub current_version: String,
+    pub notes: Option<String>,
+    pub pub_date: Option<String>,
+}
+
+/// In-app updater status snapshot for the frontend.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UpdaterStatusDto {
+    pub current_version: String,
+    pub available_update: Option<UpdateMetadataDto>,
+    pub install_on_close: bool,
+    pub is_checking: bool,
+    pub is_installing: bool,
+    pub stream_busy: bool,
+    pub last_check: i64,
+}
+
+/// Detected GPU adapter for the backend status.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GpuAdapterDto {
+    /// "nvidia", "amd", "intel" or "other".
+    pub vendor: String,
+    pub name: String,
+    pub dedicated_vram_mb: u64,
+}
+
+/// GPU detection, NVIDIA runtime install state and the backend auto-selection result.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GpuBackendStatusDto {
+    pub adapters: Vec<GpuAdapterDto>,
+    pub cuda_driver_version: Option<i32>,
+    pub nvidia_runtime: liveaudio_core::NvidiaRuntimeStatus,
+    /// NVIDIA license pages to show before the user starts the download.
+    pub license_urls: Vec<String>,
+    /// "ort" or "ct2_cuda".
+    pub selected_backend: String,
+    pub reason: String,
 }

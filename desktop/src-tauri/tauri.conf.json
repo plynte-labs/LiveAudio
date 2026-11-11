@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "LiveAudio",
-  "version": "1.5.1",
+  "version": "1.6.0",
   "identifier": "com.liveaudio.desktop",
   "build": {
     "frontendDist": "../src"
@@ -38,16 +38,13 @@
     ],
     "category": "Music",
     "shortDescription": "Real-time local transcription with OBS subtitle overlay",
-    "longDescription": "LiveAudio provides fast, accurate local speech-to-text with faster-whisper and Silero VAD.",
-    "publisher": "franguh",
-    "copyright": "Copyright (c) 2026 franguh",
+    "longDescription": "LiveAudio provides fast, accurate, local speech-to-text: Whisper runs on ONNX Runtime (DirectML or CPU), with an optional NVIDIA CUDA engine (CTranslate2). Silero VAD detects speech, and an OBS subtitle overlay is served locally.",
+    "publisher": "Plynte Labs / FranGuh",
+    "copyright": "Copyright © 2026 Plynte Labs / FranGuh / LiveAudio Contributors",
     "resources": {
+      "../../LICENSE": "LICENSE",
       "../../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
-      "../../liveaudio/*.py": "liveaudio",
-      "../../liveaudio/assets/*": "liveaudio/assets",
-      "../../liveaudio/core/*.py": "liveaudio/core",
-      "../../liveaudio/service/*.py": "liveaudio/service",
-      "../../liveaudio/utils/*.py": "liveaudio/utils"
+      "../../assets/*": "assets"
     },
     "windows": {
       "nsis": {
@@ -55,6 +52,18 @@
         "languages": ["English", "SpanishInternational"],
         "displayLanguageSelector": false,
         "installerHooks": "hooks.nsh"
+      }
+    },
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDUwNTU1RDhBQUE4RjY2OTMKUldTVFpvK3FpbDFWVUlld0UvQnh3WnNlZFVnWGU2VmNqSTNvSWV6bmxlRkR6K1NpdWlyNCtaT3gK",
+      "endpoints": [
+        "https://github.com/plynte-labs/LiveAudio/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
       }
     }
   }

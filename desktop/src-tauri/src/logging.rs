@@ -21,9 +21,8 @@ impl Write for DualWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let _ = std::io::stdout().write_all(buf);
         if let Some(ref f) = self.file {
-            if let Ok(mut guard) = f.lock() {
-                let _ = guard.write_all(buf);
-            }
+            let mut guard = f.lock().unwrap_or_else(|p| p.into_inner());
+            let _ = guard.write_all(buf);
         }
         Ok(buf.len())
     }
@@ -31,9 +30,8 @@ impl Write for DualWriter {
     fn flush(&mut self) -> std::io::Result<()> {
         let _ = std::io::stdout().flush();
         if let Some(ref f) = self.file {
-            if let Ok(mut guard) = f.lock() {
-                let _ = guard.flush();
-            }
+            let mut guard = f.lock().unwrap_or_else(|p| p.into_inner());
+            let _ = guard.flush();
         }
         Ok(())
     }
@@ -64,6 +62,14 @@ pub fn init_logging() -> PathBuf {
     let _ = create_dir_all(&logs_dir);
     let log_file_path = logs_dir.join("liveaudio-desktop.log");
 
+    if let Ok(metadata) = std::fs::metadata(&log_file_path) {
+        if metadata.len() > 0 {
+            let prev_log_file_path = logs_dir.join("liveaudio-desktop.prev.log");
+            let _ = std::fs::remove_file(&prev_log_file_path);
+            let _ = std::fs::rename(&log_file_path, &prev_log_file_path);
+        }
+    }
+
     let file_handle = OpenOptions::new()
         .create(true)
         .append(true)
@@ -86,8 +92,8 @@ pub fn init_logging() -> PathBuf {
     let _ = tracing::subscriber::set_global_default(subscriber);
 
     tracing::info!("============================================================");
-    tracing::info!("🚀 LiveAudio Desktop Logging Initialized");
-    tracing::info!("📁 Log file: {}", log_file_path.display());
+    tracing::info!("LiveAudio Desktop Logging Initialized");
+    tracing::info!("Log file: {}", log_file_path.display());
     tracing::info!("============================================================");
 
     log_file_path
