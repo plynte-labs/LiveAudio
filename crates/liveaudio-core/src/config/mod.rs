@@ -5,15 +5,22 @@
 //! Fully compatible with LiveAudio's `config.json` schema, locking mechanism,
 //! and migration rules.
 
+pub mod subtitle_theme;
+pub use subtitle_theme::SubtitlePreset;
+
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs::OpenOptions;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+pub mod patch;
+
 pub const LOCK_STALE_AFTER_SECONDS: u64 = 30;
 
 pub static VALID_DEVICES: &[&str] = &["cpu", "cuda"];
+pub static VALID_ASR_BACKENDS: &[&str] = &["auto", "ort", "ct2_cuda"];
 pub static VALID_MODELS: &[&str] = &[
     "tiny (Más rápido, baja precisión)",
     "base (Rápido)",
@@ -37,12 +44,29 @@ pub static VALID_TRANSCRIPTION_PURPOSES: &[&str] = &["subtitles", "transcription
 pub const DEFAULT_BLACKLIST: &str =
     "amara.org, subtítulos por, suscríbete, dale like, gracias por ver, memos, gracias, activar la campanita";
 
+pub const MAX_ALLOWED_LOOPBACK_PORTS: usize = 32;
+
 pub const AUDIO_QUEUE_MAXSIZE: usize = 100;
 pub const AUDIO_QUEUE_BUDGET_SEC: f64 = 60.0;
 pub const AUDIO_FRAME_DURATION_SEC: f64 = 512.0 / 16000.0;
 pub const ASR_DECODE_TIMEOUT_MIN_SEC: u32 = 5;
 pub const ASR_DECODE_TIMEOUT_MAX_SEC: u32 = 120;
 pub const ASR_DECODE_TIMEOUT_DEFAULT_SEC: u32 = 15;
+
+pub const UPDATE_CHECK_INTERVAL_SEC: i64 = 86_400;
+pub const UPDATE_RETRY_INTERVAL_SEC: i64 = 3_600;
+pub const UPDATE_FAILURE_BACKOFF_OFFSET_SEC: i64 =
+    UPDATE_CHECK_INTERVAL_SEC - UPDATE_RETRY_INTERVAL_SEC;
+
+/// Determines if an update check is due based on 24-hour throttling and clock skew resilience.
+pub fn should_check_for_updates(last_check: i64, now: i64) -> bool {
+    last_check <= 0 || now < last_check || now.saturating_sub(last_check) >= UPDATE_CHECK_INTERVAL_SEC
+}
+
+/// Computes the timestamp to record on update check failure so retry is permitted after 1 hour.
+pub fn update_check_failure_timestamp(now: i64) -> i64 {
+    now.saturating_sub(UPDATE_FAILURE_BACKOFF_OFFSET_SEC).max(0)
+}
 
 /// Resolution for the LiveAudio data home directory.
 ///
@@ -96,10 +120,6 @@ pub fn get_hf_home() -> PathBuf {
     get_models_home().join("hf")
 }
 
-pub fn get_torch_home() -> PathBuf {
-    get_models_home().join("torch")
-}
-
 fn default_cpu_threads() -> usize {
     std::thread::available_parallelism()
         .map(|n| (n.get() / 2).max(1))
@@ -131,6 +151,10 @@ pub struct LiveAudioConfig {
     #[serde(default = "default_device")]
     pub device: String,
 
+    /// Worker backend: `auto` (default), `ort` or `ct2_cuda` (NVIDIA only; restart required).
+    #[serde(default = "default_asr_backend")]
+    pub asr_backend: String,
+
     #[serde(default = "default_cpu_threads")]
     pub cpu_threads: usize,
 
@@ -148,6 +172,14 @@ pub struct LiveAudioConfig {
 
     #[serde(default = "default_subtitle_display_mode")]
     pub subtitle_display_mode: String,
+
+    /// Custom CSS tokens layered over the built-in subtitle style.
+    #[serde(default)]
+    pub subtitle_theme: BTreeMap<String, String>,
+
+    /// Named subtitle style presets saved by the user.
+    #[serde(default)]
+    pub subtitle_presets: Vec<SubtitlePreset>,
 
     #[serde(default = "default_subtitle_ribbon_max_lines")]
     pub subtitle_ribbon_max_lines: u32,
@@ -185,6 +217,9 @@ pub struct LiveAudioConfig {
     #[serde(default = "default_ws_port")]
     pub ws_port: u16,
 
+    #[serde(default = "default_ws_allowed_loopback_ports")]
+    pub ws_allowed_loopback_ports: Vec<u16>,
+
     #[serde(default = "default_true")]
     pub obs_enabled: bool,
 
@@ -193,6 +228,10 @@ pub struct LiveAudioConfig {
 
     #[serde(default)]
     pub acoustic_events_enabled: bool,
+
+    /// Show provisional subtitles while the speaker is still talking (desktop app only; restart required).
+    #[serde(default)]
+    pub live_partial_subtitles_enabled: bool,
 
     #[serde(default = "default_true")]
     pub prewarm: bool,
@@ -227,8 +266,27 @@ pub struct LiveAudioConfig {
     #[serde(default)]
     pub diagnostics_export_dir: Option<PathBuf>,
 
+    #[serde(default = "default_true", alias = "update_check_enabled")]
+    pub check_updates_enabled: bool,
+
     #[serde(default)]
     pub last_update_check: i64,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_update_installer_path: Option<PathBuf>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_update_version: Option<String>,
+
+    /// Low-risk opt-in for external agents (MCP): style keys only.
+    /// Only the desktop UI may change it; never patchable via MCP.
+    #[serde(default)]
+    pub mcp_style_enabled: bool,
+
+    /// Medium-risk opt-in for external agents (MCP): system keys.
+    /// Only the desktop UI may change it; never patchable via MCP.
+    #[serde(default)]
+    pub mcp_system_enabled: bool,
 
     #[serde(default = "default_vad_speech_pad_ms")]
     pub vad_speech_pad_ms: u32,
@@ -246,6 +304,9 @@ fn default_output_dir() -> PathBuf {
 }
 fn default_device() -> String {
     "cpu".to_string()
+}
+fn default_asr_backend() -> String {
+    "auto".to_string()
 }
 fn default_model_size() -> String {
     "small (Balance CPU)".to_string()
@@ -275,25 +336,26 @@ fn default_subtitle_catchup_interval_sec() -> f64 {
     1.5
 }
 fn default_silence_timeout() -> f64 {
-    0.8
+    0.5
 }
 fn default_max_chunk_duration() -> f64 {
-    5.0
+    3.0
 }
 fn default_transcription_purpose() -> String {
     "subtitles".to_string()
 }
 
-/// Python parity (`utils/config.py`): the purpose sets the `max_chunk_duration` ceiling and its
+/// The purpose sets the `max_chunk_duration` ceiling and its
 /// default. Returns `(ceiling, default)`. Unknown purposes behave as subtitles.
+/// The ceiling is the ORT worker's 30 s mel window: longer chunks would be truncated.
 fn max_chunk_bounds(purpose: &str) -> (f64, f64) {
     match purpose {
-        "transcription" | "combined" => (60.0, 30.0),
+        "transcription" | "combined" => (30.0, 30.0),
         _ => (15.0, default_max_chunk_duration()),
     }
 }
 
-/// Rounds to one decimal with half-to-even ties on the exact binary value, as Python's `round(x, 1)`.
+/// Rounds to one decimal with half-to-even ties on the exact binary value(round-half-even).
 fn round_to_tenth(value: f64) -> f64 {
     format!("{value:.1}").parse().unwrap_or(value)
 }
@@ -308,6 +370,9 @@ fn default_profile_mode() -> String {
 }
 fn default_ws_port() -> u16 {
     8765
+}
+fn default_ws_allowed_loopback_ports() -> Vec<u16> {
+    vec![1420]
 }
 fn default_asr_language() -> String {
     "es".to_string()
@@ -330,12 +395,15 @@ impl Default for LiveAudioConfig {
         Self {
             output_dir: default_output_dir(),
             device: default_device(),
+            asr_backend: default_asr_backend(),
             cpu_threads: default_cpu_threads(),
             model_size: default_model_size(),
             blacklist: default_blacklist(),
             continuous_session: true,
             subtitle_style: default_subtitle_style(),
             subtitle_display_mode: default_subtitle_display_mode(),
+            subtitle_theme: BTreeMap::new(),
+            subtitle_presets: Vec::new(),
             subtitle_ribbon_max_lines: default_subtitle_ribbon_max_lines(),
             subtitle_backlog_policy: default_subtitle_backlog_policy(),
             subtitle_max_live_delay_sec: default_subtitle_max_live_delay_sec(),
@@ -348,9 +416,11 @@ impl Default for LiveAudioConfig {
             selected_profile_id: default_selected_profile_id(),
             profile_mode: default_profile_mode(),
             ws_port: default_ws_port(),
+            ws_allowed_loopback_ports: default_ws_allowed_loopback_ports(),
             obs_enabled: true,
             rnnoise_enabled: false,
             acoustic_events_enabled: false,
+            live_partial_subtitles_enabled: false,
             prewarm: true,
             save_transcript_enabled: true,
             save_vtt_enabled: true,
@@ -362,7 +432,12 @@ impl Default for LiveAudioConfig {
             diagnostics_enabled: false,
             diagnostics_level: default_diagnostics_level(),
             diagnostics_export_dir: None,
+            check_updates_enabled: true,
             last_update_check: 0,
+            pending_update_installer_path: None,
+            pending_update_version: None,
+            mcp_style_enabled: false,
+            mcp_system_enabled: false,
             vad_speech_pad_ms: default_vad_speech_pad_ms(),
             vad_threshold: default_vad_threshold(),
             extra: serde_json::Map::new(),
@@ -399,6 +474,15 @@ impl LiveAudioConfig {
             }
         }
 
+        // Legacy MCP switch migration: mcp_enabled -> mcp_style_enabled (mcp_system_enabled stays false)
+        if let Some(old_mcp) = self.extra.remove("mcp_enabled") {
+            updated = true;
+            if old_mcp.as_bool() == Some(true) {
+                self.mcp_style_enabled = true;
+                self.mcp_system_enabled = false;
+            }
+        }
+
         // output_dir
         if self.output_dir.as_os_str().is_empty() {
             self.output_dir = default_output_dir();
@@ -416,6 +500,11 @@ impl LiveAudioConfig {
         // device
         if !VALID_DEVICES.contains(&self.device.as_str()) {
             self.device = default_device();
+            updated = true;
+        }
+
+        if !VALID_ASR_BACKENDS.contains(&self.asr_backend.as_str()) {
+            self.asr_backend = default_asr_backend();
             updated = true;
         }
 
@@ -503,6 +592,10 @@ impl LiveAudioConfig {
             updated = true;
         }
 
+        // subtitle_theme and subtitle_presets
+        updated |= subtitle_theme::sanitize_tokens(&mut self.subtitle_theme);
+        updated |= subtitle_theme::sanitize_presets(&mut self.subtitle_presets);
+
         // subtitle_display_mode
         if !VALID_SUBTITLE_DISPLAY_MODES.contains(&self.subtitle_display_mode.as_str()) {
             self.subtitle_display_mode = default_subtitle_display_mode();
@@ -558,6 +651,21 @@ impl LiveAudioConfig {
             updated = true;
         }
 
+        // ws_allowed_loopback_ports (1 to 65535, deduped, max 32)
+        let mut cleaned_ports = Vec::new();
+        for &port in &self.ws_allowed_loopback_ports {
+            if port > 0 && !cleaned_ports.contains(&port) {
+                cleaned_ports.push(port);
+            }
+        }
+        if cleaned_ports.len() > MAX_ALLOWED_LOOPBACK_PORTS {
+            cleaned_ports.truncate(MAX_ALLOWED_LOOPBACK_PORTS);
+        }
+        if cleaned_ports != self.ws_allowed_loopback_ports {
+            self.ws_allowed_loopback_ports = cleaned_ports;
+            updated = true;
+        }
+
         // settings_navigation_mode
         if self.settings_navigation_mode != "tabs" && self.settings_navigation_mode != "dropdown" {
             self.settings_navigation_mode = default_settings_navigation_mode();
@@ -575,6 +683,12 @@ impl LiveAudioConfig {
         // diagnostics_level
         if !VALID_DIAGNOSTICS_LEVELS.contains(&self.diagnostics_level.as_str()) {
             self.diagnostics_level = default_diagnostics_level();
+            updated = true;
+        }
+
+        // last_update_check (must be non-negative)
+        if self.last_update_check < 0 {
+            self.last_update_check = 0;
             updated = true;
         }
 
@@ -598,7 +712,7 @@ impl LiveAudioConfig {
     }
 }
 
-/// Calculate nominal audio queue capacity matching Python formula.
+/// Calculate nominal audio queue capacity from the chunk/queue settings.
 pub fn audio_queue_capacity(config: &LiveAudioConfig) -> usize {
     let phrase_budget = config.max_chunk_duration
         + config.silence_timeout
@@ -760,7 +874,7 @@ pub fn load_from_path(path: &Path) -> io::Result<LiveAudioConfig> {
             "config root is not a JSON object",
         ));
     };
-    // Per-key tolerance (Python parity): a value that fails to deserialize on its
+    // Per-key tolerance (legacy-config tolerance): a value that fails to deserialize on its
     // own falls back to that key's serde default; unknown keys land in `extra`.
     fields.retain(|key, value| {
         let single = serde_json::Map::from_iter([(key.clone(), value.clone())]);
@@ -770,7 +884,7 @@ pub fn load_from_path(path: &Path) -> io::Result<LiveAudioConfig> {
         }
         ok
     });
-    // Python parity: a missing or invalid max_chunk_duration takes the default of the purpose.
+    // A missing or invalid max_chunk_duration takes the default of the purpose.
     // Invalid keys were just removed above, so absence here means absent or invalid.
     if !fields.contains_key("max_chunk_duration") {
         let purpose = fields
@@ -856,13 +970,76 @@ mod tests {
         let cfg = LiveAudioConfig::default();
         assert_eq!(cfg.device, "cpu");
         assert_eq!(cfg.ws_port, 8765);
+        assert_eq!(cfg.ws_allowed_loopback_ports, vec![1420]);
         assert_eq!(cfg.subtitle_style, "default");
         assert_eq!(cfg.subtitle_display_mode, "adaptive");
         assert_eq!(cfg.subtitle_ribbon_max_lines, 3);
         assert_eq!(cfg.vad_speech_pad_ms, 200);
         assert_eq!(cfg.vad_threshold, 0.5);
+        assert_eq!(cfg.silence_timeout, 0.5);
+        assert_eq!(cfg.max_chunk_duration, 3.0);
         assert!(!cfg.rnnoise_enabled);
         assert!(!cfg.acoustic_events_enabled);
+        assert!(!cfg.live_partial_subtitles_enabled);
+        assert!(cfg.check_updates_enabled);
+        assert_eq!(cfg.last_update_check, 0);
+        assert!(!cfg.mcp_style_enabled);
+        assert!(!cfg.mcp_system_enabled);
+        assert!(cfg.subtitle_theme.is_empty());
+        assert!(cfg.subtitle_presets.is_empty());
+    }
+
+    #[test]
+    fn test_legacy_mcp_enabled_migration() {
+        let json_enabled = r#"{"mcp_enabled": true}"#;
+        let mut cfg_enabled: LiveAudioConfig = serde_json::from_str(json_enabled).unwrap();
+        assert!(cfg_enabled.extra.contains_key("mcp_enabled"));
+        assert!(!cfg_enabled.mcp_style_enabled);
+        assert!(!cfg_enabled.mcp_system_enabled);
+        assert!(cfg_enabled.normalize());
+        assert!(cfg_enabled.mcp_style_enabled);
+        assert!(!cfg_enabled.mcp_system_enabled);
+        assert!(!cfg_enabled.extra.contains_key("mcp_enabled"));
+
+        let json_disabled = r#"{"mcp_enabled": false}"#;
+        let mut cfg_disabled: LiveAudioConfig = serde_json::from_str(json_disabled).unwrap();
+        assert!(cfg_disabled.normalize());
+        assert!(!cfg_disabled.mcp_style_enabled);
+        assert!(!cfg_disabled.mcp_system_enabled);
+        assert!(!cfg_disabled.extra.contains_key("mcp_enabled"));
+    }
+
+    #[test]
+    fn test_ws_allowed_loopback_ports_normalization() {
+        let mut cfg = LiveAudioConfig {
+            ws_allowed_loopback_ports: vec![1420, 0, 5173, 1420, 8080, 0],
+            ..LiveAudioConfig::default()
+        };
+        cfg.normalize();
+        assert_eq!(cfg.ws_allowed_loopback_ports, vec![1420, 5173, 8080]);
+
+        // Max cap of 32
+        let mut many_ports: Vec<u16> = (1..=50).collect();
+        cfg.ws_allowed_loopback_ports = many_ports.clone();
+        cfg.normalize();
+        assert_eq!(cfg.ws_allowed_loopback_ports.len(), 32);
+        many_ports.truncate(32);
+        assert_eq!(cfg.ws_allowed_loopback_ports, many_ports);
+    }
+
+    #[test]
+    fn asr_backend_defaults_to_auto_round_trips_and_clamps_invalid_values() {
+        assert_eq!(LiveAudioConfig::default().asr_backend, "auto");
+        let legacy: LiveAudioConfig = serde_json::from_str("{}").expect("legacy config");
+        assert_eq!(legacy.asr_backend, "auto");
+        let mut config = LiveAudioConfig { asr_backend: "ct2_cuda".into(), ..LiveAudioConfig::default() };
+        let restored: LiveAudioConfig =
+            serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
+        assert_eq!(restored.asr_backend, "ct2_cuda");
+        assert!(!config.normalize());
+        config.asr_backend = "tensorrt".into();
+        assert!(config.normalize());
+        assert_eq!(config.asr_backend, "auto");
     }
 
     #[test]
@@ -879,15 +1056,18 @@ mod tests {
         let legacy: LiveAudioConfig = serde_json::from_str("{}").expect("legacy config");
         assert!(!legacy.rnnoise_enabled);
         assert!(!legacy.acoustic_events_enabled);
+        assert!(!legacy.live_partial_subtitles_enabled);
 
         let mut config = LiveAudioConfig::default();
         config.rnnoise_enabled = true;
         config.acoustic_events_enabled = false;
+        config.live_partial_subtitles_enabled = true;
         let serialized = serde_json::to_string(&config).expect("serialize config");
         let restored: LiveAudioConfig =
             serde_json::from_str(&serialized).expect("deserialize config");
         assert!(restored.rnnoise_enabled);
         assert!(!restored.acoustic_events_enabled);
+        assert!(restored.live_partial_subtitles_enabled);
     }
 
     #[test]
@@ -905,6 +1085,7 @@ mod tests {
 
         assert_eq!(cfg.device, "cpu");
         assert_eq!(cfg.ws_port, 8765);
+        assert_eq!(cfg.ws_allowed_loopback_ports, vec![1420]);
         assert_eq!(cfg.subtitle_ribbon_max_lines, 8);
         assert_eq!(cfg.silence_timeout, 2.0);
         assert_eq!(cfg.vad_speech_pad_ms, 500);
@@ -1033,7 +1214,11 @@ mod tests {
     #[test]
     fn test_unicode_and_spaces_path_handling() {
         let base_tmp = std::env::temp_dir();
-        let unicode_dir = base_tmp.join("LiveAudio Test José Ñandú 🎙️ carpeta con espacios");
+        // Per-process name: concurrent test runs share the temp dir.
+        let unicode_dir = base_tmp.join(format!(
+            "LiveAudio Test José Ñandú 🎙️ carpeta con espacios {}",
+            std::process::id()
+        ));
         let _ = std::fs::create_dir_all(&unicode_dir);
         let config_file = unicode_dir.join("config.json");
 
@@ -1090,6 +1275,17 @@ mod tests {
     }
 
     #[test]
+    fn normalize_clamps_transcription_duration_to_the_30s_worker_window() {
+        for purpose in ["transcription", "combined"] {
+            let mut cfg = LiveAudioConfig::default();
+            cfg.transcription_purpose = purpose.into();
+            cfg.max_chunk_duration = 60.0;
+            cfg.normalize();
+            assert_eq!(cfg.max_chunk_duration, 30.0, "purpose {purpose}");
+        }
+    }
+
+    #[test]
     fn normalize_rounds_half_to_even_like_python() {
         let mut cfg = LiveAudioConfig::default();
         cfg.max_chunk_duration = 12.25;
@@ -1124,7 +1320,7 @@ mod tests {
 
         let subtitles = load_json("duration-subtitles", r#"{"max_chunk_duration": "x"}"#)
             .expect("tolerant load");
-        assert_eq!(subtitles.max_chunk_duration, 5.0);
+        assert_eq!(subtitles.max_chunk_duration, 3.0);
 
         let explicit = load_json(
             "duration-explicit",
@@ -1178,5 +1374,87 @@ mod tests {
     fn non_object_json_is_still_an_error() {
         assert!(load_json("array", "[1, 2]").is_err());
         assert!(load_json("garbage", "{not json").is_err());
+    }
+
+    #[test]
+    fn subtitle_theme_and_presets_default_empty_and_normalize_through_config() {
+        let legacy: LiveAudioConfig = serde_json::from_str("{}").expect("legacy config");
+        assert!(legacy.subtitle_theme.is_empty());
+        assert!(legacy.subtitle_presets.is_empty());
+
+        let mut cfg: LiveAudioConfig = serde_json::from_str(
+            r##"{"subtitle_theme": {"--sub-color": "#ff0000", "--sub-font-family": "url(http://x/y.woff)"},
+                "subtitle_presets": [{"name": " Clean ", "tokens": {"--sub-bg": "url(x)", "--sub-radius": "99px"}}]}"##,
+        )
+        .expect("subtitle style config");
+        assert!(cfg.normalize());
+        assert_eq!(
+            cfg.subtitle_theme.get("--sub-color").map(String::as_str),
+            Some("#ff0000")
+        );
+        assert!(!cfg.subtitle_theme.contains_key("--sub-font-family"));
+        assert_eq!(cfg.subtitle_presets.len(), 1);
+        assert_eq!(cfg.subtitle_presets[0].name, "Clean");
+        assert_eq!(
+            cfg.subtitle_presets[0]
+                .tokens
+                .get("--sub-radius")
+                .map(String::as_str),
+            Some("50px")
+        );
+        assert!(!cfg.subtitle_presets[0].tokens.contains_key("--sub-bg"));
+    }
+
+    #[test]
+    fn test_update_check_config_serde_defaults_and_roundtrip() {
+        let from_empty: LiveAudioConfig = serde_json::from_str("{}").expect("empty json");
+        assert!(from_empty.check_updates_enabled);
+        assert_eq!(from_empty.last_update_check, 0);
+
+        let mut cfg = LiveAudioConfig::default();
+        cfg.check_updates_enabled = false;
+        cfg.last_update_check = 1_700_000_000;
+        let json = serde_json::to_string(&cfg).expect("serialize");
+        let restored: LiveAudioConfig = serde_json::from_str(&json).expect("deserialize");
+        assert!(!restored.check_updates_enabled);
+        assert_eq!(restored.last_update_check, 1_700_000_000);
+    }
+
+    #[test]
+    fn test_update_check_normalization_clamping() {
+        let mut cfg = LiveAudioConfig::default();
+        cfg.last_update_check = -500;
+        assert!(cfg.normalize());
+        assert_eq!(cfg.last_update_check, 0);
+
+        let mut cfg2 = LiveAudioConfig::default();
+        cfg2.last_update_check = 12345;
+        assert!(!cfg2.normalize());
+        assert_eq!(cfg2.last_update_check, 12345);
+    }
+
+    #[test]
+    fn test_should_check_for_updates_throttle_and_clock_skew() {
+        let now = 1_700_000_000;
+
+        assert!(should_check_for_updates(0, now));
+        assert!(should_check_for_updates(-1, now));
+        assert!(!should_check_for_updates(now, now));
+        assert!(!should_check_for_updates(now, now + 86_399));
+        assert!(should_check_for_updates(now, now + 86_400));
+        assert!(should_check_for_updates(now, now + 100_000));
+        assert!(should_check_for_updates(now + 3600, now));
+    }
+
+    #[test]
+    fn test_update_check_failure_backoff() {
+        let now = 1_700_000_000;
+        let failure_ts = update_check_failure_timestamp(now);
+
+        assert_eq!(failure_ts, now - 82_800);
+        assert!(!should_check_for_updates(failure_ts, now));
+        assert!(!should_check_for_updates(failure_ts, now + 3599));
+        assert!(should_check_for_updates(failure_ts, now + 3600));
+        assert_eq!(update_check_failure_timestamp(500), 0);
     }
 }
