@@ -64,7 +64,7 @@ impl AudioRingProducer {
 
             // Compute integer chunks dropped
             let chunks_dropped = if self.chunk_size > 0 {
-                (dropped + self.chunk_size - 1) / self.chunk_size
+                dropped.div_ceil(self.chunk_size)
             } else {
                 1
             };

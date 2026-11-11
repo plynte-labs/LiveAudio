@@ -2,8 +2,6 @@
 
 //! Capture supervision that keeps one downstream receiver alive across device
 //! loss: standby without an input device, paced reconnects, and a stall watchdog.
-//!
-//! Timings mirror the Python `audio_producer` loop in `liveaudio/core/audio.py`.
 
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, watch};
@@ -15,19 +13,19 @@ use crate::error::AudioError;
 use crate::traits::{AudioChunkReceiver, AudioSource};
 use crate::types::{AudioChunk, AudioSourceStatus, AudioStreamConfig};
 
-/// Delay before re-opening a lost stream (`audio.py`: `shutdown_event.wait(3.0)`).
+/// Delay before re-opening a lost stream.
 pub const RECONNECT_DELAY: Duration = Duration::from_secs(3);
 
-/// Hot-plug poll while no input device exists (`audio.py`: `shutdown_event.wait(1.0)`).
+/// Hot-plug poll while no input device exists.
 pub const STANDBY_POLL: Duration = Duration::from_secs(1);
 
-/// Watchdog check interval (`audio.py`: `sd.sleep(500)`).
+/// Watchdog check interval.
 pub const WATCHDOG_TICK: Duration = Duration::from_millis(500);
 
-/// Stream age before the watchdog may fire (`audio.py`: `stream_age > 3.0`).
+/// Stream age before the watchdog may fire.
 pub const WATCHDOG_GRACE: Duration = Duration::from_secs(3);
 
-/// Silence from the hardware treated as a stalled stream (`audio.py`: `elapsed > 5.0`).
+/// Silence from the hardware treated as a stalled stream.
 pub const WATCHDOG_LIMIT: Duration = Duration::from_secs(5);
 
 /// Supervised capture handle; the paired [`AudioChunkReceiver`] survives reconnects.
@@ -165,7 +163,13 @@ impl<S: AudioSource, F: Fn() -> usize> Supervisor<S, F> {
             self.set_state(AudioSourceStatus::Standby);
             return Ok(Step::Wait(STANDBY_POLL));
         }
-        let receiver = self.source.start(&self.config).await?;
+        let receiver = match self.source.start(&self.config).await {
+            Ok(receiver) => receiver,
+            Err(error) => {
+                warn!("Audio source start failed: {}", error);
+                return Err(error);
+            }
+        };
         self.set_state(AudioSourceStatus::Capturing);
         Ok(Step::Capture(receiver))
     }
@@ -395,7 +399,7 @@ mod tests {
                 RECONNECT_DELAY - Duration::from_millis(100)
             )
             .await,
-            "reconnect must wait the Python retry delay"
+            "reconnect must wait the retry delay"
         );
         assert!(
             reaches(
@@ -480,7 +484,7 @@ mod tests {
                 WATCHDOG_LIMIT - Duration::from_millis(100)
             )
             .await,
-            "the watchdog must tolerate up to the Python limit"
+            "the watchdog must tolerate up to the stall limit"
         );
         assert!(
             reaches(

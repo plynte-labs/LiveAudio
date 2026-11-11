@@ -12,7 +12,9 @@ pub mod traits;
 pub mod types;
 
 pub use cpal_source::CpalAudioSource;
-pub use device::{enumerate_cpal_devices, get_input_device_count, normalize_device_name};
+pub use device::{
+    enumerate_cpal_devices, get_input_device_count, normalize_device_name, with_clean_audio_thread,
+};
 pub use error::AudioError;
 pub use mock::MockAudioSource;
 pub use resampler::{
