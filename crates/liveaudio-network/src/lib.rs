@@ -21,8 +21,9 @@ pub use replay::{
     HIGH_WATER_MARK_BYTES, MAX_RETRY_BUFFER, REPLAY_BUFFER_MAX,
 };
 pub use security::{
-    candidate_ports, is_origin_allowed, is_remote_addr_allowed, validate_origin_headers,
-    WS_ALLOWED_ORIGINS, WS_LOOPBACK_HOSTS, WS_PORT_FALLBACK_RANGE,
+    candidate_ports, extract_loopback_port, is_origin_allowed, is_remote_addr_allowed,
+    validate_origin_headers, RejectedOriginEntry, RejectedOriginTracker, MAX_REJECTED_ORIGINS,
+    MAX_REJECTED_ORIGIN_LEN, WS_ALLOWED_ORIGINS, WS_LOOPBACK_HOSTS, WS_PORT_FALLBACK_RANGE,
 };
 pub use server::{start_if_enabled, WsServer, WsServerConfig};
 pub use sink_adapter::WebSocketTranscriptionSink;
@@ -43,21 +44,24 @@ mod tests {
     #[test]
     fn test_origin_security_rules() {
         // CEF OBS Browser Source
-        assert!(is_origin_allowed(Some("http://absolute")));
+        assert!(is_origin_allowed(Some("http://absolute"), 8765, &[]));
 
-        // Local loopback origins
-        assert!(is_origin_allowed(Some("http://localhost:1420")));
-        assert!(is_origin_allowed(Some("http://127.0.0.1:8080")));
-        assert!(is_origin_allowed(Some("http://[::1]:3000")));
+        // Local loopback origins: on bound port or in allowed list
+        assert!(is_origin_allowed(Some("http://localhost:8765"), 8765, &[]));
+        assert!(is_origin_allowed(Some("http://127.0.0.1:8765"), 8765, &[]));
+        assert!(is_origin_allowed(Some("http://[::1]:8765"), 8765, &[]));
+        assert!(!is_origin_allowed(Some("http://localhost:1420"), 8765, &[]));
+        assert!(is_origin_allowed(Some("http://localhost:1420"), 8765, &[1420]));
+        assert!(!is_origin_allowed(Some("http://127.0.0.1:8080"), 8765, &[]));
 
         // Native client / empty origin
-        assert!(is_origin_allowed(None));
-        assert!(is_origin_allowed(Some("")));
+        assert!(is_origin_allowed(None, 8765, &[]));
+        assert!(is_origin_allowed(Some(""), 8765, &[]));
 
         // Malicious / external origins strictly rejected
-        assert!(!is_origin_allowed(Some("https://malicious.com")));
-        assert!(!is_origin_allowed(Some("http://localhost.attacker.com")));
-        assert!(!is_origin_allowed(Some("https://attacker.org:8765")));
+        assert!(!is_origin_allowed(Some("https://malicious.com"), 8765, &[]));
+        assert!(!is_origin_allowed(Some("http://localhost.attacker.com"), 8765, &[]));
+        assert!(!is_origin_allowed(Some("https://attacker.org:8765"), 8765, &[]));
     }
 
     #[test]
