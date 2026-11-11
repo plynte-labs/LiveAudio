@@ -6,14 +6,16 @@ members = [
     "crates/liveaudio-vad",
     "crates/liveaudio-core",
     "crates/liveaudio-network",
+    "crates/liveaudio-worker-protocol",
+    "crates/liveaudio-asr-worker",
     "crates/liveaudio-cli",
     "desktop/src-tauri",
 ]
 
 [workspace.package]
-version = "1.5.1"
+version = "1.6.0"
 edition = "2021"
-authors = ["franguh"]
+authors = ["Plynte Labs / FranGuh"]
 license = "MIT"
 repository = "https://github.com/plynte-labs/LiveAudio"
 homepage = "https://github.com/plynte-labs/LiveAudio"
