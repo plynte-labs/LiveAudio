@@ -19,7 +19,7 @@
 
 - Update `README.md`, `docs/GETTING_STARTED.md`, and `HISTORIAL_CAMBIOS.md` for user-facing changes.
 - Use requirement docs under `docs/requirements/` for non-trivial features.
-- Record specialist-agent comments with labels such as `[Agent Arquitecto Deepseek V4 PRO]`.
+- Record specialist-agent comments with labels such as `[Agent Arquitecto]`.
 
 ## Collaboration
 

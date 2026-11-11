@@ -12,7 +12,7 @@ Track: `ws-ipc-auth-token_20260911` · Status: in-planning · Type: feature
     - Comparar usando `hmac.compare_digest` si `auth_token` está activo.
     - Rechazar con HTTP 401 si no coincide o falta; permitir si coincide o si `auth_token is None`.
   - Escribir tests TDD en `tests/test_idempotent_ws_auth.py` cubriendo conexiones válidas, inválidas, ausentes y vacías.
-  - Responsable: `[Agent Arquitecto Deepseek V4 PRO]`.
+  - Responsable: `[Agent Arquitecto]`.
 
 - [ ] **Task 1.2: Soporte en Overlay de OBS en `subtitulos_obs.html` (REQ-4)**
   - Extraer `token` de `window.location.search`.
@@ -26,7 +26,7 @@ Track: `ws-ipc-auth-token_20260911` · Status: in-planning · Type: feature
   - Pasar el token al `ProcessSupervisor` y al worker `run_ws_server`.
   - Emitir evento inicial `auth_token` en stdout con el esquema `liveaudio.service.event`.
   - Escribir test en `tests/test_idempotent_service_backend.py`.
-  - Responsable: `[Agent Performance Minimax M2.7]`.
+  - Responsable: `[Agent Performance]`.
 
 ### Fase 3: Integración con GUI y Configuración
 - [ ] **Task 3.1: Esquema de Configuración y UI en `liveaudio/utils/config.py` y `app.py` (REQ-2, NFR-4)**
@@ -34,13 +34,13 @@ Track: `ws-ipc-auth-token_20260911` · Status: in-planning · Type: feature
   - En la GUI, generar un token efímero de sesión cuando el toggle esté activo.
   - Actualizar botón "Copiar URL para OBS" para incluir `&token=...` solo cuando esté habilitado.
   - Escribir tests en `tests/test_config.py` y `tests/test_apply_settings_save.py`.
-  - Responsable: `[Agent QA Qwen 3.6Plus]`.
+  - Responsable: `[Agent QA]`.
 
 ### Fase 4: Documentación y Revisión Colectiva
 - [ ] **Task 4.1: Actualización de Documentación Técnica y Glosario (REQ-5)**
   - Actualizar `docs/WEBSOCKET_OBS.md`, `README.md`, y `HISTORIAL_CAMBIOS.md`.
   - Documentar el contrato para clientes externos (OpenCohost / VoiceAI).
-  - Responsable: `[Agent Research Gemini 2.5 Pro]`.
+  - Responsable: `[Agent Research]`.
 - [ ] **Task 4.2: Dream Team Collective Sign-Off**
   - Architecture: Verificación de `hmac.compare_digest`, loopback y cero persistencia.
   - Performance: Medición de overhead en handshake (<0.1ms) y reconexión.

@@ -4,7 +4,7 @@ Estado: `borrador`
 Fecha: `YYYY-MM-DD`
 Rama sugerida: `<branch-name>`
 Product Owner: Usuario
-Principal: `[Agent Principal GPT-5.5]`
+Principal: `[Agent Principal]`
 
 ## Objetivo
 
@@ -39,7 +39,7 @@ Explica el problema, cómo se manifiesta y por qué importa para LiveAudio.
 ### Arquitectura Y Seguridad
 
 ```md
-[Agent Arquitecto Deepseek V4 PRO]
+[Agent Arquitecto]
 Categoría: Riesgo
 Comentario: ...
 Recomendación: ...
@@ -49,7 +49,7 @@ Bloqueante: sí/no
 ### QA Y Producto
 
 ```md
-[Agent QA Qwen 3.6Plus]
+[Agent QA]
 Categoría: Validación
 Comentario: ...
 Caso de prueba: ...
@@ -59,7 +59,7 @@ Bloqueante: sí/no
 ### Performance Y Resiliencia
 
 ```md
-[Agent Performance Minimax M2.7]
+[Agent Performance]
 Categoría: Complicación
 Comentario: ...
 Métrica a observar: ...
@@ -69,7 +69,7 @@ Bloqueante: sí/no
 ### Investigación Y Trazabilidad
 
 ```md
-[Agent Research Gemini 2.5 Pro]
+[Agent Research]
 Categoría: Pregunta
 Comentario: ...
 Fuente/Referencia: ...

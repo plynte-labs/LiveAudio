@@ -22,11 +22,11 @@ Ejemplos:
 
 ## Etiquetas Obligatorias
 
-- `[Agent Principal GPT-5.5]`
-- `[Agent Arquitecto Deepseek V4 PRO]`
-- `[Agent QA Qwen 3.6Plus]`
-- `[Agent Performance Minimax M2.7]`
-- `[Agent Research Gemini 2.5 Pro]`
+- `[Agent Principal]`
+- `[Agent Arquitecto]`
+- `[Agent QA]`
+- `[Agent Performance]`
+- `[Agent Research]`
 
 ## Qué Debe Quedar Registrado
 

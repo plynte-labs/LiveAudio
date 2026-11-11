@@ -22,7 +22,7 @@ The approved safety plan identifies canonical text truncation before JSONL persi
 
 ## Plan and dependencies
 
-The approved plan is `docs/superpowers/plans/2026-10-03-transcription-buffer-safety.md`. All six task IDs below are stable; T0 is the newly authorized baseline-fixture correction, followed by existing T1–T5. Each implementation task follows its assigned route; this document setup does not subdelegate.
+The approved plan was `docs/superpowers/plans/2026-10-03-transcription-buffer-safety.md` (removed 2026-11-07; recover with `git show 64316ed:<path>`). All six task IDs below are stable; T0 is the newly authorized baseline-fixture correction, followed by existing T1–T5. Each implementation task follows its assigned route; this document setup does not subdelegate.
 
 | ID | Depends on | State |
 |---|---|---|

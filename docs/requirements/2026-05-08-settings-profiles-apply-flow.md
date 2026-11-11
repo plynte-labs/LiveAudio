@@ -4,7 +4,7 @@ Estado: `en revision`
 Fecha: `2026-05-08`
 Rama sugerida: `feature/settings-profiles-apply-flow`
 Product Owner: Usuario
-Principal: `[Agent Principal GPT-5.5]`
+Principal: `[Agent Principal]`
 
 ## Objetivo
 
@@ -130,7 +130,7 @@ Requieren hot-swap en vivo o reinicio parcial:
 ### Arquitectura Y Seguridad
 
 ```md
-[Agent Arquitecto Deepseek V4 PRO]
+[Agent Arquitecto]
 Categoria: Riesgo
 Severidad: Alta
 Comentario: La separacion `draft_config` vs configuracion activa debe ser contractual. Mover sliders o cambiar selects solo debe modificar draft; `shared_config`, procesos y `config.json` no deben mutar hasta `Aplicar cambios`.
@@ -139,7 +139,7 @@ Bloqueante: resuelto en requerimiento; validar en implementacion.
 ```
 
 ```md
-[Agent Arquitecto Deepseek V4 PRO]
+[Agent Arquitecto]
 Categoria: Riesgo
 Severidad: Alta
 Comentario: Hot-swap necesita semantica precisa: bloquear doble aplicacion, mostrar estado aplicando, reiniciar solo una vez por lote, conservar sesion y registrar error si falla.
@@ -150,7 +150,7 @@ Bloqueante: parcialmente resuelto; perdida de frase en curso queda como riesgo c
 ### QA Y Producto
 
 ```md
-[Agent QA Qwen 3.6Plus]
+[Agent QA]
 Categoria: Validacion
 Severidad: Media
 Comentario: La UI debe distinguir `Perfil seleccionado`, `Configuracion activa` y `Cambios pendientes`. El boton debe llamarse `Aplicar cambios` o `Aplicar y guardar`, no solo guardar.
@@ -159,7 +159,7 @@ Bloqueante: resuelto en requerimiento; validar en UI.
 ```
 
 ```md
-[Agent QA Qwen 3.6Plus]
+[Agent QA]
 Categoria: Feature
 Severidad: Media
 Comentario: `Streaming Pesado` puede sonar ambiguo.
@@ -170,7 +170,7 @@ Bloqueante: resuelto.
 ### Performance Y Resiliencia
 
 ```md
-[Agent Performance Minimax M2.7]
+[Agent Performance]
 Categoria: Riesgo
 Severidad: Alta
 Comentario: Cambios suaves y duros deben separarse de cuando se aplican. Incluso cambios suaves deben quedar pendientes hasta `Aplicar cambios`, aunque no requieran hot-swap.
@@ -179,7 +179,7 @@ Bloqueante: resuelto en requerimiento; validar en implementacion.
 ```
 
 ```md
-[Agent Performance Minimax M2.7]
+[Agent Performance]
 Categoria: Complicacion
 Severidad: Media
 Comentario: `Calidad` con CUDA/turbo debe advertir consumo alto de VRAM. `Streaming estable` en CPU/small puede ser pesado en equipos ocupados.
@@ -190,7 +190,7 @@ Bloqueante: no.
 ### Investigacion Y Trazabilidad
 
 ```md
-[Agent Research Gemini 2.5 Pro]
+[Agent Research]
 Categoria: Riesgo
 Severidad: Alta
 Comentario: Los perfiles deben usar valores canonicos compatibles con `utils/config.py`, que guarda `model_size` como etiqueta descriptiva completa.
@@ -199,7 +199,7 @@ Bloqueante: resuelto en implementacion requerida.
 ```
 
 ```md
-[Agent Research Gemini 2.5 Pro]
+[Agent Research]
 Categoria: Validacion
 Severidad: Media
 Comentario: Falta tabla de trazabilidad `config key -> label UI -> docs`.

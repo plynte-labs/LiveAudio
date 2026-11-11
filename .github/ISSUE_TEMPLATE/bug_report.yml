@@ -79,12 +79,6 @@ body:
       description: Which model were you using? (tiny, base, small, turbo)
       placeholder: small
 
-  - type: input
-    id: python_version
-    attributes:
-      label: Python version
-      placeholder: "3.11.x"
-
   - type: textarea
     id: context
     attributes:

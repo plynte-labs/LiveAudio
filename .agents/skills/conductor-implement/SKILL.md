@@ -12,7 +12,7 @@ CRITICAL: You must validate the success of every tool call. If any tool call fai
 ## 1.0.1 LIVEAUDIO PROJECT OVERRIDES
 
 - Commit policy: any instruction in this skill to stage, commit, archive, delete, or revert changes requires explicit user approval first. If approval is not already present in the current user request, stop and ask.
-- Tool mapping: use OpenCode `question` for `ask_user`, `apply_patch` for file edits, `bash` for shell commands, and treat Plan Mode instructions as procedural guidance when no plan-mode tool exists.
+- Tool mapping: use `AskUserQuestion` for `ask_user`, `Edit`/`Write` for file edits, `Bash` for shell commands, and treat Plan Mode instructions as procedural guidance when no plan-mode tool exists.
 - Universal File Resolution Protocol for this project: resolve Product Definition to `conductor/product.md`, Product Guidelines to `conductor/product-guidelines.md`, Tech Stack to `conductor/tech-stack.md`, Workflow to `conductor/workflow.md`, Tracks Registry to `conductor/tracks.md`, and Tracks Directory to `conductor/tracks/`.
 - Privacy rule: never save or expose raw audio, raw transcripts, session contents, secrets, API keys, private filesystem paths, or PII in Engram, prompts, logs, or review notes. Use sanitized technical summaries only.
 

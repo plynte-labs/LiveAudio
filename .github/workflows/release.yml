@@ -5,214 +5,169 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: read
+  contents: write
 
 defaults:
   run:
     shell: bash
 
-env:
-  UV_VERSION: "0.11.6"
-
 jobs:
-  build-src:
-    name: Build source zip + wheel
-    runs-on: ubuntu-22.04
-    outputs:
-      version: ${{ steps.version.outputs.version }}
-      src_url: ${{ steps.version.outputs.src_url }}
-      src_sha256: ${{ steps.zip.outputs.src_sha256 }}
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v8.2.0
-        with:
-          version: ${{ env.UV_VERSION }}
-          enable-cache: true
-
-      - name: Verify tag matches liveaudio.__version__
-        id: version
-        run: |
-          python3 - "$GITHUB_REF_NAME" <<'EOF'
-          import os
-          import re
-          import sys
-
-          tag = sys.argv[1]
-          tag_version = tag[1:] if tag.startswith("v") else tag
-          text = open("liveaudio/__init__.py", encoding="utf-8").read()
-          pkg_version = re.search(
-              r"__version__\s*=\s*[\"']([^\"']+)[\"']", text
-          ).group(1)
-          if tag_version != pkg_version:
-              sys.exit(
-                  "Tag %s does not match liveaudio.__version__ == %s"
-                  % (tag, pkg_version)
-              )
-          url = (
-              "https://github.com/plynte-labs/LiveAudio/releases/download/"
-              "v%s/liveaudio-src-%s.zip" % (pkg_version, pkg_version)
-          )
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
-              fh.write("version=%s\n" % pkg_version)
-              fh.write("src_url=%s\n" % url)
-          print("Release version: %s" % pkg_version)
-          EOF
-
-      - name: Build wheel
-        run: uv build --wheel --out-dir build_artifacts
-
-      - name: Create source zip
-        id: zip
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          ZIP="build_artifacts/liveaudio-src-${VERSION}.zip"
-          zip -r "$ZIP" pyproject.toml uv.lock README.md LICENSE liveaudio \
-            -x "*__pycache__*" -x "*.pyc"
-          SHA="$(python3 -c "import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" "$ZIP")"
-          echo "src_sha256=$SHA" >> "$GITHUB_OUTPUT"
-          echo "Source zip SHA256: $SHA"
-
-      - name: Export pinned requirements (no-uv escape hatch)
-        run: |
-          uv export --locked --extra cpu --no-dev --no-emit-project \
-            -o build_artifacts/requirements-cpu.txt
-          uv export --locked --extra cu121 --no-dev --no-emit-project \
-            -o build_artifacts/requirements-cu121.txt
-
-      - name: Upload source artifacts
-        uses: actions/upload-artifact@v7
-        with:
-          name: src-dist
-          path: build_artifacts/*
-          if-no-files-found: error
-
-  build-launchers:
-    name: Build launcher (${{ matrix.os }})
-    needs: build-src
+  build:
+    name: Build release artifacts (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: windows-latest
-            artifact: launcher-windows
+            artifact-prefix: windows-x64
           - os: ubuntu-22.04
-            artifact: launcher-linux
+            artifact-prefix: linux-x64
     runs-on: ${{ matrix.os }}
-    env:
-      # Use the setup-python interpreter (best-supported by PyInstaller)
-      # instead of a uv-managed build.
-      UV_PYTHON_PREFERENCE: only-system
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install Tcl/Tk runtime (Linux)
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux audio and Tauri build dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libtcl8.6 libtk8.6
+          sudo apt-get install -y \
+            libasound2-dev \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
 
-      - name: Install Python 3.11
-        uses: actions/setup-python@v6
+      - uses: actions/setup-node@v4
         with:
-          python-version: "3.11"
+          node-version: 22
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v8.2.0
-        with:
-          version: ${{ env.UV_VERSION }}
-          enable-cache: true
+      - name: Fetch pinned ONNX Runtime binaries
+        run: node packaging/fetch_onnxruntime.mjs
 
-      - name: Vendor pinned uv binary into packaging/vendor/
-        run: python packaging/vendor_uv.py
-
-      - name: Generate release metadata
+      - name: Verify tag matches Cargo workspace version
+        id: version
         run: |
-          python packaging/build_release_meta.py \
-            --version "${{ needs.build-src.outputs.version }}" \
-            --url "${{ needs.build-src.outputs.src_url }}" \
-            --sha256 "${{ needs.build-src.outputs.src_sha256 }}"
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          CARGO_VERSION="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name=="liveaudio-desktop") | .version')"
+          if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
+            echo "Tag version ($TAG_VERSION) does not match Cargo workspace version ($CARGO_VERSION)"
+            exit 1
+          fi
+          echo "version=$TAG_VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Install build tooling (PyInstaller)
-        run: uv sync --locked --only-group build
+      - name: Build standalone release binaries
+        run: cargo build --release -p liveaudio-asr-worker -p liveaudio-cli
 
-      - name: Build launcher executable
+      - name: Prepare Tauri external sidecar binaries
         run: |
-          uv run --no-sync pyinstaller packaging/launcher.spec \
-            --noconfirm \
-            --distpath build_artifacts/launcher \
-            --workpath build_artifacts/pyi-build
+          TARGET_TRIPLE="$(rustc -vV | sed -n 's|host: ||p')"
+          mkdir -p desktop/src-tauri/binaries
+          if [[ "${RUNNER_OS}" == "Windows" ]]; then
+            cp target/release/liveaudio-cli.exe "desktop/src-tauri/binaries/liveaudio-cli-${TARGET_TRIPLE}.exe"
+            cp target/release/liveaudio-asr-worker.exe "desktop/src-tauri/binaries/liveaudio-asr-worker-${TARGET_TRIPLE}.exe"
+          else
+            cp target/release/liveaudio-cli "desktop/src-tauri/binaries/liveaudio-cli-${TARGET_TRIPLE}"
+            cp target/release/liveaudio-asr-worker "desktop/src-tauri/binaries/liveaudio-asr-worker-${TARGET_TRIPLE}"
+            chmod +x desktop/src-tauri/binaries/*
+          fi
 
-      - name: Collect Windows asset
+      - name: Install cargo-about (pinned)
+        run: cargo install cargo-about --locked --version 0.9.3 --features cli
+
+      - name: Generate third-party crate license notices
+        run: node packaging/generate_licenses.mjs
+
+      - name: Build Tauri desktop bundle
+        working-directory: desktop
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npx --yes @tauri-apps/cli build --config src-tauri/tauri.release.conf.json
+
+      - name: Assemble updater manifest (latest.json)
         if: runner.os == 'Windows'
         run: |
-          VERSION="${{ needs.build-src.outputs.version }}"
-          mkdir -p release_assets
-          mv build_artifacts/launcher/LiveAudio-Setup.exe \
-            "release_assets/LiveAudio-Setup-${VERSION}.exe"
+          node packaging/assemble_latest_manifest.mjs \
+            --version "${{ steps.version.outputs.version }}" \
+            --out-dir release_assets
 
-      - name: Collect Linux asset (tarball)
+      - name: Package Windows release assets
+        if: runner.os == 'Windows'
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          mkdir -p release_assets
+          # Find and copy NSIS installer and updater artifacts if not already staged
+          find target/release/bundle/nsis desktop/src-tauri/target/release/bundle/nsis -type f -name "*.exe" -exec cp -n {} "release_assets/LiveAudio-Setup-${VERSION}.exe" \; 2>/dev/null || true
+          find target/release/bundle/nsis desktop/src-tauri/target/release/bundle/nsis -type f -name "*.sig" -exec cp -n {} "release_assets/" \; 2>/dev/null || true
+          
+          # Standalone CLI + ASR worker zip package with DirectML.dll and onnxruntime.dll preserved
+          STAGE="stage/LiveAudio-cli-${VERSION}-windows-x64"
+          mkdir -p "$STAGE/onnxruntime"
+          cp target/release/liveaudio-cli.exe "$STAGE/"
+          cp target/release/liveaudio-asr-worker.exe "$STAGE/"
+          cp -r packaging/onnxruntime/windows-x64 "$STAGE/onnxruntime/"
+          # Validate DirectML.dll and onnxruntime.dll are present
+          test -f "$STAGE/onnxruntime/windows-x64/DirectML.dll" || (echo "Missing DirectML.dll in bundle" && exit 1)
+          test -f "$STAGE/onnxruntime/windows-x64/onnxruntime.dll" || (echo "Missing onnxruntime.dll in bundle" && exit 1)
+          test -f "$STAGE/onnxruntime/windows-x64/DirectML-LICENSE.txt" || (echo "Missing DirectML license in bundle" && exit 1)
+          cp LICENSE THIRD_PARTY_NOTICES.md THIRD_PARTY_LICENSES.html README.md "$STAGE/"
+          (cd stage && 7z a "../release_assets/liveaudio-cli-${VERSION}-windows-x64.zip" "LiveAudio-cli-${VERSION}-windows-x64")
+
+      - name: Package Linux release assets
         if: runner.os == 'Linux'
         run: |
-          VERSION="${{ needs.build-src.outputs.version }}"
-          STAGE="stage/LiveAudio-${VERSION}"
-          mkdir -p "$STAGE" release_assets
-          cp build_artifacts/launcher/liveaudio-launcher "$STAGE/"
-          cp liveaudio/assets/LiveAudio-Fran.png "$STAGE/"
-          cp packaging/liveaudio.desktop "$STAGE/"
-          tee "$STAGE/README.linux" >/dev/null <<EOF
-          LiveAudio ${VERSION} - Linux launcher
-          =====================================
+          VERSION="${{ steps.version.outputs.version }}"
+          mkdir -p release_assets
+          # Collect AppImage / Deb bundles and updater signatures
+          find target/release/bundle desktop/src-tauri/target/release/bundle -type f \( -name "*.AppImage" -o -name "*.AppImage.sig" -o -name "*.deb" \) -exec cp {} release_assets/ \; 2>/dev/null || true
 
-          1. Extract this archive anywhere and run:
+          # Standalone CLI + ASR worker tarball package with ONNX Runtime CPU preserved
+          STAGE="stage/LiveAudio-cli-${VERSION}-linux-x64"
+          mkdir -p "$STAGE/onnxruntime"
+          cp target/release/liveaudio-cli "$STAGE/"
+          cp target/release/liveaudio-asr-worker "$STAGE/"
+          cp -r packaging/onnxruntime/linux-x64 "$STAGE/onnxruntime/"
+          test -f "$STAGE/onnxruntime/linux-x64/libonnxruntime.so.1.24.4" || (echo "Missing libonnxruntime.so in bundle" && exit 1)
+          cp LICENSE THIRD_PARTY_NOTICES.md THIRD_PARTY_LICENSES.html README.md "$STAGE/"
+          tar -czf "release_assets/liveaudio-cli-${VERSION}-linux-x64.tar.gz" -C stage "LiveAudio-cli-${VERSION}-linux-x64"
 
-                 ./liveaudio-launcher
-
-             The first run downloads the application and its dependencies
-             (internet connection required). Later runs start instantly.
-
-          2. Optional: install an applications-menu entry with:
-
-                 ./liveaudio-launcher --install-desktop-entry
-
-          Requirements: x86_64 Linux (glibc) and the PortAudio runtime for
-          audio capture:
-
-              sudo apt install libportaudio2
-
-          More information: https://github.com/plynte-labs/LiveAudio
-          EOF
-          tar -czf "release_assets/LiveAudio-${VERSION}-linux-x64.tar.gz" \
-            -C stage "LiveAudio-${VERSION}"
-
-      - name: Upload launcher artifact
-        uses: actions/upload-artifact@v7
+      - name: Upload platform release artifacts
+        uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
+          name: release-${{ matrix.artifact-prefix }}
           path: release_assets/*
-          if-no-files-found: error
+          if-no-files-found: warn
 
   publish:
-    name: Publish draft release
-    needs: [build-src, build-launchers]
+    name: Publish release
+    needs: [build]
     runs-on: ubuntu-22.04
-    permissions:
-      contents: write
     steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v8
+      - uses: actions/checkout@v6
+
+      - name: Download all built artifacts
+        uses: actions/download-artifact@v4
         with:
           path: release_assets
+          pattern: release-*
           merge-multiple: true
 
       - name: Generate SHA256SUMS.txt
         working-directory: release_assets
         run: |
           sha256sum * > SHA256SUMS.txt
-          tee /dev/stderr < SHA256SUMS.txt >/dev/null
+          cat SHA256SUMS.txt
 
-      - name: Create draft release
+      - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

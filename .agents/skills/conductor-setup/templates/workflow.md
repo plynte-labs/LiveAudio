@@ -32,9 +32,9 @@ All tasks follow a strict lifecycle:
    - With the safety of passing tests, refactor the implementation code and the test code to improve clarity, remove duplication, and enhance performance without changing the external behavior.
    - Rerun tests to ensure they still pass after refactoring.
 
-6. **Verify Coverage:** Run coverage reports using the project's chosen tools. For example, in a Python project, this might look like:
+6. **Verify Coverage:** Run coverage reports using the project's chosen tools. For example, in a Rust project, this might look like:
    ```bash
-   pytest --cov=app --cov-report=html
+   cargo llvm-cov --workspace --html
    ```
    Target: >80% coverage for new code. The specific tools and commands will vary by language and framework.
 
