@@ -16,6 +16,65 @@ use serde::Deserialize;
 #[derive(Debug, Clone, Deserialize)]
 struct Sibling {
     rfilename: String,
+    #[serde(default)]
+    size: Option<u64>,
+    #[serde(default)]
+    lfs: Option<LfsInfo>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct LfsInfo {
+    sha256: String,
+}
+
+/// What the Hub reports (at the pinned revision) for a file, used to verify the download.
+#[derive(Debug, Clone, Default)]
+struct Expected {
+    size: Option<u64>,
+    sha256: Option<String>,
+}
+
+impl From<&Sibling> for Expected {
+    fn from(s: &Sibling) -> Self {
+        Self { size: s.size, sha256: s.lfs.as_ref().map(|l| l.sha256.to_lowercase()) }
+    }
+}
+
+/// Immutable commits of the built-in model repos. Custom repos have no pin and track `main`.
+fn pinned_revision(repo_id: &str) -> &'static str {
+    match repo_id {
+        "onnx-community/whisper-tiny" => "ff4177021cc41f7db950912b73ea4fdf7d01d8e7",
+        "onnx-community/whisper-base" => "27a07b4b52b3a4c5886134bb4320e93e1a4bbc7c",
+        "onnx-community/whisper-small" => "36050c46d777d46dc4b5f43f6d90574fc38f8732",
+        "onnx-community/whisper-medium-ONNX" => "d3978248a6b5de6df7ec29ddfbde3993845fa806",
+        "onnx-community/whisper-large-v3-turbo" => "360ebcde2559d60bb474678be3c1de9ef347d01a",
+        _ => "main",
+    }
+}
+
+fn resolve_file_url(repo_id: &str, revision: &str, rel_path: &str) -> String {
+    format!("https://huggingface.co/{repo_id}/resolve/{revision}/{rel_path}")
+}
+
+/// Checks a finished download against the Hub-reported size and (for LFS files) SHA-256.
+fn verify_download(path: &Path, expected: &Expected) -> Result<(), String> {
+    use sha2::{Digest, Sha256};
+    if let Some(size) = expected.size {
+        let got = std::fs::metadata(path).map_err(|e| e.to_string())?.len();
+        if got != size {
+            return Err(format!("size mismatch: expected {size} bytes, got {got}"));
+        }
+    }
+    if let Some(want) = &expected.sha256 {
+        let mut hasher = Sha256::new();
+        let mut file = File::open(path).map_err(|e| e.to_string())?;
+        std::io::copy(&mut file, &mut hasher).map_err(|e| e.to_string())?;
+        let got = format!("{:x}", hasher.finalize());
+        if &got != want {
+            return Err(format!("SHA-256 mismatch: expected {want}, got {got}"));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -185,7 +244,8 @@ pub async fn prepare_model(
         .build()
         .map_err(|e| format!("Failed to build HTTP client: {e}"))?;
 
-    let siblings_res = fetch_repo_siblings(&client, &repo_id).await;
+    let revision = pinned_revision(&repo_id);
+    let siblings_res = fetch_repo_siblings(&client, &repo_id, revision).await;
     let siblings = match siblings_res {
         Ok(s) => s,
         Err(err) => {
@@ -279,20 +339,24 @@ pub async fn prepare_model(
                 .map_err(|e| format!("Failed to create directory {}: {e}", parent.display()))?;
         }
 
-        if dest_path.is_file() {
-            let metadata = std::fs::metadata(&dest_path).ok();
-            if let Some(meta) = metadata {
-                if meta.len() > 0 {
-                    continue;
-                }
+        let expected = siblings
+            .iter()
+            .find(|s| &s.rfilename == rel_path)
+            .map(Expected::from)
+            .unwrap_or_default();
+        if let Ok(meta) = std::fs::metadata(&dest_path) {
+            // Cached files are accepted only when complete (size matches the pinned revision).
+            if meta.len() > 0 && expected.size.is_none_or(|size| size == meta.len()) {
+                continue;
             }
         }
 
         let display_name = format!("({}/{}) {}", idx + 1, total_files, rel_path);
         download_single_file(
             &client,
-            &repo_id,
+            &resolve_file_url(&repo_id, revision, rel_path),
             rel_path,
+            &expected,
             &dest_path,
             &display_name,
             &mut progress_cb,
@@ -320,8 +384,8 @@ fn part_path(dest: &Path) -> PathBuf {
     PathBuf::from(os)
 }
 
-async fn fetch_repo_siblings(client: &Client, repo_id: &str) -> Result<Vec<Sibling>, String> {
-    let url = format!("https://huggingface.co/api/models/{repo_id}");
+async fn fetch_repo_siblings(client: &Client, repo_id: &str, revision: &str) -> Result<Vec<Sibling>, String> {
+    let url = format!("https://huggingface.co/api/models/{repo_id}/revision/{revision}?blobs=true");
     let response = client
         .get(&url)
         .send()
@@ -354,13 +418,13 @@ async fn request_file(client: &Client, url: &str, offset: u64) -> Result<reqwest
 
 async fn download_single_file(
     client: &Client,
-    repo_id: &str,
+    url: &str,
     rel_path: &str,
+    expected: &Expected,
     dest_path: &Path,
     display_name: &str,
     progress_cb: &mut impl FnMut(&str, &str, Option<f64>, Option<u64>, Option<u64>, Option<u64>, Option<f64>),
 ) -> Result<(), String> {
-    let url = format!("https://huggingface.co/{repo_id}/resolve/main/{rel_path}");
     let part = part_path(dest_path);
 
     progress_cb("downloading", display_name, Some(0.0), Some(0), None, None, None);
@@ -452,6 +516,11 @@ async fn download_single_file(
                 "Incomplete download of {rel_path}: got {downloaded} of {total} bytes"
             ));
         }
+    }
+
+    if let Err(reason) = verify_download(&part, expected) {
+        let _ = std::fs::remove_file(&part);
+        return Err(format!("Integrity check failed for {rel_path}: {reason}"));
     }
 
     std::fs::rename(&part, dest_path)
@@ -685,6 +754,36 @@ pub fn verify_local_dir(dir: &Path, prefer_quantized: bool) -> Result<ResolvedMo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn known_repos_are_pinned_to_a_commit_and_custom_repos_track_main() {
+        for name in ["tiny", "base", "small", "medium", "turbo"] {
+            let rev = pinned_revision(&resolve_repo_id(name));
+            assert_eq!(rev.len(), 40, "{name}");
+            assert!(rev.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)), "{name}");
+        }
+        assert_eq!(pinned_revision("custom/my-whisper"), "main");
+        assert_eq!(
+            resolve_file_url("o/r", "abc", "onnx/x.onnx"),
+            "https://huggingface.co/o/r/resolve/abc/onnx/x.onnx"
+        );
+    }
+
+    #[test]
+    fn download_integrity_checks_size_and_lfs_sha256() {
+        use sha2::{Digest, Sha256};
+        let path = std::env::temp_dir().join(format!("liveaudio-dl-verify-{}", std::process::id()));
+        std::fs::write(&path, b"hello").unwrap();
+        let good = format!("{:x}", Sha256::digest(b"hello"));
+        let expect = |size, sha: Option<&str>| Expected { size: Some(size), sha256: sha.map(str::to_string) };
+
+        assert!(verify_download(&path, &expect(5, Some(&good))).is_ok());
+        assert!(verify_download(&path, &expect(5, None)).is_ok());
+        assert!(verify_download(&path, &Expected::default()).is_ok());
+        assert!(verify_download(&path, &expect(6, None)).unwrap_err().contains("size"));
+        assert!(verify_download(&path, &expect(5, Some(&"0".repeat(64)))).unwrap_err().contains("SHA-256"));
+        let _ = std::fs::remove_file(&path);
+    }
 
     #[test]
     fn resolve_known_repo_aliases() {
