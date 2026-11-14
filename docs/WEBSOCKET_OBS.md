@@ -366,6 +366,7 @@ The server does not send its own WebSocket pings, and it has no idle timeout. A 
 - **No authentication.** Any process on the same machine connecting without an `Origin` header can read subtitles. Browser pages are strictly governed by the Origin filter. Loopback web applications running on other local ports (such as OpenCohost or dev servers) must have their port added to the allowlist before connecting. Users can manage allowed ports and view recent blocked connection attempts in the desktop app under **Settings > Advanced > Allowed local connections**.
 - **Request path.** The server does not check the request path. Use `/` by convention.
 - **Handshake timeout.** A client must finish the WebSocket handshake within 5 seconds.
+- **Connection limits.** The server accepts at most 64 simultaneous connections (`max_connections`; extra connections are dropped) and closes any connection that sends an inbound message or frame larger than 64 KiB (`max_inbound_message_bytes`).
 
 ---
 

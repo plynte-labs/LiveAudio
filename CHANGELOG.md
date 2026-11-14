@@ -4,7 +4,7 @@ Todos los cambios notables de LiveAudio se documentan aquí.
 
 ---
 
-## [1.6.0] - Unreleased
+## [1.6.0] - 2026-11-13
 
 ### Agregado
 
@@ -13,6 +13,8 @@ Todos los cambios notables de LiveAudio se documentan aquí.
 - **Verificación criptográfica Minisign** — Verificación obligatoria de firmas Ed25519 antes de ejecutar cualquier instalador de actualización.
 - **Control de privacidad en Ajustes** — Selector para activar o desactivar la comprobación periódica (cada 24 h) de versiones en GitHub Releases; el audio y las transcripciones permanecen 100% locales en la máquina.
 - **Arquitectura 100% Rust + Tauri 2 Nativa (Zero Python)** — Eliminación completa de dependencias de Python y de entornos virtuales. Motor de transcripción ASR migrado a Rust nativo con aceleración por hardware DirectX 12 mediante ONNX Runtime DirectML (`onnxruntime.dll` + `DirectML.dll`) en Windows y fallback CPU multi-hilo en Windows y Linux.
+- **Motor NVIDIA CUDA opcional** — Worker ASR CTranslate2 y runtime NVIDIA cuBLAS/cuDNN, descargados solo tras una acción explícita del usuario. La descarga del worker está fijada por URL, SHA-256 y tamaño.
+- **Lista de puertos permitidos del WebSocket en Avanzado** — Elige qué puertos loopback locales pueden conectarse al servidor WebSocket en Ajustes > Avanzado > Conexiones locales permitidas.
 
 ### Cambiado
 
@@ -21,6 +23,17 @@ Todos los cambios notables de LiveAudio se documentan aquí.
 
 - **Control granular de permisos MCP (Model Context Protocol)** — Sustitución del switch único `mcp_enabled` por dos opciones independientes en Ajustes > Avanzado: `mcp_style_enabled` (bajo riesgo, lectura/escritura de temas, estilos, presets y modo de subtítulos) y `mcp_system_enabled` (riesgo medio, parámetros de modelo, VAD, dispositivo, prompts y red). Migración automática segura: configs previas con `mcp_enabled: true` activan únicamente `mcp_style_enabled` (bajo riesgo), dejando `mcp_system_enabled` apagado para requerir activación intencionada del usuario; quien utilizaba MCP para control completo del sistema debe reactivar el switch de sistema en Ajustes > Avanzado. Se retira `ws_allowed_loopback_ports` de las claves parcheables por agentes: la lista blanca de puertos para la lectura de transcripciones queda restringida exclusivamente a la UI de escritorio y Tauri IPC.
 - **ONNX Runtime 1.24.4 unificado y descargado en build** — Windows y Linux usan la misma versión; los binarios de ONNX Runtime/DirectML ya no se versionan en git: `node packaging/fetch_onnxruntime.mjs` los descarga de fuentes oficiales verificando SHA-256 (CI y release lo ejecutan). La licencia de DirectML se distribuye con la app.
+- **El AppImage de Linux encuentra el ONNX Runtime incluido** — El worker y el core resuelven la librería de ONNX Runtime desde el directorio de recursos de Tauri en Linux.
+- **La instalación CUDA verifica primero el worker** — El worker CUDA fijado se descarga y verifica por SHA-256 antes de bajar los archivos del runtime de NVIDIA.
+- **Actualización al cerrar limitada a 120 s** — La instalación de la actualización al cerrar tiene un límite de 120 segundos.
+- **Actualizador integrado solo en Windows** — En Linux las actualizaciones son manuales. Los artefactos de Linux son el AppImage, el paquete `.deb` y el archivo del CLI.
+- **Límite de conexiones y de mensajes del WebSocket** — El servidor acepta como máximo 64 conexiones simultáneas y cierra las que envían mensajes o frames entrantes de más de 64 KiB.
+- **El overlay del directorio de trabajo solo aplica en debug** — El HTML del overlay relativo al directorio de trabajo solo se usa en builds de debug.
+- **Descargas de modelos Whisper fijadas** — Los repositorios Whisper integrados están fijados a un commit. Las descargas se verifican contra el tamaño y el SHA-256 LFS del Hub antes de usarse.
+- **Content Security Policy estricta** — La ventana de la app corre con una CSP estricta: sin scripts inline ni eval y sin objetos embebidos.
+- **"Borrar datos de la app" del desinstalador es completo** — La opción ahora borra `%APPDATA%\LiveAudio` (config y sesiones) y `%LOCALAPPDATA%\LiveAudio` (modelos y runtime CUDA). Nunca se ejecuta durante una actualización.
+- **Los builds de release fijan el CLI de Tauri** — Los builds de release usan `@tauri-apps/cli@2.12.1` y `cargo build --locked`.
+- **CI corre todos los tests JS en develop** — CI corre todas las suites de `tests-js` y el harness del frontend en pushes a `master` y `develop`.
 
 ### Aviso de Migración
 

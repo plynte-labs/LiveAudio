@@ -22,7 +22,7 @@ No necesitas Python ni CUDA: LiveAudio es 100% Rust nativo.
 
 1. Descarga la última versión desde [GitHub Releases](https://github.com/plynte-labs/LiveAudio/releases):
    - **Windows:** `LiveAudio-Setup-X.Y.Z.exe`
-   - **Linux:** `LiveAudio-X.Y.Z-linux-x64.tar.gz` (extrae y ejecuta `./liveaudio-launcher`)
+   - **Linux:** la app de escritorio como AppImage (`*.AppImage`) o paquete Debian (`*.deb`). El archivo `liveaudio-cli-X.Y.Z-linux-x64.tar.gz` contiene solo el CLI y el worker ASR, no la app. En Linux las actualizaciones son manuales; el actualizador integrado es solo para Windows.
 2. Ejecútalo. Al iniciar ASR por primera vez, LiveAudio descarga el modelo seleccionado y muestra el progreso en la interfaz. Puedes cancelarlo y reintentarlo después. Si el runtime necesita repararse, usa **Reparar runtime ASR** en Ajustes.
 
 El runtime nativo de ONNX y el modelo Silero VAD están incluidos en los recursos de la aplicación para Windows y Linux; no se descargan durante el inicio. Si esos archivos faltan o no se pueden cargar, repara o reinstala LiveAudio.
@@ -56,7 +56,7 @@ Ejecuta `liveaudio-cli doctor` para ver el worker ASR nativo, ONNX Runtime y las
 - **Instalador:** abre LiveAudio desde el acceso directo.
 - **Desarrolladores:** `cd desktop && npm run dev`.
 
-Al iniciar por primera vez, se creará automáticamente un archivo `config.json` con valores predeterminados en la carpeta de datos: `%LOCALAPPDATA%\LiveAudio\data` (Windows) o `~/.local/share/liveaudio/data` (Linux) en instalaciones con launcher; `%APPDATA%\LiveAudio` o `~/.config/liveaudio` en ejecuciones de desarrollo. Puedes cambiar la ubicación con la variable de entorno `LIVEAUDIO_HOME`.
+Al iniciar por primera vez, LiveAudio crea un `config.json` con valores predeterminados en la carpeta de datos: `%APPDATA%\LiveAudio` en Windows, o `~/.config/liveaudio` (o `$XDG_CONFIG_HOME/liveaudio`) en Linux. Puedes cambiar la ubicación con la variable de entorno `LIVEAUDIO_HOME`. Los modelos Whisper se guardan en `%LOCALAPPDATA%\LiveAudio\models\onnx` en Windows.
 
 ### Dispositivo de cómputo
 

@@ -41,12 +41,13 @@ The steps mirror CI. Run them from the repository root unless noted.
    node packaging/fetch_onnxruntime.mjs                # current OS
    node packaging/fetch_onnxruntime.mjs windows-x64 linux-x64
    ```
+   On Windows the script also copies the four VC++ runtime DLLs (`vcruntime140`, `vcruntime140_1`, `msvcp140`, `msvcp140_1`) from the local Visual Studio `VC\Redist` (found via vswhere; not hash-pinned) so they ship app-locally next to the exes.
    The script downloads ONNX Runtime 1.24.4 (and DirectML 1.15.4 on Windows),
    checks each archive against a pinned SHA-256 and aborts on mismatch. The
    pins live in `packaging/fetch_onnxruntime.mjs`.
 2. Build the sidecars:
    ```bash
-   cargo build --release -p liveaudio-asr-worker -p liveaudio-cli
+   cargo build --release --locked -p liveaudio-asr-worker -p liveaudio-cli
    ```
 3. Copy them into `desktop/src-tauri/binaries/` (gitignored) using Tauri's
    external-binary naming, `<name>-<target-triple>[.exe]`. `rustc -vV` prints the
@@ -56,7 +57,7 @@ The steps mirror CI. Run them from the repository root unless noted.
    ```bash
    cd desktop
    TAURI_SIGNING_PRIVATE_KEY=... TAURI_SIGNING_PRIVATE_KEY_PASSWORD=... \
-     npx --yes @tauri-apps/cli build --config src-tauri/tauri.release.conf.json
+     npx --yes @tauri-apps/cli@2.12.1 build --config src-tauri/tauri.release.conf.json
    ```
 
 Version consistency: CI fails when the tag (`vX.Y.Z`) does not match the
@@ -133,7 +134,12 @@ The app checks `https://github.com/plynte-labs/LiveAudio/releases/latest/downloa
 7. Smoke-test the installer on a clean Windows machine, including the on-demand
    NVIDIA install. Follow [UPDATER_TESTING.md](UPDATER_TESTING.md) for the updater path.
 8. Publish the draft. The worker must be uploaded before publishing: users download it
-   from the published release URL.
+   from the published release URL. Upload the exact exe whose SHA-256 and size are in the
+   committed pin; the installer downloads and verifies the worker before the NVIDIA
+   archives, so a missing or different asset fails the install early.
+9. Before publishing, complete the signed-update round trip in
+   [UPDATER_TESTING.md](UPDATER_TESTING.md) with the real signing secret: CI cannot
+   prove the secret matches the committed public key.
 
 ## 6. Troubleshooting
 

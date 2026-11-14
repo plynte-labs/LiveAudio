@@ -4,7 +4,7 @@
 
 | Version | Supported |
 |---------|-----------|
-| Latest (`main`) | ✅ |
+| Latest (`master`) | ✅ |
 | Older releases | ❌ |
 
 We support security fixes on the latest released version only.
