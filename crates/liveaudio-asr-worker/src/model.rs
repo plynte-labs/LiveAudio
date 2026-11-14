@@ -139,6 +139,16 @@ fn find_ort_dylib() -> Result<PathBuf, String> {
         return Ok(local_dev);
     }
 
+    // Debug builds and tests: newer cargo layouts run test binaries outside target/<profile>/deps,
+    // so resolve the checkout's packaging dir from the crate location instead of the exe path.
+    #[cfg(debug_assertions)]
+    {
+        let checkout = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packaging").join(rel_target);
+        if checkout.is_file() {
+            return Ok(std::fs::canonicalize(&checkout).unwrap_or(checkout));
+        }
+    }
+
     Err("Could not locate ONNX Runtime shared library. Set LIVEAUDIO_ORT_DYLIB_PATH or install LiveAudio.".to_string())
 }
 
