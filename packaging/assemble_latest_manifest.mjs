@@ -112,7 +112,7 @@ export function assemble_manifest({
   sigPath,
   outDir,
   repo = process.env.GITHUB_REPOSITORY || "plynte-labs/LiveAudio",
-  tag = process.env.GITHUB_REF_NAME || "",
+  tag = "",
   notes = null,
 }) {
   if (!fs.existsSync(sigPath)) {
