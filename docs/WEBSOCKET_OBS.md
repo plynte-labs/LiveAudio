@@ -460,7 +460,7 @@ You have two options to connect OBS to the overlay:
 |---|---|
 | **URL / Local file** | `http://127.0.0.1:8765/overlay` (or local `assets/subtitulos_obs.html`) |
 | **Width** | `1920` |
-| **Height** | `200` |
+| **Height** | `1080` |
 | **FPS** | `30` or `60` |
 | **Shutdown source when not visible** | Off (keeps the WebSocket connected) |
 | **Refresh browser when scene becomes active** | Off (avoids unnecessary reconnects) |

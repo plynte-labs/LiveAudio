@@ -63,7 +63,7 @@ In the **Setup (Inicio)** tab:
    http://127.0.0.1:8765/overlay
    ```
    *(Or check **Local file** and select `assets/subtitulos_obs.html` from the app folder).*
-3. Set **Width: 1920**, **Height: 200**, and **FPS: 60**.
+3. Set **Width: 1920**, **Height: 1080**, and **FPS: 60**.
 4. Uncheck *"Shutdown source when not visible"* and uncheck *"Refresh browser when scene becomes active"* to keep the WebSocket connection uninterrupted.
 5. Speak into your mic — live subtitles appear instantly on stream!
 

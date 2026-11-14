@@ -206,7 +206,7 @@ Resumen rápido:
 
 1. En OBS, añade un fuente **Navegador** (Browser Source).
 2. Activa la opción **"Archivo local"** y selecciona `subtitulos_obs.html`.
-3. Ajusta el ancho y alto (recomendado: 1920x200).
+3. Ajusta el ancho y alto (recomendado: 1920x1080).
 4. Inicia LiveAudio y los subtítulos aparecerán automáticamente.
 
 ### 6.1. Modo servicio headless (integradores, opcional)
