@@ -486,11 +486,12 @@ mod tests {
 
     #[test]
     fn prepend_path_puts_the_runtime_dir_first() {
-        let joined = prepend_path(Path::new("C:/rt"), Some("C:/a;C:/b".into()));
+        // join_paths uses the platform separator (';' on Windows, ':' elsewhere).
+        let existing = std::env::join_paths(["a", "b"]).unwrap();
+        let joined = prepend_path(Path::new("rt"), Some(existing));
         let parts: Vec<_> = std::env::split_paths(&joined).collect();
-        assert_eq!(parts[0], PathBuf::from("C:/rt"));
-        assert!(parts.len() >= 2);
-        assert_eq!(prepend_path(Path::new("C:/rt"), None), std::ffi::OsString::from("C:/rt"));
+        assert_eq!(parts, vec![PathBuf::from("rt"), PathBuf::from("a"), PathBuf::from("b")]);
+        assert_eq!(prepend_path(Path::new("rt"), None), std::ffi::OsString::from("rt"));
     }
 
     #[tokio::test]

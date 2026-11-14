@@ -1515,12 +1515,21 @@ mod tests {
         let discovered_worker = WorkerProcessConfig::find_asr_worker_script();
         let config = WorkerProcessConfig::discover_asr_worker();
 
-        assert_eq!(discovered_worker, Some(fake_worker.clone()));
-        assert_eq!(config.command, fake_worker.to_string_lossy());
+        // Compare resolved paths: Windows runners may report the temp dir in 8.3 short form.
+        assert_eq!(discovered_worker.as_deref().map(resolved), Some(resolved(&fake_worker)));
+        assert_eq!(resolved(std::path::Path::new(&config.command)), resolved(&fake_worker));
 
         std::env::remove_var("LIVEAUDIO_WORKER_PATH");
         let _ = std::fs::remove_file(&fake_worker);
     }
+}
+
+/// Canonical form without the verbatim prefix, so short (8.3) and long Windows paths compare equal.
+#[cfg(test)]
+fn resolved(path: &std::path::Path) -> PathBuf {
+    let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let raw = canon.to_string_lossy();
+    PathBuf::from(raw.strip_prefix(r"\\?\").unwrap_or(&raw))
 }
 
 #[cfg(test)]
@@ -1535,7 +1544,7 @@ mod native_worker_discovery_tests {
 
         let temp = std::env::temp_dir().join("some_worker.exe");
         let root_temp = WorkerProcessConfig::find_package_root(&Some(temp.clone()));
-        assert_eq!(root_temp, temp.parent().map(PathBuf::from));
+        assert_eq!(root_temp, temp.parent().map(resolved));
     }
 
     #[test]
