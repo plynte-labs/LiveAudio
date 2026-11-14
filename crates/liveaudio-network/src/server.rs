@@ -68,6 +68,10 @@ pub struct WsServerConfig {
     pub handshake_timeout: Duration,
     pub allowed_loopback_ports: Vec<u16>,
     pub rejected_origins: Option<Arc<Mutex<crate::security::RejectedOriginTracker>>>,
+    /// Maximum simultaneous TCP connections (WebSocket clients and overlay requests); extras are dropped.
+    pub max_connections: usize,
+    /// Largest inbound WebSocket message/frame. Clients only receive; their frames are discarded.
+    pub max_inbound_message_bytes: usize,
 }
 
 impl Default for WsServerConfig {
@@ -84,6 +88,8 @@ impl Default for WsServerConfig {
             handshake_timeout: Duration::from_secs(5),
             allowed_loopback_ports: vec![1420],
             rejected_origins: None,
+            max_connections: MAX_CONNECTIONS,
+            max_inbound_message_bytes: MAX_INBOUND_MESSAGE_BYTES,
         }
     }
 }
@@ -117,6 +123,8 @@ impl RetryState {
 }
 
 /// Pause between accept attempts after an error, so a persistent failure cannot spin the loop.
+const MAX_CONNECTIONS: usize = 64;
+const MAX_INBOUND_MESSAGE_BYTES: usize = 64 * 1024;
 const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(100);
 
 /// Decrements the live client count without wrapping below zero (`stop()` resets it).
@@ -132,14 +140,17 @@ pub const EMBEDDED_OBS_OVERLAY_HTML: &str =
     include_str!("../../../assets/subtitulos_obs.html");
 
 fn load_overlay_html() -> std::borrow::Cow<'static, str> {
-    let candidates = [
-        PathBuf::from("assets/subtitulos_obs.html"),
-        PathBuf::from("../assets/subtitulos_obs.html"),
-        PathBuf::from("../../assets/subtitulos_obs.html"),
-    ];
-    for path in &candidates {
-        if let Ok(content) = std::fs::read_to_string(path) {
-            return std::borrow::Cow::Owned(content);
+    // The working directory is attacker-influenced in release builds, so CWD overrides are dev-only.
+    if cfg!(debug_assertions) {
+        let candidates = [
+            PathBuf::from("assets/subtitulos_obs.html"),
+            PathBuf::from("../assets/subtitulos_obs.html"),
+            PathBuf::from("../../assets/subtitulos_obs.html"),
+        ];
+        for path in &candidates {
+            if let Ok(content) = std::fs::read_to_string(path) {
+                return std::borrow::Cow::Owned(content);
+            }
         }
     }
     if let Ok(exe_path) = std::env::current_exe() {
@@ -685,6 +696,7 @@ async fn run_replay_loop(inner: Arc<WsServerInner>) {
 }
 
 async fn run_accept_loop(listener: TcpListener, effective_port: u16, inner: Arc<WsServerInner>) {
+    let permits = Arc::new(tokio::sync::Semaphore::new(inner.config.max_connections));
     loop {
         tokio::select! {
             _ = inner.shutdown_token.cancelled() => {
@@ -693,8 +705,14 @@ async fn run_accept_loop(listener: TcpListener, effective_port: u16, inner: Arc<
             res = listener.accept() => {
                 match res {
                     Ok((stream, peer_addr)) => {
+                        let Ok(permit) = Arc::clone(&permits).try_acquire_owned() else {
+                            inner.metrics.rejected_clients.fetch_add(1, Ordering::SeqCst);
+                            tracing::warn!("[WebSocket] Connection cap reached; dropping {}", peer_addr.ip());
+                            continue;
+                        };
                         let inner_client = Arc::clone(&inner);
                         tokio::spawn(async move {
+                            let _permit = permit;
                             handle_connection(stream, peer_addr, effective_port, inner_client).await;
                         });
                     }
@@ -856,9 +874,13 @@ async fn handle_connection(
         Ok(resp)
     };
 
+    let limit = Some(inner.config.max_inbound_message_bytes);
+    let ws_config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
+        .max_message_size(limit)
+        .max_frame_size(limit);
     let handshake = tokio::time::timeout(
         inner.config.handshake_timeout,
-        tokio_tungstenite::accept_hdr_async(stream, callback),
+        tokio_tungstenite::accept_hdr_async_with_config(stream, callback, Some(ws_config)),
     )
     .await;
     let ws_stream = match handshake {

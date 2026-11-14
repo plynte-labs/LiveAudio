@@ -676,3 +676,60 @@ async fn test_silent_tcp_peer_is_dropped_after_handshake_timeout() {
 
     server.stop().await.expect("Failed to stop server");
 }
+
+async fn wait_client_count(server: &WsServer, n: usize) {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while server.client_count() != n {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("client_count never reached {n}"));
+}
+
+#[tokio::test]
+async fn test_connection_cap_rejects_extra_clients_and_frees_slots() {
+    let port = 19970;
+    let mut server = WsServer::new(WsServerConfig {
+        base_port: port,
+        max_connections: 2,
+        ..Default::default()
+    });
+    let bound = server.start(port).await.expect("Failed to start server");
+    let url = format!("ws://127.0.0.1:{bound}");
+    let (a, _) = connect_async(&url).await.expect("first client");
+    let (_b, _) = connect_async(&url).await.expect("second client");
+    wait_client_count(&server, 2).await;
+
+    let third = tokio::time::timeout(Duration::from_secs(3), connect_async(&url))
+        .await
+        .expect("third connect resolves");
+    assert!(third.is_err(), "connection above the cap must be refused");
+
+    drop(a);
+    wait_client_count(&server, 1).await;
+    connect_async(&url).await.expect("slot is reusable after a disconnect");
+
+    server.stop().await.expect("Failed to stop server");
+}
+
+#[tokio::test]
+async fn test_oversized_inbound_message_closes_the_connection() {
+    let port = 19980;
+    let mut server = WsServer::new(WsServerConfig {
+        base_port: port,
+        max_inbound_message_bytes: 1024,
+        ..Default::default()
+    });
+    let bound = server.start(port).await.expect("Failed to start server");
+    let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{bound}"))
+        .await
+        .expect("client connects");
+    wait_client_count(&server, 1).await;
+
+    use futures_util::SinkExt;
+    let _ = ws.send(Message::Text("x".repeat(8192).into())).await;
+    wait_client_count(&server, 0).await;
+
+    server.stop().await.expect("Failed to stop server");
+}
