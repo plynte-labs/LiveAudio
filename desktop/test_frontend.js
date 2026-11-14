@@ -763,7 +763,15 @@ async function runTests() {
 
   const i18nPath = path.join(__dirname, 'src', 'i18n.js');
   assert(fs.existsSync(i18nPath), 'i18n.js exists');
-  const { t, setLanguage, getLanguage, getProfilePresetData, PROFILE_I18N, applyTranslations } = await import('./src/i18n.js');
+  const { t, setLanguage, getLanguage, getProfilePresetData, PROFILE_I18N, applyTranslations, TRANSLATIONS } = await import('./src/i18n.js');
+
+  // t() returns the key itself when it is missing, so a typo shows raw keys like "feed_empty" in the UI.
+  const appSourceForKeys = fs.readFileSync(path.join(__dirname, 'src', 'app.js'), 'utf8');
+  const literalKeys = [...new Set([...appSourceForKeys.matchAll(/\bt\('([a-z0-9_]+)'\)/g)].map((match) => match[1]))];
+  for (const lang of ['es', 'en']) {
+    const missing = literalKeys.filter((key) => !(key in TRANSLATIONS[lang]));
+    assert(missing.length === 0, `every literal t('...') key in app.js exists in ${lang}${missing.length ? `: missing ${missing.join(', ')}` : ''}`);
+  }
 
   const monitorKeys = ['btn_monitor', 'status_monitor', 'monitor_banner', 'monitor_pid_unknown', 'toast_config_saved_deferred'];
   for (const lang of ['es', 'en']) {

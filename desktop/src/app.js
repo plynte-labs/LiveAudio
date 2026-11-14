@@ -1030,7 +1030,7 @@ function updateStatusUI(status) {
   if (elements.feedEmptyState && elements.subtitlesFeedContainer && !elements.subtitlesFeedContainer.querySelector('.feed-item')) {
     elements.feedEmptyState.textContent = isFeedLive
       ? (t('feed_listening_live') || 'Escuchando audio en vivo — habla para ver los subtítulos en tiempo real...')
-      : (t('feed_empty') || 'Los subtítulos transcritos aparecerán aquí...');
+      : t('feed_empty_hint');
     elements.feedEmptyState.hidden = false;
   }
 
@@ -1388,7 +1388,7 @@ function clearSubtitleFeed() {
     const isLive = Boolean(currentStatus?.is_running || currentStatus?.monitor_mode || (monitorFeed && monitorFeed.socket));
     elements.feedEmptyState.textContent = isLive
       ? (t('feed_listening_live') || 'Escuchando audio en vivo — habla para ver los subtítulos en tiempo real...')
-      : (t('feed_empty') || 'Los subtítulos transcritos aparecerán aquí...');
+      : t('feed_empty_hint');
     elements.feedEmptyState.hidden = false;
   }
   if (elements.feedCountBadge) {
