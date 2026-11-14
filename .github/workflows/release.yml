@@ -65,7 +65,7 @@ jobs:
           echo "version=$TAG_VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Build standalone release binaries
-        run: cargo build --release -p liveaudio-asr-worker -p liveaudio-cli
+        run: cargo build --release --locked -p liveaudio-asr-worker -p liveaudio-cli
 
       - name: Prepare Tauri external sidecar binaries
         run: |
@@ -91,7 +91,7 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: npx --yes @tauri-apps/cli build --config src-tauri/tauri.release.conf.json
+        run: npx --yes @tauri-apps/cli@2.12.1 build --config src-tauri/tauri.release.conf.json
 
       - name: Assemble updater manifest (latest.json)
         if: runner.os == 'Windows'
@@ -115,6 +115,10 @@ jobs:
           cp target/release/liveaudio-cli.exe "$STAGE/"
           cp target/release/liveaudio-asr-worker.exe "$STAGE/"
           cp -r packaging/onnxruntime/windows-x64 "$STAGE/onnxruntime/"
+          # App-local VC++ runtime next to the exes (they link vcruntime140 dynamically)
+          for d in vcruntime140.dll vcruntime140_1.dll msvcp140.dll msvcp140_1.dll; do
+            cp "packaging/onnxruntime/windows-x64/$d" "$STAGE/" || (echo "Missing $d" && exit 1)
+          done
           # Validate DirectML.dll and onnxruntime.dll are present
           test -f "$STAGE/onnxruntime/windows-x64/DirectML.dll" || (echo "Missing DirectML.dll in bundle" && exit 1)
           test -f "$STAGE/onnxruntime/windows-x64/onnxruntime.dll" || (echo "Missing onnxruntime.dll in bundle" && exit 1)

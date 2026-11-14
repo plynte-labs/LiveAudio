@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [master, develop]
   pull_request:
 
 permissions:
@@ -64,6 +64,8 @@ jobs:
             test -f "$root/onnxruntime.dll"
             test -f "$root/onnxruntime_providers_shared.dll"
             test -f "$root/DirectML.dll"
+            test -f "$root/vcruntime140.dll"
+            test -f "$root/msvcp140.dll"
             test -f "$root/DirectML-LICENSE.txt"
           else
             root="packaging/onnxruntime/linux-x64"
@@ -97,5 +99,8 @@ jobs:
         with:
           node-version: 22
 
-      - name: Run JS & WCAG contract test suite
-        run: node --test tests-js/test_html_js.mjs tests-js/test_ribbon_js.mjs tests-js/test_wcag_contrast.mjs
+      - name: Run JS test suite
+        run: node --test tests-js/*.mjs
+
+      - name: Run frontend harness
+        run: node desktop/test_frontend.js
