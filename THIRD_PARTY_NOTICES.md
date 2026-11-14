@@ -67,6 +67,13 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+## Microsoft Visual C++ Redistributable runtime — Visual Studio redistribution terms
+
+`vcruntime140.dll`, `vcruntime140_1.dll`, `msvcp140.dll` and `msvcp140_1.dll` are
+deployed app-locally on Windows (copied from the Visual Studio `VC\Redist` folder)
+under the Visual Studio redistributable-code terms, so the app runs without a
+system-wide VC++ Redistributable install.
+
 ## ONNX Runtime 1.24.4 and DirectML 1.15.4 — MIT and Microsoft Software License Terms
 
 ONNX Runtime 1.24.4 (MIT License, Copyright (c) Microsoft Corporation) is

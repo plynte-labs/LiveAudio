@@ -205,6 +205,16 @@ pub async fn install_runtime(
     let downloads = dir.join("downloads");
     let total: u64 = m.archives.iter().map(|a| a.size + a.license.size).sum::<u64>() + m.worker.as_ref().map_or(0, |w| w.size);
     let mut base = 0u64;
+    // The small pinned worker goes first so a missing or mismatched release asset fails before ~1.2 GB of archives.
+    if let Some(w) = &m.worker {
+        let path = dir.join(w.name);
+        let matches = tokio::task::spawn_blocking(move || file_sha256(&path)).await.ok().flatten().is_some_and(|h| h == w.sha256);
+        if !matches {
+            download_verified(w.url, &dir.join(w.name), w.sha256, Some(w.size), |d, _| progress(d, total), cancel).await?;
+        }
+        base += w.size;
+        progress(base, total);
+    }
     for a in m.archives {
         let l = &a.license;
         if have(a) {
@@ -233,14 +243,7 @@ pub async fn install_runtime(
         tokio::fs::rename(&license_tmp, dir.join(l.name)).await?;
     }
     let _ = tokio::fs::remove_dir(&downloads).await;
-    if let Some(w) = &m.worker {
-        let path = dir.join(w.name);
-        let matches = tokio::task::spawn_blocking(move || file_sha256(&path)).await.ok().flatten().is_some_and(|h| h == w.sha256);
-        if !matches {
-            download_verified(w.url, &dir.join(w.name), w.sha256, Some(w.size), |d, _| progress(base + d, total), cancel).await?;
-        }
-        progress(total, total);
-    }
+    progress(total, total);
     let stamp = serde_json::to_string(&expected_stamp(m)).map_err(|e| DownloadError::Zip(e.to_string()))?;
     tokio::fs::write(dir.join(STAMP), stamp).await?;
     Ok(())
@@ -454,6 +457,15 @@ mod tests {
         assert!(!runtime_status(&dir, &second).installed, "stamp differs once a worker is pinned");
         install_runtime(&dir, &second, |_, _| {}, &AtomicBool::new(false)).await.unwrap();
         assert!(runtime_status(&dir, &second).installed);
+    }
+
+    #[tokio::test]
+    async fn missing_worker_asset_fails_before_large_archives() {
+        let f = fixture().await; // archives reachable, /w.exe is 404
+        let m = with_worker(manifest_for(&f, &sha(&f.zip), &sha(&f.lic)), &f, b"MZ-worker");
+        let dir = tempdir("workerfirst");
+        install_runtime(&dir, &m, |_, _| {}, &AtomicBool::new(false)).await.unwrap_err();
+        assert!(!dir.join("a64.dll").exists(), "archives must not be fetched before the worker is verified");
     }
 
     #[test]

@@ -6,6 +6,7 @@
  * a mismatch aborts. Usage: node packaging/fetch_onnxruntime.mjs [windows-x64|linux-x64]
  * Dependency-free: archives are parsed in-process (no tar/unzip needed).
  */
+import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -118,6 +119,33 @@ export function readTgzEntries(gz) {
   return entries;
 }
 
+/** VC++ runtime DLLs that prebuilt ORT and the Rust sidecars link dynamically. */
+export const VCRUNTIME_DLLS = ["vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll", "msvcp140_1.dll"];
+
+/** Newest `VC/Redist/MSVC/<ver>/x64/Microsoft.VC14*.CRT` under a Visual Studio install root. */
+export function findVcRedistDir(vsRoot) {
+  const base = path.join(vsRoot, "VC", "Redist", "MSVC");
+  const versions = fs.existsSync(base) ? fs.readdirSync(base).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })) : [];
+  for (const v of versions.reverse()) {
+    const x64 = path.join(base, v, "x64");
+    const crt = fs.existsSync(x64) && fs.readdirSync(x64).find((d) => /^Microsoft\.VC14\d\.CRT$/.test(d));
+    if (crt) return path.join(x64, crt);
+  }
+  throw new Error(`Microsoft Visual C++ Redistributable (VC/Redist/MSVC/*/x64/Microsoft.VC14*.CRT) not found under ${vsRoot}`);
+}
+
+function stageVcRuntime(dir) {
+  const vswhere = path.join(process.env["ProgramFiles(x86)"] || "C:\Program Files (x86)", "Microsoft Visual Studio", "Installer", "vswhere.exe");
+  if (!fs.existsSync(vswhere)) throw new Error(`vswhere.exe not found at ${vswhere}; install Visual Studio Build Tools`);
+  const vsRoot = execFileSync(vswhere, ["-latest", "-products", "*", "-property", "installationPath"], { encoding: "utf8" }).trim();
+  if (!vsRoot) throw new Error("vswhere found no Visual Studio installation");
+  const crt = findVcRedistDir(vsRoot);
+  for (const f of VCRUNTIME_DLLS) fs.copyFileSync(path.join(crt, f), path.join(dir, f));
+  const missing = VCRUNTIME_DLLS.filter((f) => !fs.existsSync(path.join(dir, f)));
+  if (missing.length) throw new Error(`VC++ runtime copy incomplete: ${missing.join(", ")}`);
+  console.log(`[ort] windows-x64: VC++ runtime staged from ${crt}`);
+}
+
 async function download(url) {
   const res = await fetch(url, { redirect: "follow" });
   if (!res.ok) throw new Error(`download failed: ${url} -> HTTP ${res.status}`);
@@ -130,6 +158,10 @@ export async function fetchPlatform(key, root) {
   const stampFile = path.join(dir, ".pins");
   const stamp = plat.archives.map((a) => a.sha256).join("\n");
   const outputs = [...plat.archives.flatMap((a) => a.files.map((f) => f.to)), "VERSION_NUMBER"];
+  if (key === "windows-x64") {
+    fs.mkdirSync(dir, { recursive: true });
+    stageVcRuntime(dir);
+  }
   const present = outputs.every((f) => fs.existsSync(path.join(dir, f)));
   if (present && fs.existsSync(stampFile) && fs.readFileSync(stampFile, "utf8") === stamp) {
     console.log(`[ort] ${key}: up to date (${ORT_VERSION})`);

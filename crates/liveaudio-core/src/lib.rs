@@ -38,7 +38,7 @@ pub use nvidia_runtime::{
 pub use event::{EventBus, HealthState, HealthStateMachine};
 pub use job_object::JobObject;
 pub use pipeline::{PipelineConfig, PipelineLifecycleManager};
-pub use runtime::{preflight_asr_runtime, RuntimeError};
+pub use runtime::{preflight_asr_runtime, suppress_loader_error_dialogs, RuntimeError};
 pub use service_lock::{service_lock_holder, ServiceLock, ServiceLockHolder, SERVICE_LOCK_NAME};
 pub use sink::traits::BoxFuture;
 pub use sink::{

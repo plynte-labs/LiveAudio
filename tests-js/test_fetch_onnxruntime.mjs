@@ -88,3 +88,37 @@ describe("fetch_onnxruntime archive readers", () => {
     assert.equal(entries.get("b/c.txt").toString(), "deflated deflated deflated");
   });
 });
+
+describe("app-local VC++ runtime", () => {
+  const dlls = ["vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll", "msvcp140_1.dll"];
+
+  it("fetch script declares the four VC++ runtime DLLs", async () => {
+    const mod = await import("../packaging/fetch_onnxruntime.mjs");
+    assert.deepEqual(mod.VCRUNTIME_DLLS, dlls);
+    assert.equal(typeof mod.findVcRedistDir, "function");
+  });
+
+  it("findVcRedistDir picks the newest Microsoft.VC14*.CRT x64 dir and errors when absent", async () => {
+    const { findVcRedistDir } = await import("../packaging/fetch_onnxruntime.mjs");
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vsroot-"));
+    assert.throws(() => findVcRedistDir(root), /Visual C\+\+ Redistributable/);
+    for (const v of ["14.38.1", "14.50.2"]) fs.mkdirSync(path.join(root, "VC/Redist/MSVC", v, "x64/Microsoft.VC143.CRT"), { recursive: true });
+    assert.ok(findVcRedistDir(root).includes("14.50.2"));
+    fs.rmSync(root, { recursive: true });
+  });
+
+  it("tauri.windows.conf.json ships them app-locally in the install root", async () => {
+    const fs = await import("node:fs");
+    const conf = JSON.parse(fs.readFileSync(new URL("../desktop/src-tauri/tauri.windows.conf.json", import.meta.url), "utf8"));
+    for (const d of dlls) assert.equal(conf.bundle.resources[`../../packaging/onnxruntime/windows-x64/${d}`], d);
+  });
+
+  it("release workflow stages them in the CLI zip", async () => {
+    const fs = await import("node:fs");
+    const yml = fs.readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+    for (const d of dlls) assert.ok(yml.includes(d), d);
+  });
+});

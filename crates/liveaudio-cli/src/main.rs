@@ -639,6 +639,7 @@ fn parse_positive_pid(raw: &str) -> Result<u32, String> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    liveaudio_core::suppress_loader_error_dialogs();
     let args: Vec<String> = env::args().collect();
 
     if args

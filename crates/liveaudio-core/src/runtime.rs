@@ -182,6 +182,32 @@ pub fn discover_native_worker() -> Option<PathBuf> {
     None
 }
 
+fn ort_dylib_rel() -> &'static Path {
+    if cfg!(windows) {
+        Path::new("onnxruntime/windows-x64/onnxruntime.dll")
+    } else {
+        Path::new("onnxruntime/linux-x64/libonnxruntime.so.1.24.4")
+    }
+}
+
+/// Probes install-relative locations for the ONNX Runtime library.
+/// `../lib/LiveAudio` is the Tauri 2 Linux (AppImage) resource dir.
+fn find_ort_dylib_near(exe_dir: &Path, rel: &Path) -> Option<PathBuf> {
+    [
+        exe_dir.join(rel),
+        exe_dir.join("resources").join(rel),
+        exe_dir.join("../lib/LiveAudio").join(rel),
+        exe_dir.join("_up_/packaging").join(rel),
+        exe_dir.join("../packaging").join(rel),
+        exe_dir.join("../../packaging").join(rel),
+        exe_dir.join("../../../packaging").join(rel),
+        exe_dir.join("../../../../packaging").join(rel),
+    ]
+    .into_iter()
+    .find(|cand| cand.is_file())
+    .map(|cand| fs::canonicalize(&cand).unwrap_or(cand))
+}
+
 /// Discovers ONNX Runtime dynamic library for native ASR execution.
 pub fn discover_ort_dylib() -> Option<PathBuf> {
     if let Ok(path_str) = std::env::var("LIVEAUDIO_ORT_DYLIB_PATH") {
@@ -191,37 +217,13 @@ pub fn discover_ort_dylib() -> Option<PathBuf> {
         }
     }
 
-    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-    let rel = Path::new("onnxruntime/windows-x64/onnxruntime.dll");
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    let rel = Path::new("onnxruntime/linux-x64/libonnxruntime.so.1.24.4");
-    #[cfg(not(any(
-        all(target_os = "windows", target_arch = "x86_64"),
-        all(target_os = "linux", target_arch = "x86_64")
-    )))]
-    let rel = if cfg!(windows) {
-        Path::new("onnxruntime/windows-x64/onnxruntime.dll")
-    } else {
-        Path::new("onnxruntime/linux-x64/libonnxruntime.so.1.24.4")
-    };
+    let rel = ort_dylib_rel();
 
-    if let Ok(current_exe) = std::env::current_exe() {
-        if let Some(exe_dir) = current_exe.parent() {
-            let candidates = [
-                exe_dir.join(rel),
-                exe_dir.join("resources").join(rel),
-                exe_dir.join("_up_/packaging").join(rel),
-                exe_dir.join("../packaging").join(rel),
-                exe_dir.join("../../packaging").join(rel),
-                exe_dir.join("../../../packaging").join(rel),
-                exe_dir.join("../../../../packaging").join(rel),
-            ];
-            for cand in &candidates {
-                if cand.is_file() {
-                    return fs::canonicalize(cand).ok().or_else(|| Some(cand.clone()));
-                }
-            }
-        }
+    if let Some(found) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().and_then(|dir| find_ort_dylib_near(dir, rel)))
+    {
+        return Some(found);
     }
 
     if cfg!(debug_assertions) {
@@ -315,14 +317,37 @@ async fn preflight_inner(
     if status.success() {
         return Ok(());
     }
-    let stderr_text = String::from_utf8_lossy(&stderr);
-    let details = if !stderr_text.trim().is_empty() {
-        stderr_text.trim().to_string()
-    } else {
-        format!("ASR worker self-test exited with status {status}")
-    };
+    let details = self_test_failure_details(&String::from_utf8_lossy(&stderr), status.code());
     Err(RuntimeError::DependenciesUnavailable { details })
 }
+
+/// Windows loader failure (STATUS_DLL_NOT_FOUND) when a dependent DLL such as VCRUNTIME140.dll is absent.
+const STATUS_DLL_NOT_FOUND: i32 = 0xC000_0135u32 as i32;
+
+fn self_test_failure_details(stderr: &str, code: Option<i32>) -> String {
+    if !stderr.trim().is_empty() {
+        stderr.trim().to_string()
+    } else if code == Some(STATUS_DLL_NOT_FOUND) {
+        "Microsoft Visual C++ runtime DLL missing; reinstall LiveAudio".to_string()
+    } else {
+        format!("ASR worker self-test exited with status {}", code.map_or("unknown".into(), |c| c.to_string()))
+    }
+}
+
+/// Makes missing-DLL loader failures in this process and its children exit immediately instead of
+/// blocking on a modal system dialog. Call once at startup.
+#[cfg(windows)]
+pub fn suppress_loader_error_dialogs() {
+    use windows_sys::Win32::System::Diagnostics::Debug::{SetErrorMode, SEM_FAILCRITICALERRORS};
+    // SAFETY: SetErrorMode only changes process-wide error-mode flags.
+    unsafe {
+        let prev = SetErrorMode(0);
+        SetErrorMode(prev | SEM_FAILCRITICALERRORS);
+    }
+}
+
+#[cfg(not(windows))]
+pub fn suppress_loader_error_dialogs() {}
 
 async fn wait_for_probe(
     child: &mut Child,
@@ -407,6 +432,25 @@ mod tests {
     }
 
     #[test]
+    fn dll_not_found_exit_maps_to_vc_runtime_message() {
+        let msg = self_test_failure_details("", Some(0xC000_0135u32 as i32));
+        assert!(msg.contains("Visual C++ runtime DLL missing"), "{msg}");
+        assert_eq!(self_test_failure_details("boom", Some(0xC000_0135u32 as i32)), "boom");
+        assert!(self_test_failure_details("", Some(1)).contains("status"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn loader_error_dialogs_are_suppressed() {
+        suppress_loader_error_dialogs();
+        // SetErrorMode returns the previous mode; restore it to keep the test side-effect free.
+        use windows_sys::Win32::System::Diagnostics::Debug::{SetErrorMode, SEM_FAILCRITICALERRORS};
+        let prev = unsafe { SetErrorMode(0) };
+        unsafe { SetErrorMode(prev) };
+        assert!(prev & SEM_FAILCRITICALERRORS != 0, "SEM_FAILCRITICALERRORS must be set");
+    }
+
+    #[test]
     fn ct2_worker_is_found_by_env_override_then_runtime_dir() {
         let root = std::env::temp_dir().join(format!("liveaudio-ct2-find-{}", std::process::id()));
         let rt = root.join("cuda12");
@@ -421,6 +465,22 @@ mod tests {
         let custom = root.join("custom.exe");
         fs::write(&custom, b"x").unwrap();
         assert_eq!(find_ct2_worker(Some(custom.to_str().unwrap()), &rt), Some(custom));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ort_dylib_is_found_in_tauri_linux_resource_dir() {
+        let root = std::env::temp_dir().join(format!("liveaudio-ort-res-{}", std::process::id()));
+        let exe_dir = root.join("usr").join("bin");
+        fs::create_dir_all(&exe_dir).unwrap();
+        let rel = ort_dylib_rel();
+        assert_eq!(find_ort_dylib_near(&exe_dir, rel), None);
+
+        let lib = root.join("usr/lib/LiveAudio").join(rel);
+        fs::create_dir_all(lib.parent().unwrap()).unwrap();
+        fs::write(&lib, b"x").unwrap();
+        let found = find_ort_dylib_near(&exe_dir, rel).expect("resource_dir probe");
+        assert_eq!(found.file_name(), lib.file_name());
         let _ = fs::remove_dir_all(root);
     }
 
