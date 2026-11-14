@@ -11,13 +11,13 @@
 //! - Idempotent double-shutdown guarantees
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as SyncMutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, Mutex, Notify};
 use tokio_util::sync::CancellationToken;
@@ -89,14 +89,12 @@ fn decode_deadline_exceeded(
 
 async fn wait_for_child_exit(exited: &AtomicBool, exit_notify: &Notify) {
     while !exited.load(Ordering::SeqCst) {
-        // notify_one stores a permit, so an exit between the state check and
-        // registering this waiter cannot be lost.
         exit_notify.notified().await;
     }
 }
 
 /// Kills a freshly spawned worker when its startup future is dropped before the
-/// handshake completes (for example, when stop aborts a respawn). Disarmed once ready.
+/// handshake completes. Disarmed once ready.
 struct StartupKillGuard {
     kill: Arc<Notify>,
     armed: bool,
@@ -111,7 +109,6 @@ impl StartupKillGuard {
 impl Drop for StartupKillGuard {
     fn drop(&mut self) {
         if self.armed {
-            // notify_one stores a permit, so the kill is not lost if the waiter has not started.
             self.kill.notify_one();
         }
     }
@@ -130,6 +127,76 @@ async fn wait_for_startup_stall(last_event_ms: &AtomicU64, stall: Duration) {
     }
 }
 
+/// Longest worker output line kept; the rest of a longer line is drained and dropped.
+const MAX_WORKER_LINE_BYTES: usize = 1 << 20;
+
+/// Next line of worker output as lossy UTF-8 without its line ending, or `None` at EOF. Invalid
+/// UTF-8 is replaced instead of ending the stream. Bytes past `MAX_WORKER_LINE_BYTES` are drained
+/// without being kept, so a runaway line cannot grow memory.
+async fn read_worker_line<R: AsyncBufRead + Unpin>(reader: &mut R) -> std::io::Result<Option<String>> {
+    let mut line = Vec::new();
+    let mut saw_bytes = false;
+    loop {
+        let chunk = reader.fill_buf().await?;
+        if chunk.is_empty() {
+            break;
+        }
+        saw_bytes = true;
+        let (take, ends_line) = match chunk.iter().position(|&b| b == b'\n') {
+            Some(i) => (i + 1, true),
+            None => (chunk.len(), false),
+        };
+        let room = MAX_WORKER_LINE_BYTES - line.len();
+        line.extend_from_slice(&chunk[..take.min(room)]);
+        reader.consume(take);
+        if ends_line {
+            break;
+        }
+    }
+    if !saw_bytes {
+        return Ok(None);
+    }
+    if line.last() == Some(&b'\n') {
+        line.pop();
+    }
+    if line.last() == Some(&b'\r') {
+        line.pop();
+    }
+    Ok(Some(String::from_utf8_lossy(&line).into_owned()))
+}
+
+#[cfg(test)]
+mod worker_output_tests {
+    use super::*;
+
+    async fn read_all(bytes: &[u8]) -> Vec<String> {
+        let mut reader = BufReader::new(bytes);
+        let mut lines = Vec::new();
+        while let Ok(Some(line)) = read_worker_line(&mut reader).await {
+            lines.push(line);
+        }
+        lines
+    }
+
+    #[tokio::test]
+    async fn invalid_utf8_line_does_not_end_worker_output() {
+        let lines = read_all(b"ok\n\xff\xfe bad\nnext\n").await;
+        assert_eq!(lines, vec!["ok", "\u{FFFD}\u{FFFD} bad", "next"]);
+    }
+
+    #[tokio::test]
+    async fn worker_output_lines_strip_endings_and_are_capped() {
+        let mut input = b"a\r\n".to_vec();
+        input.extend(vec![b'x'; MAX_WORKER_LINE_BYTES + 10]);
+        input.extend_from_slice(b"\nafter");
+        let lines = read_all(&input).await;
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0], "a");
+        assert_eq!(lines[1].len(), MAX_WORKER_LINE_BYTES);
+        assert_eq!(lines[2], "after");
+    }
+}
+
 #[cfg(test)]
 mod assignment_cleanup_tests {
     use super::handle_job_assignment;
@@ -138,8 +205,16 @@ mod assignment_cleanup_tests {
 
     #[tokio::test]
     async fn assignment_failure_kills_and_reaps_the_spawned_worker() {
-        let mut child = Command::new("python")
-            .args(["-c", "import time; time.sleep(60)"])
+        #[cfg(windows)]
+        let (cmd, args) = (
+            "powershell.exe",
+            vec!["-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 60"],
+        );
+        #[cfg(not(windows))]
+        let (cmd, args) = ("sh", vec!["-c", "sleep 60"]);
+
+        let mut child = Command::new(cmd)
+            .args(&args)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -185,14 +260,27 @@ mod bounded_stop_tests {
         ));
         let mut config = WorkerProcessConfig::default();
         config.name = "cancelled-start-worker".to_string();
-        config.command = "python".to_string();
-        config.args = vec![
-            "-u".to_string(),
-            "-c".to_string(),
-            "import os,sys,time; open(sys.argv[1], 'w').write(str(os.getpid())); time.sleep(60)"
-                .to_string(),
-            pid_file.to_string_lossy().to_string(),
-        ];
+        #[cfg(windows)]
+        {
+            config.command = "powershell.exe".to_string();
+            config.args = vec![
+                "-NoProfile".to_string(),
+                "-NonInteractive".to_string(),
+                "-Command".to_string(),
+                format!(
+                    "[System.IO.File]::WriteAllText('{}', $PID); Start-Sleep -Seconds 60",
+                    pid_file.display()
+                ),
+            ];
+        }
+        #[cfg(not(windows))]
+        {
+            config.command = "sh".to_string();
+            config.args = vec![
+                "-c".to_string(),
+                format!("echo $$ > '{}'; sleep 60", pid_file.display()),
+            ];
+        }
         config.ready_timeout = Duration::from_secs(30);
         config.auto_respawn = false;
         let mut supervisor = ProcessSupervisor::new(config, std::process::id(), 0, None)
@@ -202,7 +290,6 @@ mod bounded_stop_tests {
             let cancellation = cancellation.clone();
             let pid_file = pid_file.clone();
             tokio::spawn(async move {
-                // The worker creates the file before its pid is flushed, so wait for a parseable pid.
                 let pid = tokio::time::timeout(Duration::from_secs(5), async {
                     loop {
                         let pid = std::fs::read_to_string(&pid_file)
@@ -238,13 +325,24 @@ mod bounded_stop_tests {
     async fn shutdown_deadline_includes_a_saturated_nonreading_worker_command_queue() {
         let mut config = WorkerProcessConfig::default();
         config.name = "nonreading-worker".to_string();
-        config.command = "python".to_string();
-        config.args = vec![
-            "-u".to_string(),
-            "-c".to_string(),
-            "import json,time; print(json.dumps({'event':'ready'}), flush=True); time.sleep(3)"
-                .to_string(),
-        ];
+        #[cfg(windows)]
+        {
+            config.command = "powershell.exe".to_string();
+            config.args = vec![
+                "-NoProfile".to_string(),
+                "-NonInteractive".to_string(),
+                "-Command".to_string(),
+                "[Console]::Out.WriteLine('{\"event\":\"ready\"}'); Start-Sleep -Seconds 10".to_string(),
+            ];
+        }
+        #[cfg(not(windows))]
+        {
+            config.command = "sh".to_string();
+            config.args = vec![
+                "-c".to_string(),
+                "printf '{\"event\":\"ready\"}\\n'; sleep 10".to_string(),
+            ];
+        }
         config.ready_timeout = Duration::from_secs(5);
         config.auto_respawn = false;
         let mut supervisor = ProcessSupervisor::new(config, std::process::id(), 0, None)
@@ -301,13 +399,24 @@ mod bounded_stop_tests {
     async fn send_command_gives_up_when_the_worker_stops_reading() {
         let mut config = WorkerProcessConfig::default();
         config.name = "stalled-reader-worker".to_string();
-        config.command = "python".to_string();
-        config.args = vec![
-            "-u".to_string(),
-            "-c".to_string(),
-            "import json,time; print(json.dumps({'event':'ready'}), flush=True); time.sleep(60)"
-                .to_string(),
-        ];
+        #[cfg(windows)]
+        {
+            config.command = "powershell.exe".to_string();
+            config.args = vec![
+                "-NoProfile".to_string(),
+                "-NonInteractive".to_string(),
+                "-Command".to_string(),
+                "[Console]::Out.WriteLine('{\"event\":\"ready\"}'); Start-Sleep -Seconds 60".to_string(),
+            ];
+        }
+        #[cfg(not(windows))]
+        {
+            config.command = "sh".to_string();
+            config.args = vec![
+                "-c".to_string(),
+                "printf '{\"event\":\"ready\"}\\n'; sleep 60".to_string(),
+            ];
+        }
         config.ready_timeout = Duration::from_secs(5);
         config.auto_respawn = false;
         let mut supervisor = ProcessSupervisor::new(config, std::process::id(), 0, None)
@@ -349,13 +458,70 @@ mod bounded_stop_tests {
             .await
             .expect("bounded stop");
     }
+
+    #[tokio::test]
+    async fn try_send_command_fails_immediately_when_the_queue_is_full() {
+        let mut config = WorkerProcessConfig::default();
+        config.name = "try-send-worker".to_string();
+        #[cfg(windows)]
+        {
+            config.command = "powershell.exe".to_string();
+            config.args = vec![
+                "-NoProfile".to_string(),
+                "-NonInteractive".to_string(),
+                "-Command".to_string(),
+                "[Console]::Out.WriteLine('{\"event\":\"ready\"}'); Start-Sleep -Seconds 60".to_string(),
+            ];
+        }
+        #[cfg(not(windows))]
+        {
+            config.command = "sh".to_string();
+            config.args = vec![
+                "-c".to_string(),
+                "printf '{\"event\":\"ready\"}\n'; sleep 60".to_string(),
+            ];
+        }
+        config.ready_timeout = Duration::from_secs(5);
+        config.auto_respawn = false;
+        let mut supervisor = ProcessSupervisor::new(config, std::process::id(), 0, None)
+            .expect("supervisor creation");
+        supervisor.start().await.expect("mock worker ready handshake");
+
+        let ping = serde_json::json!({"cmd": "ping"});
+        assert!(
+            supervisor.try_send_command(&ping).await.is_ok(),
+            "an empty queue accepts the command"
+        );
+
+        let cmd_tx = supervisor
+            .active_child
+            .lock()
+            .await
+            .as_ref()
+            .expect("active worker")
+            .cmd_tx
+            .clone();
+        cmd_tx
+            .try_send("x".repeat(32 * 1024 * 1024))
+            .expect("queue one payload larger than the worker stdin pipe");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        while cmd_tx.try_send("queued".to_string()).is_ok() {}
+
+        let started = Instant::now();
+        assert!(supervisor.try_send_command(&ping).await.is_err());
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "a full queue must be reported without waiting"
+        );
+        drop(cmd_tx);
+        supervisor
+            .stop_internal(Duration::from_millis(100))
+            .await
+            .expect("bounded stop");
+    }
 }
 
-/// Startup silence longer than this kills the worker. Python `ABSOLUTE_STARTUP_SEC`
-/// (liveaudio/core/provisioning.py), not `DEFAULT_STALL_SEC` (150 s): the worker emits one
-/// "loading" status and then stays silent while a large model loads, so 150 s would kill slow
-/// but healthy CPU loads. There is deliberately no absolute startup ceiling: a worker that keeps
-/// reporting progress is still starting.
+/// Startup silence longer than this kills the worker.
 const STARTUP_STALL_WINDOW: Duration = Duration::from_secs(300);
 
 /// Longest a command waits for room in a worker's stdin queue before the caller gets an error.
@@ -370,8 +536,6 @@ pub struct WorkerProcessConfig {
     pub working_dir: Option<PathBuf>,
     pub envs: HashMap<String, String>,
     /// Startup stall window: the ready handshake fails after this long with no worker output.
-    /// Any output line (including download progress) restarts it, so a slow first-run
-    /// download is not killed as a crash. Defaults to Python's `DEFAULT_STALL_SEC`.
     pub ready_timeout: Duration,
     pub watchdog_interval: Duration,
     pub watchdog_timeout: Duration,
@@ -387,217 +551,85 @@ pub struct WorkerProcessConfig {
     pub decode_timeout: Option<Duration>,
 }
 
-/// Interpreter paths relative to the exe directory, in trust order.
-#[cfg(windows)]
-const BUNDLED_PYTHON_RELATIVE: [&str; 3] =
-    ["python.exe", "python/python.exe", "runtime/python.exe"];
-#[cfg(not(windows))]
-const BUNDLED_PYTHON_RELATIVE: [&str; 3] =
-    ["bin/python3", "python/bin/python3", "runtime/bin/python3"];
-
-/// Project virtualenv interpreter, also checked in the exe's ancestors for dev layouts.
-#[cfg(windows)]
-const VENV_PYTHON_RELATIVE: &str = ".venv/Scripts/python.exe";
-#[cfg(not(windows))]
-const VENV_PYTHON_RELATIVE: &str = ".venv/bin/python";
-
-/// Candidates derived only from the exe location, never from the current directory.
-pub(crate) fn bundled_python_candidates(exe_dir: &Path) -> Vec<PathBuf> {
-    let mut candidates: Vec<PathBuf> = BUNDLED_PYTHON_RELATIVE
-        .iter()
-        .map(|relative| exe_dir.join(relative))
-        .collect();
-    for ancestor in ["", "..", "../..", "../../.."] {
-        candidates.push(exe_dir.join(ancestor).join(VENV_PYTHON_RELATIVE));
-    }
-    candidates
-}
-
-/// First Python found in an absolute PATH directory. Relative PATH entries resolve against the cwd.
-pub(crate) fn python_on_path(path: &std::ffi::OsStr) -> Option<PathBuf> {
-    let name = if cfg!(windows) {
-        "python.exe"
-    } else {
-        "python"
-    };
-    std::env::split_paths(path)
-        .filter(|directory| directory.is_absolute())
-        .map(|directory| directory.join(name))
-        .find(|candidate| candidate.is_file())
-}
-
 impl WorkerProcessConfig {
-    /// Discovers the Python executable from the environment, bundled directories, or PATH.
-    pub fn find_python_executable() -> PathBuf {
-        // 1. Explicit env var override
-        if let Ok(py) = std::env::var("LIVEAUDIO_PYTHON") {
-            let p = PathBuf::from(py);
-            if p.exists() {
-                return p;
-            }
-        }
-
-        // 2. Runtime explicitly provisioned by `setup-runtime`.
-        if let Some(managed_python) =
-            crate::runtime::discover_managed_python(&crate::runtime::managed_runtime_root())
-        {
-            return managed_python;
-        }
-
-        // 3. Relative to current exe (installed / portable bundle layout or debug bin).
-        // The current directory is never searched: it is attacker-writable in practice.
-        if let Ok(current_exe) = std::env::current_exe() {
-            if let Some(exe_dir) = current_exe.parent() {
-                for cand in bundled_python_candidates(exe_dir) {
-                    if cand.exists() {
-                        if let Ok(canonical) = std::fs::canonicalize(&cand) {
-                            return canonical;
-                        }
-                        return cand;
-                    }
-                }
-            }
-        }
-
-        // 4. Absolute PATH directories only. A bare `python` would let Windows CreateProcess
-        // consult the current directory before PATH.
-        if let Some(found) = std::env::var_os("PATH").and_then(|path| python_on_path(&path)) {
-            return found;
-        }
-
-        PathBuf::from("python")
-    }
-
-    /// Discovers the `asr_worker.py` script from the environment, bundle, or repository.
+    /// Discovers the native ASR worker binary.
     pub fn find_asr_worker_script() -> Option<PathBuf> {
-        // 1. Explicit env var override
-        if let Ok(worker) = std::env::var("LIVEAUDIO_WORKER_PATH") {
-            let p = PathBuf::from(worker);
-            if p.exists() {
-                return std::fs::canonicalize(&p).ok().or(Some(p));
-            }
-        }
-
-        // The managed project contains the exact package staged for its runtime.
-        if let Some(managed_worker) =
-            crate::runtime::discover_managed_worker(&crate::runtime::managed_runtime_root())
-        {
-            return Some(managed_worker);
-        }
-
-        Self::find_external_asr_worker_script()
+        crate::runtime::discover_native_worker()
     }
 
-    /// Finds the shipped package source used to refresh the managed runtime.
+    /// Finds the native ASR worker source/binary.
     pub fn find_asr_worker_source() -> Option<PathBuf> {
-        let managed_root = crate::runtime::managed_runtime_root();
-        if let Ok(worker) = std::env::var("LIVEAUDIO_WORKER_PATH") {
-            let path = PathBuf::from(worker);
-            if path.is_file() && !is_managed_runtime_path(&path, &managed_root) {
-                return std::fs::canonicalize(&path).ok().or(Some(path));
-            }
-        }
-        Self::find_external_asr_worker_script()
-            .filter(|worker| !is_managed_runtime_path(worker, &managed_root))
+        crate::runtime::discover_native_worker()
     }
 
-    fn find_external_asr_worker_script() -> Option<PathBuf> {
-        // Relative to current exe (installed bundle or debug build)
-        if let Ok(current_exe) = std::env::current_exe() {
-            if let Some(exe_dir) = current_exe.parent() {
-                let candidates = [
-                    exe_dir.join("liveaudio/service/asr_worker.py"),
-                    exe_dir.join("resources/liveaudio/service/asr_worker.py"),
-                    exe_dir.join("_up_/liveaudio/service/asr_worker.py"),
-                    exe_dir.join("../liveaudio/service/asr_worker.py"),
-                    exe_dir.join("../../liveaudio/service/asr_worker.py"),
-                    exe_dir.join("../../../liveaudio/service/asr_worker.py"),
-                ];
-                for cand in &candidates {
-                    if cand.exists() {
-                        return std::fs::canonicalize(cand)
-                            .ok()
-                            .or_else(|| Some(cand.clone()));
-                    }
-                }
-            }
-        }
-
-        // Relative to current working directory: dev builds only (`tauri dev` runs from desktop/).
-        // A release build must not execute a worker script planted in the working directory.
-        if cfg!(debug_assertions) {
-            let cwd_candidates = [
-                PathBuf::from("liveaudio/service/asr_worker.py"),
-                PathBuf::from("resources/liveaudio/service/asr_worker.py"),
-                PathBuf::from("../liveaudio/service/asr_worker.py"),
-            ];
-            for cand in &cwd_candidates {
-                if cand.exists() {
-                    return std::fs::canonicalize(cand)
-                        .ok()
-                        .or_else(|| Some(cand.clone()));
-                }
-            }
-        }
-
-        None
-    }
-
-    /// Discovers the root directory containing the `liveaudio` package.
+    /// Discovers the root directory containing the worker binary.
     pub fn find_package_root(worker_script: &Option<PathBuf>) -> Option<PathBuf> {
         if let Some(ref script) = worker_script {
-            if let Some(service_dir) = script.parent() {
-                if let Some(pkg_dir) = service_dir.parent() {
-                    if let Some(root_dir) = pkg_dir.parent() {
-                        return std::fs::canonicalize(root_dir)
-                            .ok()
-                            .or_else(|| Some(root_dir.to_path_buf()));
-                    }
-                }
+            if let Some(parent) = script.parent() {
+                let canon = std::fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf());
+                let raw = canon.to_string_lossy();
+                let clean = raw.strip_prefix(r"\\?\").unwrap_or(&raw);
+                return Some(PathBuf::from(clean));
             }
         }
-        std::env::current_dir().ok()
+        std::env::current_dir().ok().map(|p| {
+            let raw = p.to_string_lossy();
+            let clean = raw.strip_prefix(r"\\?\").unwrap_or(&raw);
+            PathBuf::from(clean)
+        })
     }
 
-    /// Discovers and builds a production-ready `WorkerProcessConfig` configured
-    /// with UTF-8 flags, HuggingFace model cache directory layout, and path normalization.
-    pub fn discover_asr_worker() -> Self {
-        let python_exe = Self::find_python_executable();
-        let worker_script = Self::find_asr_worker_script();
-        let package_root = Self::find_package_root(&worker_script);
+    /// Worker config for a chosen backend. ORT is the unchanged default; the ct2 CUDA worker
+    /// swaps the executable and puts the NVIDIA runtime dir first on its PATH.
+    pub fn discover_asr_worker_for(kind: crate::gpu::AsrBackendKind) -> Self {
+        let mut config = Self::discover_asr_worker();
+        if kind == crate::gpu::AsrBackendKind::Ct2Cuda {
+            config.command = crate::runtime::discover_ct2_worker()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| crate::runtime::CT2_WORKER_EXE.to_string());
+            let path = crate::runtime::prepend_path(
+                &crate::nvidia_runtime::runtime_dir(),
+                std::env::var_os("PATH"),
+            );
+            config.envs.insert("PATH".to_string(), path.to_string_lossy().to_string());
+        }
+        config
+    }
 
-        let script_arg = worker_script
+    /// Discovers and builds a production-ready `WorkerProcessConfig` for the native ASR worker.
+    pub fn discover_asr_worker() -> Self {
+        let worker_executable = crate::runtime::discover_native_worker()
             .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| "liveaudio/service/asr_worker.py".to_string());
+            .unwrap_or_else(|| {
+                if cfg!(windows) {
+                    "liveaudio-asr-worker.exe".to_string()
+                } else {
+                    "liveaudio-asr-worker".to_string()
+                }
+            });
 
         let mut envs = HashMap::new();
-        envs.insert("PYTHONUNBUFFERED".to_string(), "1".to_string());
-        envs.insert("PYTHONUTF8".to_string(), "1".to_string());
-        envs.insert("PYTHONIOENCODING".to_string(), "utf-8".to_string());
         envs.insert(
             "HF_HUB_DISABLE_SYMLINKS_WARNING".to_string(),
             "1".to_string(),
         );
 
-        // Model cache directory layout: HF_HOME in %APPDATA%/LiveAudio/models/hf
+        if let Some(ort_path) = crate::runtime::discover_ort_dylib() {
+            envs.insert(
+                "LIVEAUDIO_ORT_DYLIB_PATH".to_string(),
+                ort_path.to_string_lossy().to_string(),
+            );
+        }
+
+        // Model cache directory layout
         let hf_home = crate::config::get_hf_home();
         envs.insert("HF_HOME".to_string(), hf_home.to_string_lossy().to_string());
-        let torch_home = crate::config::get_torch_home();
-        envs.insert(
-            "TORCH_HOME".to_string(),
-            torch_home.to_string_lossy().to_string(),
-        );
-
-        // Ensure package root is in PYTHONPATH so `import liveaudio` works everywhere
-        if let Some(ref root) = package_root {
-            envs.insert("PYTHONPATH".to_string(), root.to_string_lossy().to_string());
-        }
 
         Self {
             name: "asr-worker".to_string(),
-            command: python_exe.to_string_lossy().to_string(),
-            args: vec!["-u".to_string(), script_arg],
-            working_dir: package_root,
+            command: worker_executable,
+            args: Vec::new(),
+            working_dir: None,
             envs,
             ready_timeout: STARTUP_STALL_WINDOW,
             watchdog_interval: Duration::from_secs(2),
@@ -614,22 +646,19 @@ impl WorkerProcessConfig {
     }
 }
 
-fn is_managed_runtime_path(path: &PathBuf, managed_root: &PathBuf) -> bool {
-    let normalized_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
-    let normalized_root =
-        std::fs::canonicalize(managed_root).unwrap_or_else(|_| managed_root.clone());
-    normalized_path.starts_with(normalized_root)
-}
-
 impl Default for WorkerProcessConfig {
     fn default() -> Self {
+        let worker_bin = if cfg!(windows) {
+            "liveaudio-asr-worker.exe"
+        } else {
+            "liveaudio-asr-worker"
+        };
         Self {
             name: "asr-worker".to_string(),
-            command: "python".to_string(),
-            args: vec![
-                "-u".to_string(),
-                "liveaudio/service/asr_worker.py".to_string(),
-            ],
+            command: crate::runtime::discover_native_worker()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| worker_bin.to_string()),
+            args: Vec::new(),
             working_dir: None,
             envs: HashMap::new(),
             ready_timeout: STARTUP_STALL_WINDOW,
@@ -689,8 +718,6 @@ impl ProcessSupervisor {
     ) -> std::io::Result<Self> {
         let job_object = Arc::new(JobObject::create()?);
         let event_bus = Arc::new(EventBus::default());
-        // This is a bounded event stream: consumers use progress as latest state,
-        // not a lossless history of every download sample.
         let (worker_event_tx, _) = tokio::sync::broadcast::channel(1024);
         let state_machine = Arc::new(Mutex::new(HealthStateMachine::new(
             service_pid,
@@ -731,7 +758,7 @@ impl ProcessSupervisor {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// Subscribe to raw events emitted by the child worker over stdout (e.g. transcription_result, status).
+    /// Subscribe to raw events emitted by the child worker over stdout.
     pub fn subscribe_worker_events(&self) -> tokio::sync::broadcast::Receiver<serde_json::Value> {
         self.worker_event_tx.subscribe()
     }
@@ -802,7 +829,27 @@ impl ProcessSupervisor {
         }
     }
 
+    /// Like `send_command`, but never waits: a full queue is an immediate error.
+    /// For optional work (partial subtitles) that must not stall the caller.
+    pub async fn try_send_command(&self, cmd: &serde_json::Value) -> Result<(), SupervisorError> {
+        let cmd_tx = {
+            let guard = self.active_child.lock().await;
+            guard
+                .as_ref()
+                .map(|child| child.cmd_tx.clone())
+                .ok_or_else(|| {
+                    SupervisorError::InternalError("No active child worker".to_string())
+                })?
+        };
+        let line = serde_json::to_string(cmd)
+            .map_err(|e| SupervisorError::InternalError(e.to_string()))?;
+        cmd_tx
+            .try_send(line)
+            .map_err(|e| SupervisorError::InternalError(format!("Child command queue unavailable: {e}")))
+    }
+
     /// Internal function to spawn a single worker process and complete ready handshake.
+    #[allow(clippy::too_many_arguments)]
     async fn spawn_and_handshake(
         config: &WorkerProcessConfig,
         job_object: &Arc<JobObject>,
@@ -824,7 +871,6 @@ impl ProcessSupervisor {
         cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
-        // Covers a startup dropped before the wait task owns the child.
         cmd.kill_on_drop(true);
         #[cfg(windows)]
         crate::runtime::apply_no_console_to_tokio(&mut cmd);
@@ -853,7 +899,7 @@ impl ProcessSupervisor {
             armed: true,
         };
 
-        // Critical: assign PID to native Windows Job Object immediately!
+        // Assign PID to native Windows Job Object immediately
         handle_job_assignment(&config.name, &mut child, job_object.assign_process_id(pid)).await?;
 
         let mut stdin = child
@@ -903,8 +949,8 @@ impl ProcessSupervisor {
         // Stderr logger task
         let child_name_stderr = config.name.clone();
         tokio::spawn(async move {
-            let mut reader = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = reader.next_line().await {
+            let mut reader = BufReader::new(stderr);
+            while let Ok(Some(line)) = read_worker_line(&mut reader).await {
                 tracing::warn!("[{} stderr] {}", child_name_stderr, line);
             }
         });
@@ -922,11 +968,9 @@ impl ProcessSupervisor {
         let decode_kill = kill_notify.clone();
 
         tokio::spawn(async move {
-            // The worker answers pings from its reader thread while decoding, so the
-            // ping watchdog cannot see a hung decode; the pong state can.
             let mut decoding: Option<(String, Instant)> = None;
-            let mut reader = BufReader::new(stdout).lines();
-            while let Ok(Some(line)) = reader.next_line().await {
+            let mut reader = BufReader::new(stdout);
+            while let Ok(Some(line)) = read_worker_line(&mut reader).await {
                 last_event_clone.store(now_millis(), Ordering::SeqCst);
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) {
                     let _ = worker_event_tx_stdout.send(val.clone());
@@ -1021,8 +1065,7 @@ impl ProcessSupervisor {
         });
         let _ = cmd_tx.send(init_cmd.to_string()).await;
 
-        // Await the ready handshake. The stall window restarts on every worker output line,
-        // so a slow first-run download is not killed; silence for the whole window fails it.
+        // Await the ready handshake
         let stall_window = config.ready_timeout;
         let handshake = async {
             if is_ready.load(Ordering::SeqCst) {
@@ -1051,7 +1094,6 @@ impl ProcessSupervisor {
                 sm.transition_to(HealthState::Ready, Some("Worker ready"));
             }
             Err(e) => {
-                // Kill before waiting: the wait task only reaps once it is told to kill.
                 kill_notify.notify_one();
                 if matches!(&e, SupervisorError::Cancelled) {
                     wait_for_child_exit(&exited, &exit_notify).await;
@@ -1070,7 +1112,6 @@ impl ProcessSupervisor {
 
         let watchdog_handle = tokio::spawn(async move {
             let mut interval = tokio::time::interval(watchdog_interval);
-            // Skip first tick
             interval.tick().await;
 
             loop {
@@ -1133,7 +1174,6 @@ impl ProcessSupervisor {
         self.is_shutting_down.store(false, Ordering::SeqCst);
         self.shutdown_complete.store(false, Ordering::SeqCst);
 
-        // Initial launch
         let child = Self::spawn_and_handshake(
             &self.config,
             &self.job_object,
@@ -1150,7 +1190,6 @@ impl ProcessSupervisor {
         let exit_notify = child.exit_notify.clone();
         *self.active_child.lock().await = Some(child);
 
-        // If auto-respawn is configured, start the supervisor background monitor
         if self.config.auto_respawn {
             let config = self.config.clone();
             let job_object = self.job_object.clone();
@@ -1179,14 +1218,9 @@ impl ProcessSupervisor {
                                 break;
                             }
 
-                            // Unexpected crash or watchdog termination
                             tracing::warn!("Supervised worker exited unexpectedly. Evaluating respawn policy...");
-                            // The dead worker must not stay registered as the active child.
                             *active_child.lock().await = None;
 
-                            // Each failed respawn handshake counts as another failure, so the
-                            // loop retries with backoff until a worker is ready or the policy
-                            // ceiling escalates to Failed.
                             loop {
                                 let backoff_res = {
                                     let mut tracker = respawn_tracker.lock().await;
@@ -1222,7 +1256,6 @@ impl ProcessSupervisor {
                                     break 'supervise;
                                 }
 
-                                // Respawn
                                 match Self::spawn_and_handshake(
                                     &config,
                                     &job_object,
@@ -1238,7 +1271,6 @@ impl ProcessSupervisor {
                                         current_exit_notify = new_child.exit_notify.clone();
                                         restart_count.fetch_add(1, Ordering::SeqCst);
                                         *active_child.lock().await = Some(new_child);
-                                        // Stop may have cancelled after its take: reap what we stored.
                                         if cancel_token.is_cancelled() {
                                             let taken = active_child.lock().await.take();
                                             if let Some(child) = taken {
@@ -1271,7 +1303,6 @@ impl ProcessSupervisor {
 
     /// Cleanly terminate the child process with bounded grace period. Idempotent.
     pub async fn stop_internal(&self, timeout: Duration) -> Result<(), SupervisorError> {
-        // Idempotent check
         if self.shutdown_complete.load(Ordering::SeqCst) {
             return Ok(());
         }
@@ -1279,9 +1310,6 @@ impl ProcessSupervisor {
         self.is_shutting_down.store(true, Ordering::SeqCst);
         self.cancellation_token.cancel();
 
-        // Cancellation reaches a respawn handshake, which reaps its worker before the loop
-        // returns. Join the loop so the worker is gone when stop returns; abort only if the
-        // join overruns the deadline (the dropped startup guard still kills its worker).
         let loop_handle = self.loop_slot().take();
         if let Some(mut handle) = loop_handle {
             if tokio::time::timeout(timeout, &mut handle).await.is_err() {
@@ -1295,7 +1323,6 @@ impl ProcessSupervisor {
                 wd.abort();
             }
 
-            // The graceful deadline covers both queue admission and worker exit.
             let shutdown_cmd = serde_json::json!({
                 "version": 1,
                 "cmd": "shutdown",
@@ -1448,93 +1475,82 @@ mod tests {
 
     #[test]
     fn test_worker_process_config_discovery() {
+        let _env = crate::test_env::lock();
         let config = WorkerProcessConfig::discover_asr_worker();
         assert_eq!(config.name, "asr-worker");
         assert!(!config.command.is_empty());
-        assert!(!config.args.is_empty());
-        assert!(config.envs.contains_key("PYTHONUNBUFFERED"));
-        assert_eq!(config.envs.get("PYTHONUNBUFFERED"), Some(&"1".to_string()));
-        assert_eq!(config.envs.get("PYTHONUTF8"), Some(&"1".to_string()));
+        assert!(config.args.is_empty());
+        let allowed_keys = [
+            "HF_HUB_DISABLE_SYMLINKS_WARNING",
+            "LIVEAUDIO_ORT_DYLIB_PATH",
+            "HF_HOME",
+        ];
+        for key in config.envs.keys() {
+            assert!(
+                allowed_keys.contains(&key.as_str()),
+                "unexpected env var {key}"
+            );
+        }
+        assert_eq!(
+            config.envs.get("HF_HUB_DISABLE_SYMLINKS_WARNING"),
+            Some(&"1".to_string())
+        );
         assert!(config.envs.contains_key("HF_HOME"));
-        assert!(config.envs.contains_key("TORCH_HOME"));
     }
 
     #[test]
     fn test_worker_process_config_env_override() {
+        let _env = crate::test_env::lock();
         let temp_dir = std::env::temp_dir();
-        let fake_py = temp_dir.join("fake_python_exe.exe");
-        let fake_worker = temp_dir.join("fake_asr_worker.py");
-        let _ = std::fs::write(&fake_py, b"fake");
+        // Per-process name: concurrent test runs share the temp dir.
+        let fake_worker = temp_dir.join(format!(
+            "liveaudio-fake-worker-{}{}",
+            std::process::id(),
+            if cfg!(windows) { ".exe" } else { "" }
+        ));
         let _ = std::fs::write(&fake_worker, b"fake");
 
-        std::env::set_var("LIVEAUDIO_PYTHON", &fake_py);
         std::env::set_var("LIVEAUDIO_WORKER_PATH", &fake_worker);
 
-        let discovered_py = WorkerProcessConfig::find_python_executable();
         let discovered_worker = WorkerProcessConfig::find_asr_worker_script();
+        let config = WorkerProcessConfig::discover_asr_worker();
 
-        assert_eq!(discovered_py, fake_py);
-        assert!(discovered_worker.is_some());
+        // Compare resolved paths: Windows runners may report the temp dir in 8.3 short form.
+        assert_eq!(discovered_worker.as_deref().map(resolved), Some(resolved(&fake_worker)));
+        assert_eq!(resolved(std::path::Path::new(&config.command)), resolved(&fake_worker));
 
-        std::env::remove_var("LIVEAUDIO_PYTHON");
         std::env::remove_var("LIVEAUDIO_WORKER_PATH");
-
-        let _ = std::fs::remove_file(&fake_py);
         let _ = std::fs::remove_file(&fake_worker);
     }
 }
 
+/// Canonical form without the verbatim prefix, so short (8.3) and long Windows paths compare equal.
 #[cfg(test)]
-mod python_discovery_order_tests {
-    use super::{bundled_python_candidates, python_on_path};
-    use std::ffi::OsStr;
-    use std::path::{Path, PathBuf};
+fn resolved(path: &std::path::Path) -> PathBuf {
+    let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let raw = canon.to_string_lossy();
+    PathBuf::from(raw.strip_prefix(r"\\?\").unwrap_or(&raw))
+}
+
+#[cfg(test)]
+mod native_worker_discovery_tests {
+    use super::*;
 
     #[test]
-    fn bundled_candidates_stay_under_the_exe_directory_and_its_venv_ancestors() {
-        let exe_dir = if cfg!(windows) {
-            PathBuf::from(r"C:\Program Files\LiveAudio")
-        } else {
-            PathBuf::from("/opt/liveaudio")
-        };
-        let candidates = bundled_python_candidates(&exe_dir);
+    fn test_find_package_root_defaults_to_current_or_worker_parent() {
+        let cur = std::env::current_dir().ok();
+        let root = WorkerProcessConfig::find_package_root(&None);
+        assert_eq!(root, cur);
 
-        assert!(
-            candidates.iter().all(|path| path.is_absolute()),
-            "cwd-relative candidates must not be trusted: {candidates:?}"
-        );
-        let venv = if cfg!(windows) {
-            Path::new(".venv/Scripts/python.exe")
-        } else {
-            Path::new(".venv/bin/python")
-        };
-        assert!(candidates.contains(&exe_dir.join(venv)));
-        assert!(candidates.contains(&exe_dir.join("..").join(venv)));
-        let bundled = if cfg!(windows) {
-            exe_dir.join("python.exe")
-        } else {
-            exe_dir.join("bin/python3")
-        };
-        assert_eq!(candidates.first(), Some(&bundled));
+        let temp = std::env::temp_dir().join("some_worker.exe");
+        let root_temp = WorkerProcessConfig::find_package_root(&Some(temp.clone()));
+        assert_eq!(root_temp, temp.parent().map(resolved));
     }
 
     #[test]
-    fn path_lookup_returns_the_python_in_an_absolute_directory() {
-        let root = std::env::temp_dir().join(format!("liveaudio-py-path-{}", std::process::id()));
-        let absolute_dir = root.join("bin");
-        std::fs::create_dir_all(&absolute_dir).unwrap();
-        let name = if cfg!(windows) {
-            "python.exe"
-        } else {
-            "python"
-        };
-        std::fs::write(absolute_dir.join(name), "real").unwrap();
-
-        let path = std::env::join_paths([absolute_dir.clone()]).unwrap();
-        let found = python_on_path(&path);
-        std::fs::remove_dir_all(&root).ok();
-
-        assert_eq!(found, Some(absolute_dir.join(name)));
-        assert_eq!(python_on_path(OsStr::new("")), None);
+    fn test_default_config_args_are_empty() {
+        let cfg = WorkerProcessConfig::default();
+        assert!(cfg.args.is_empty());
+        assert_eq!(cfg.name, "asr-worker");
     }
 }

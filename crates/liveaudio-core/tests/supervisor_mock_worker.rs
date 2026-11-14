@@ -645,18 +645,20 @@ time.sleep(60)
         .start()
         .await
         .expect("first worker becomes ready");
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while !pid_path.exists() {
+    // The worker writes its pid in two steps (truncate, then write): wait until it parses.
+    let pid: u32 = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let parsed = std::fs::read_to_string(&pid_path)
+                .ok()
+                .and_then(|text| text.trim().parse::<u32>().ok());
+            if let Some(pid) = parsed {
+                break pid;
+            }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await
     .expect("respawned worker is mid-handshake");
-    let pid: u32 = std::fs::read_to_string(&pid_path)
-        .expect("respawned pid")
-        .trim()
-        .parse()
-        .expect("numeric pid");
 
     supervisor
         .stop_internal(Duration::from_millis(300))
@@ -677,11 +679,12 @@ async fn slow_startup_that_keeps_reporting_progress_is_not_killed() {
     config.args = vec![
         "-u".to_string(),
         "-c".to_string(),
-        "import json,time; [(print(json.dumps({'event':'status','payload':{'state':'downloading','phase':'downloading'}}), flush=True), time.sleep(0.4)) for _ in range(7)]; print(json.dumps({'event':'ready'}), flush=True); time.sleep(60)"
+        "import json,time; [(print(json.dumps({'event':'status','payload':{'state':'downloading','phase':'downloading'}}), flush=True), time.sleep(1)) for _ in range(8)]; print(json.dumps({'event':'ready'}), flush=True); time.sleep(60)"
             .to_string(),
     ];
-    // Startup takes ~2.8 s, well past the 1 s base window, but reports progress every 0.4 s.
-    config.ready_timeout = Duration::from_secs(1);
+    // Startup takes ~8 s, well past the 5 s stall window, but reports progress every 1 s.
+    // The window also covers interpreter start-up, which can take seconds on a loaded machine.
+    config.ready_timeout = Duration::from_secs(5);
     config.auto_respawn = false;
     let mut supervisor =
         ProcessSupervisor::new(config, std::process::id(), 0, None).expect("supervisor creation");

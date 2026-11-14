@@ -19,7 +19,7 @@ CRITICAL: You must validate the success of every tool call. If any tool call fai
 ## 1.0.1 LIVEAUDIO PROJECT OVERRIDES
 
 - Commit policy: any instruction in this skill to stage, commit, archive, delete, or revert changes requires explicit user approval first. If approval is not already present in the current user request, stop and ask.
-- Tool mapping: use OpenCode `question` for `ask_user`, `apply_patch` for file edits, and `bash` for shell commands.
+- Tool mapping: use `AskUserQuestion` for `ask_user`, `Edit`/`Write` for file edits, and `Bash` for shell commands.
 - Universal File Resolution Protocol for this project: resolve Product Definition to `conductor/product.md`, Product Guidelines to `conductor/product-guidelines.md`, Tech Stack to `conductor/tech-stack.md`, Workflow to `conductor/workflow.md`, Tracks Registry to `conductor/tracks.md`, and Tracks Directory to `conductor/tracks/`.
 - Privacy rule: never save or expose raw audio, raw transcripts, session contents, secrets, API keys, private filesystem paths, or PII in Engram, prompts, logs, or review notes. Use sanitized technical summaries only.
 
@@ -110,7 +110,7 @@ CRITICAL: You must validate the success of every tool call. If any tool call fai
 4.  **Testing:**
     -   Are there new tests?
     -   Do the changes look like they are covered by existing tests?
-    -   *Action:* **Execute the test suite automatically.** Infer the test command based on the codebase languages and structure (e.g., `npm test`, `pytest`, `go test`). Run it. Analyze the output for failures.
+    -   *Action:* **Execute the test suite automatically.** Infer the test command based on the codebase languages and structure (e.g., `cargo test --workspace`, `node --test tests-js/*.mjs`, `node desktop/test_frontend.js`). Run it. Analyze the output for failures.
 
 ### 2.4 Output Findings
 **Format your output strictly as follows:**

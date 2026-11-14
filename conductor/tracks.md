@@ -4,111 +4,9 @@ This file tracks major LiveAudio tracks. Each track should have its own detailed
 
 ---
 
-- [x] **Track: Configurable OBS subtitle backlog policy**
-  *Link: N/A - completed before Conductor track artifacts existed.*
-  *Status: completed before Conductor initialization. Commit: `e6575b2`.*
-
-- [x] **Track: Specialized agent team workflow**
-  *Link: N/A - completed before Conductor track artifacts existed.*
-  *Status: completed before Conductor initialization. Commit: `1644b11`.*
-
-- [x] **Track: Settings profiles and apply flow**
-  *Link: N/A - completed before Conductor track artifacts existed.*
-  *Status: completed before Conductor initialization. Commit: `26598e8`.*
-
----
-
-- [x] **Track: Critical Bug Fixes — Resilience & Stability**
-  *Link: [./tracks/critical-bugfixes_20260509/](./tracks/critical-bugfixes_20260509/)*
-  *Status: completed. Commit: `05bf60b`.*
-
----
-
-- [x] **Track: Subtitle Style System v2**
-  *Link: [./tracks/subtitle-style-system_20260509/](./tracks/subtitle-style-system_20260509/)*
-  *Status: completed. SDD formal workflow with 3 chained PRs. 18 tasks, 242 tests, 7 presets.*
-
----
-
-- [x] **Track: Dynamic Internationalization (i18n) & Settings Reorganization**
-  *Link: N/A - completed directly to optimize workspace open-source transition.*
-  *Status: completed. Real-time dynamic i18n for English/Spanish, translated preview panels, dynamic status pills, and merged Profiles settings tab. Commits: `5a6fad8`, `c7dc1c3`, `9b5ea8f`.*
-
----
-
-- [x] **Track: Portable Packaging, CUDA 12 Fixes & Application Resilience**
-  *Link: [./tracks/portable-packaging-resilience_20260606/](./tracks/portable-packaging-resilience_20260606/)*
-  *Status: completed. Upgraded PyTorch to CUDA 12.1 (cu121), injected DLL paths into bat/exe environments, implemented async update checks (every 24hs), and global crash diagnostics window redirecting to GitHub.*
-
----
-
-- [ ] **Track: ASR Language Separation with Dual Context Prompts**
-  *Link: [./tracks/asr-language-separation_20260601/](./tracks/asr-language-separation_20260601/)*
-  *Status: pending manual verification. Implementation complete on `master`, 47 stress tests. Historical pre-migration PR reference removed; do not treat old personal-fork PR links as current release status. Non-blocking follow-up for public launch because the app remains functional today.*
-  *Pending: manual test of migration, UI dropdown, prompt swap, and live inference language switch.*
-
----
-
-- [ ] **Track: Experimental Moonshine ASR Integration**
-  *Link: [./tracks/moonshine-asr-integration_20260607/](./tracks/moonshine-asr-integration_20260607/)*
-  *Status: 🔲 proposed/pending. Research and baseline integration of the low-latency Moonshine model as an alternative to Whisper.*
-
----
-
-- [x] **Track: VAD Onset Grace & Configurable Silero Pre-roll**
-  *Link: [./tracks/vad-onset-grace_20260619/](./tracks/vad-onset-grace_20260619/)*
-  *Status: completed. Made the Silero VAD onset pre-roll configurable (replaced the hardcoded `pre_buffer=deque(maxlen=3)` ≈ 96ms at audio.py:308) so soft word onsets stop getting clipped; exposed `vad_speech_pad_ms` and `vad_threshold`. Merged via PR #4 (2026-06-20), commits `67bf887` / `4d86eba` on master.*
-
----
-
-- [x] **Track: Subtitle Legibility & Animation Polish (OBS Overlay)**
-  *Link: [./tracks/subtitle-legibility-anim_20260619/](./tracks/subtitle-legibility-anim_20260619/)*
-  *Status: completed. Reconciled the `--sub-animation-duration` mismatch (0.2s CSS vs 0.4s JS), raised `.style-minimal` legibility, lifted the small-source font clamp floor, and capped per-word reveal stagger so long phrases appear fast. Edits `subtitulos_obs.html`. Merged via PR #7 (2026-06-20), commit `ab20acc`; PR #5 (earlier version of this same branch, targeted at `feature/vad-onset-grace`) was closed/superseded.*
-
----
-
-- [x] **Track: Vertical Ribbon Subtitle Buffer for OBS Overlay**
-  *Link: [./tracks/subtitle-ribbon-buffer_20260619/](./tracks/subtitle-ribbon-buffer_20260619/)*
-  *Status: completed. Implemented + dual-reviewed across 3 judgment-day cycles (final: pass-with-notes, state machine sound + memory safe). Default `adaptive`, strict TDD, node runtime harness. ADAPTIVE vertical "ribbon" buffer: one subtitle at a time under normal pacing, auto-stacks the N most-recent lines ONLY when subtitles accumulate/queue up (keyed off the existing `pendingQueue` + `is_replay` catch-up signals), then collapses back — so steady speech never shows an oversized text block. Modes `single|ribbon|adaptive`, **default `adaptive`** (LOCKED). Direction (OD-1, newest-on-top) + default/threshold (OD-6) + engine-hint defer (OD-5) RESOLVED. Merged via PR #6 (2026-06-20), commit `c414edb`, landing after the legibility track as required.*
-
----
-
 - [ ] **Track: Test-suite & launch-readiness cleanup (collateral — DEFERRED)**
   *Link: N/A — noted follow-up; no track folder yet.*
   *Status: 🔲 proposed. Collateral issues surfaced during the VAD/subtitle work, intentionally deferred OUT of their tracks (not bugs introduced by them): (1) `.atl/skill-registry.md` carries absolute Windows paths (`C:\Users\...`) after a `gentle-ai skill-registry refresh`, failing `tests/test_public_launch_readiness.py::test_skill_registry_has_no_absolute_windows_paths` — regenerate with relative paths or revert that working-tree change. (2) Pre-existing `tests/test_audio.py::TestVadThresholdEnforcement` + `tests/test_noise_detection.py` re-implement the VAD check locally with `>=`, contradicting the production strict `>` — route through a shared helper so the suite documents one correct boundary. (3) Adaptive-ribbon LOW edges (from Track B re-judge, not blocking): (a) the SINGLE↔RIBBON flap can recur only when `subtitle_catchup_interval_sec > ~5.65s` (slider max is 10s, but all profiles use 0.8–2.0s and default 1.5s) — consider tying the slider max to ~5s; (b) a non-replay live line interleaved between spaced replay payloads momentarily demotes (`subtitulos_obs.html` adaptive enqueue `replayActive = !!isReplay`) — arguable "caught up" semantics, decide if it should latch instead.*
-
----
-
-- [x] **Track: Automatic WebSocket Port Fallback & Overlay Endpoint Identification**
-  *Link: N/A - no Conductor track folder created; tracked via PR #12.*
-  *Status: open PR #12 (`feat/ws-port-fallback` → `master`), commit `7d82cc5`. Server-side bind fallback walks `base..base+9` on `EADDRINUSE`/WinSock `10048` and announces the effective port to the GUI; the OBS overlay now identifies its server via a `hello` handshake before rendering anything, closing the "wrong socket" gap behind issue #9's incident. Closes issue #11. Manually validated end-to-end against real OBS.*
-  *Landed: via 4c34766/c2aae32 (CLOSED on GitHub, ancestor of master verified 2026-09-06).*
-
----
-
-- [x] **Track: Independent Output Sink Toggles & UI WebSocket Port**
-  *Link: N/A - no Conductor track folder created; tracked via PR #13.*
-  *Status: open PR #13 (`feat/output-sink-toggles`), stacked on #12. Commit `491eb52`. Adds independent `save_transcript_enabled` / `save_vtt_enabled` disk toggles (transcript persistence was previously unconditional) and a `ws_port` field in the UI, warning when the base port changes since a pinned overlay only scans `base..base+9`.*
-  *Landed: via 4c34766/c2aae32 (CLOSED on GitHub, ancestor of master verified 2026-09-06).*
-
----
-
-- [x] **Track: OBS Overlay Visibility Fix (Hidden-Scene Reveal)**
-  *Link: N/A - no Conductor track folder created; tracked via PR #14.*
-  *Status: open PR #14 (`fix/overlay-visibility`), stacked on #12. Commit `4d6bac4`. Subtitles never revealed while the OBS scene was hidden because the reveal was gated behind `requestAnimationFrame`, which browsers suspend when the document is hidden, while the expiry `setTimeout`s kept firing. Replaced with a synchronous reflow force; added a `visibilitychange` hard reset so a resumed overlay never replays what was missed.*
-  *Landed: via 4c34766/c2aae32 (CLOSED on GitHub, ancestor of master verified 2026-09-06).*
-
----
-
-- [x] **Track: Defer Manager Startup for Faster Launch**
-  *Link: N/A - no Conductor track folder created; tracked via PR #15.*
-  *Status: open PR #15 (`perf/defer-manager-startup`), stacked on #13 (itself stacked on #12). Commit `315eeed`. Moved `mp.Manager()` out of `LiveASRApp.__init__` into a lazy accessor, removing a measured 455-478ms from every launch that was previously paid even when the user never pressed Start.*
-  *Landed: via 4c34766/c2aae32 (CLOSED on GitHub, ancestor of master verified 2026-09-06).*
-
----
-
-- **Note: stale branch triage**
-  *Status: local branch `audit-ui-security-privacy` deleted on 2026-07-24 after triage — one docs-only commit (`dcdf5c8`), never pushed to the remote; all five findings from its audit report verified as already implemented on master.*
 
 ---
 
@@ -118,38 +16,20 @@ This file tracks major LiveAudio tracks. Each track should have its own detailed
 
 ---
 
-- [~] **Track: First-use startup & Whisper progress honesty (exploratory audit)**
-  *Link: [./tracks/firstuse-startup-progress_20260905/](./tracks/firstuse-startup-progress_20260905/)*
-  *Status: [~] Implemented and reviewed in the working tree; manual M1–M8 pending evidence.*
-
----
-
-- [ ] **Track: Long-session memory bounds (exploratory audit)**
-  *Link: [./tracks/longsession-memory_20260905/](./tracks/longsession-memory_20260905/)*
-  *Status: propuesta exploratoria pendiente de aprobación PO, sin commit. Read-only findings (Engram #6430/sesión #6436): SessionWriter sin cota, un worker vivo por timeout ASR repetido, DiagnosticsStore sin cota (opt-in, deshabilitado por defecto). Rutas retenidas, NO prueba de leak.*
-
----
-
-- [ ] **Track: i18n completeness ES/EN (exploratory audit)**
-  *Link: [./tracks/i18n-completeness_20260905/](./tracks/i18n-completeness_20260905/)*
-  *Status: propuesta exploratoria pendiente de aprobación PO, sin commit. Read-only findings (Engram #6431/sesión #6433): selector stable_streaming en silent no-op ES+EN por mismatch `stable_label` vs `stable_streaming_label`; restos sin traducir y eventos dinámicos con reverse-match.*
-
----
-
-- [ ] **Track: VAD silence honesty (exploratory audit)**
-  *Link: [./tracks/vad-silence_20260905/](./tracks/vad-silence_20260905/)*
-  *Status: propuesta exploratoria pendiente de aprobación PO, sin commit. Read-only findings (Engram #6429/#6434/sesión #6435): segmentación probada, NO clasificación de silencio real; sin gate voiced mínimo; excepciones escapan del daemon thread; adquisición sin pinear e insegura. No contradice vad-onset-grace.*
-
-
----
-
-- [~] **Track: Unified first-run launcher and app experience**
-  *Link: [./tracks/unified-first-run_20260905/](./tracks/unified-first-run_20260905/)*
-  *Status: partial checkpoint reviewed (Sol/Luna/Luna/Terra); implementation, supported-runtime proof, VM v2, and manual E2E-1–E2E-10 remain unfinished. Native review exception authorized by PO (Engram #6471), not a native PASS. Depends on firstuse-startup-progress_20260905, whose M1–M8 remain pending.*
-
----
-
 - [ ] **Track: WebSocket IPC Auth Token (Anti-Eavesdropping & Anti-Impersonation)**
   *Link: [./tracks/ws-ipc-auth-token_20260911/](./tracks/ws-ipc-auth-token_20260911/)*
   *Status: 🔲 proposed / spec drafted. Scope confirmed with PO (Option 1: mandatory in headless mode, optional toggle in desktop GUI). Scaffolding created in `conductor/tracks/ws-ipc-auth-token_20260911/` (`spec.md` + `plan.md`).*
+
+---
+
+- [ ] **Track: Multi-Source Capture with Source Tagging**
+  *Link: [./tracks/multi-source-capture_20261015/](./tracks/multi-source-capture_20261015/)*
+  *Status: new — pending PO decisions. Draft spec + plan from the owner's Spanish draft; PO decisions 1-4 open with recommendations; all tasks unchecked. Verification notes in spec.md: single device per instance CONFIRMED; WASAPI loopback in cpal_source.rs CONFIRMED (device enumeration lives in device.rs); server.rs:635-655 DIFFERENT (replay burst at 648-673, PTT residue NOT FOUND); audio_device CONFIRMED.*
+
+---
+
+- [~] **Track: In-App Updater for Desktop Application (Tauri 2)**
+  *Link: [./tracks/in-app-updater/](./tracks/in-app-updater/)*
+  *Status: In Progress (`[~]`). Phases 1-5 complete (backend updater, stream safety lock, bilingual UI, CI signing & manifest assembly, documentation). Final VM test matrix verification pending release candidate.*
+
 

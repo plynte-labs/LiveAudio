@@ -68,14 +68,15 @@ mod windows_impl {
         }
 
         /// Assign an arbitrary process handle to the Job Object.
-        pub fn assign_raw_handle(&self, raw_handle: HANDLE) -> io::Result<()> {
-            unsafe {
-                let res = AssignProcessToJobObject(self.handle, raw_handle);
-                if res == 0 {
-                    Err(io::Error::last_os_error())
-                } else {
-                    Ok(())
-                }
+        ///
+        /// # Safety
+        /// The caller must ensure `raw_handle` is a valid Windows process handle.
+        pub unsafe fn assign_raw_handle(&self, raw_handle: HANDLE) -> io::Result<()> {
+            let res = AssignProcessToJobObject(self.handle, raw_handle);
+            if res == 0 {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(())
             }
         }
 

@@ -12,7 +12,7 @@ pub type AsrBoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// Abstract Automatic Speech Recognition (ASR) backend.
 ///
-/// Implemented by local Faster-Whisper sidecars, ONNX models, or remote endpoints.
+/// Implemented by the native ONNX Runtime ASR worker sidecar, or remote endpoints.
 /// Must be thread-safe (`Send + Sync + 'static`).
 pub trait AsrBackend: Send + Sync + 'static {
     /// Initialize model weights and spawn backend worker processes/threads.

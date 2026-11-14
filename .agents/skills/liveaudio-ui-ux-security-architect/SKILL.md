@@ -1,6 +1,6 @@
 ---
 name: liveaudio-ui-ux-security-architect
-description: Use this skill when redesigning, auditing, or refactoring LiveAudio UI/UX, security, privacy, performance, WebSocket/OBS integration, local ASR workflows, CustomTkinter dashboards, Whisper/faster-whisper controls, VAD, audio device capture, session persistence, subtitle output, or local desktop tools for streamers. Do not use for unrelated backend-only changes unless they affect UI state, privacy, security, performance, or user-facing behavior.
+description: Use this skill when redesigning, auditing, or refactoring LiveAudio UI/UX, security, privacy, performance, WebSocket/OBS integration, local ASR workflows, the Tauri 2 desktop frontend, Whisper ONNX controls, VAD, audio device capture, session persistence, or subtitle output. Do not use for unrelated backend-only changes unless they affect UI state, privacy, security, performance, or user-facing behavior.
 ---
 
 # LiveAudio UI/UX & Security Architect Skill
@@ -26,21 +26,18 @@ The product identity is: local real-time transcription engine for streamers, OBS
 
 ## Core Product Context
 
-LiveAudio is a local ASR app with:
-- microphone or system audio capture
-- optional WASAPI loopback on Windows
-- Silero VAD
-- Whisper/faster-whisper transcription
-- CUDA/CPU model selection
-- model size selection
-- WebSocket server for OBS/browser clients
-- `subtitulos_obs.html` browser source
+LiveAudio is a local real-time transcription app with:
+- microphone or system audio capture (`cpal`; WASAPI loopback on Windows)
+- optional RNNoise noise suppression (off by default)
+- Silero VAD v6 (ONNX)
+- Whisper transcription on ONNX Runtime (DirectML, CUDA, or CPU)
+- compute device and model size selection
+- WebSocket server for OBS and browser clients, with the subtitle overlay served at `/overlay` (`assets/subtitulos_obs.html`)
 - blacklist filtering for hallucinations
 - session persistence as `.jsonl` and `.vtt`
 - `config.json` user settings
-- CustomTkinter GUI in `main.py`
-- core modules under `core/`
-- utility/config modules under `utils/`
+- Tauri 2 desktop app in `desktop/`, with a vanilla JS frontend in `desktop/src/`
+- Rust core in `crates/`
 
 Assume the app is functional but can become visually overloaded, fragile in long sessions, or unclear about privacy/security boundaries.
 
@@ -59,7 +56,7 @@ The main screen must focus on the live transcription loop:
 - latest transcript/subtitle preview
 - WebSocket/OBS output state
 - current session path/status
-- one dominant primary button: `Iniciar sistema` / `Detener sistema`
+- one dominant primary button: `Start Transcription` / `Stop Transcription`
 
 This screen should answer:
 - Is the audio device available?
@@ -76,7 +73,7 @@ This screen should answer:
 Move configuration and secondary controls into a visually secondary panel:
 - audio input device
 - capture mode: mic / system loopback where supported
-- compute device: CPU/CUDA
+- compute device: CPU / DirectML / CUDA
 - Whisper model size
 - language/mode if present
 - VAD sensitivity and silence timeout
@@ -166,7 +163,7 @@ When proposing code or refactors, prefer these conceptual components:
 - LogViewer
 - PerformanceMonitor
 
-For CustomTkinter, map these to frames/classes or helper builders. Keep changes incremental.
+For the desktop frontend (vanilla JS modules in `desktop/src/`), map these to modules or render functions. Keep changes incremental.
 
 ## Refactor Strategy
 
@@ -179,20 +176,13 @@ Default strategy:
 4. Normalize labels, spacing, colors, and button priority.
 5. Add state-driven feedback for audio/VAD/ASR/WebSocket/session.
 6. Limit logs/output growth.
-7. Only then propose framework migration.
+7. Only then propose framework changes.
 
-For CustomTkinter:
-- preserve working ASR/audio/WebSocket logic
-- avoid mixing UI refactor with engine rewrites
-- extract layout frames first
-- avoid changing multiprocessing contracts unless necessary
-- update UI only from the main thread/process-safe channel
-
-If moving toward Tauri/React/Tailwind later:
-- keep Python as local ASR/audio backend
-- expose backend state through WebSocket/HTTP only after contracts are documented
-- avoid duplicating ASR logic in frontend
-- use frontend only for state visualization, controls, and interaction
+For the desktop frontend:
+- keep ASR, audio, and WebSocket logic in the Rust crates; the frontend renders state and sends commands
+- avoid changing Tauri command, event, or WebSocket contracts unless necessary, and document any change
+- extract layout sections first
+- avoid mixing a UI refactor with engine changes
 
 ## LiveAudio Main Layout Recommendation
 
@@ -206,7 +196,7 @@ Use this layout as the default proposal:
 │                               │                              │
 │ Latest subtitle preview       │ Audio device                 │
 │ Current/last transcript       │ Capture mode                 │
-│ VAD state / audio level       │ Model + CPU/CUDA             │
+│ VAD state / audio level       │ Model + CPU/GPU              │
 │ Big Start/Stop button         │ VAD/silence/chunk settings   │
 │ Session save state            │ Blacklist                    │
 │ OBS/WebSocket short status    │ Output folder/style          │
@@ -216,13 +206,13 @@ Use this layout as the default proposal:
 ```
 
 The primary button should change by state:
-- Idle: `Iniciar sistema`
-- Starting: `Cargando modelo...`
-- Listening: `Escuchando audio`
-- Transcribing: `Transcribiendo...`
-- Running idle: `Sistema activo`
-- Stopping: `Deteniendo...`
-- Error: `Reintentar`
+- Idle: `Start Transcription`
+- Starting: `Starting service...`
+- Listening: `Listening to audio`
+- Transcribing: `Transcribing...`
+- Running idle: `Service running`
+- Stopping: `Stopping...`
+- Error: `Retry`
 
 ## State Design
 
@@ -258,8 +248,8 @@ Audit for:
 - path traversal or unsafe output paths
 - unbounded logs/session files
 - unauthenticated local WebSocket if exposed to LAN
-- HTML browser source injection risks
-- dependencies that may download models or contact network
+- HTML browser source injection risks in the overlay
+- dependencies that may download models or contact the network
 - crash logs that include transcript text unnecessarily
 
 Rules:
@@ -324,29 +314,25 @@ When modifying code:
 
 ## Framework Guidance
 
-If asked whether to stay in CustomTkinter or migrate:
-- Stay in CustomTkinter short-term if ASR/audio/process behavior is still stabilizing.
-- Extract core state/events away from UI first.
-- Move to Tauri/React/Tailwind only after backend contracts are documented.
-- Do not migrate just to make controls prettier.
-- Migrate when the product needs professional component reuse, theming, animation, installer polish, and rich OBS/session management.
+The stack is settled: Tauri 2 shell, Rust backend, vanilla JS frontend. Do not migrate frameworks just to make controls prettier.
+
+Propose a frontend framework change only when the product needs component reuse, theming, animation, installer polish, or rich OBS/session management that the current frontend cannot support, and only after the backend contracts are documented.
 
 Default architecture:
 
 ```txt
-Python core:
-- audio capture
-- VAD
-- ASR/Whisper
-- WebSocket broadcast
-- session writer
+Rust core (crates/):
+- audio capture and VAD (liveaudio-audio, liveaudio-vad)
+- ASR worker sidecar: Whisper on ONNX Runtime (liveaudio-asr-worker)
+- pipeline and supervisor (liveaudio-core)
+- WebSocket broadcast and overlay (liveaudio-network)
+- session writers (.jsonl, .vtt)
 
 State/event bridge:
-- queue, WebSocket, or HTTP API
+- Tauri commands and events (desktop/src-tauri)
 
 Frontend:
-- CustomTkinter now
-- Tauri + React + Tailwind later
+- vanilla JS in desktop/src (Tauri 2 webview)
 ```
 
 ## Design Critique Tone

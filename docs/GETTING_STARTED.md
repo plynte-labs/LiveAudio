@@ -10,9 +10,9 @@ Antes de empezar, asegúrate de tener:
 
 - **Windows 10/11** o **Linux x86_64**.
 - (Opcional pero recomendado) **GPU NVIDIA** con drivers actualizados.
-- Conexión a internet para la primera ejecución (descarga de dependencias y modelos).
+- Conexión a internet para la primera ejecución (descarga del modelo).
 
-No necesitas Python instalado: el instalador aprovisiona su propio Python 3.11.
+No necesitas Python ni CUDA: LiveAudio es 100% Rust nativo.
 
 ---
 
@@ -22,24 +22,19 @@ No necesitas Python instalado: el instalador aprovisiona su propio Python 3.11.
 
 1. Descarga la última versión desde [GitHub Releases](https://github.com/plynte-labs/LiveAudio/releases):
    - **Windows:** `LiveAudio-Setup-X.Y.Z.exe`
-   - **Linux:** `LiveAudio-X.Y.Z-linux-x64.tar.gz` (extrae y ejecuta `./liveaudio-launcher`)
-2. Ejecútalo. Al iniciar ASR por primera vez, LiveAudio prepara Python 3.11 y las dependencias bloqueadas del runtime; esta preparación requiere conexión a internet y muestra el progreso en la interfaz. Puedes cancelarla y reintentarla después. Si el runtime necesita repararse, usa **Reparar runtime ASR** en Ajustes.
+   - **Linux:** la app de escritorio como AppImage (`*.AppImage`) o paquete Debian (`*.deb`). El archivo `liveaudio-cli-X.Y.Z-linux-x64.tar.gz` contiene solo el CLI y el worker ASR, no la app. En Linux las actualizaciones son manuales; el actualizador integrado es solo para Windows.
+2. Ejecútalo. Al iniciar ASR por primera vez, LiveAudio descarga el modelo seleccionado y muestra el progreso en la interfaz. Puedes cancelarlo y reintentarlo después. Si el runtime necesita repararse, usa **Reparar runtime ASR** en Ajustes.
 
-El runtime nativo CPU de ONNX y el modelo Silero VAD están incluidos en los recursos de la aplicación para Windows y Linux; no se descargan durante el inicio. Si esos archivos de la aplicación faltan o no se pueden cargar, repara o reinstala LiveAudio. **Reparar runtime ASR** corresponde al entorno Python y no puede reemplazar los archivos nativos del instalador.
+El runtime nativo de ONNX y el modelo Silero VAD están incluidos en los recursos de la aplicación para Windows y Linux; no se descargan durante el inicio. Si esos archivos faltan o no se pueden cargar, repara o reinstala LiveAudio.
 
 ### Opción B: Desde el código fuente (desarrolladores)
 
-Requiere [uv](https://docs.astral.sh/uv/):
+Requiere la toolchain estable de Rust y Node.js:
 
 ```bash
 git clone https://github.com/plynte-labs/LiveAudio.git
 cd LiveAudio
-
-# Solo CPU (la opción más liviana, funciona en cualquier equipo)
-uv sync --extra cpu
-
-# O con NVIDIA CUDA
-uv sync --extra cu121
+cargo build --workspace
 ```
 
 ---
@@ -52,26 +47,16 @@ El registro muestra la consulta de caché, la descarga y la carga en GPU o CPU. 
 
 ## 3. Verificar instalación
 
-- **Instalador:** ejecuta el launcher con `--self-test` para ver las rutas resueltas y el dispositivo detectado.
-- **Desarrolladores:** comprueba que las librerías principales están disponibles:
-
-```bash
-uv run python -c "import torch; print('PyTorch:', torch.__version__)"
-uv run python -c "import faster_whisper; print('Faster Whisper OK')"
-```
+Ejecuta `liveaudio-cli doctor` para ver el worker ASR nativo, ONNX Runtime y las rutas de datos detectadas.
 
 ---
 
 ## 4. Ejecutar LiveAudio
 
-- **Instalador:** abre LiveAudio desde el acceso directo o ejecutando de nuevo el launcher.
-- **Desarrolladores:**
+- **Instalador:** abre LiveAudio desde el acceso directo.
+- **Desarrolladores:** `cd desktop && npm run dev`.
 
-```bash
-uv run liveaudio
-```
-
-Al iniciar por primera vez, se creará automáticamente un archivo `config.json` con valores predeterminados en la carpeta de datos: `%LOCALAPPDATA%\LiveAudio\data` (Windows) o `~/.local/share/liveaudio/data` (Linux) en instalaciones con launcher; `%APPDATA%\LiveAudio` o `~/.config/liveaudio` en ejecuciones de desarrollo. Puedes cambiar la ubicación con la variable de entorno `LIVEAUDIO_HOME`.
+Al iniciar por primera vez, LiveAudio crea un `config.json` con valores predeterminados en la carpeta de datos: `%APPDATA%\LiveAudio` en Windows, o `~/.config/liveaudio` (o `$XDG_CONFIG_HOME/liveaudio`) en Linux. Puedes cambiar la ubicación con la variable de entorno `LIVEAUDIO_HOME`. Los modelos Whisper se guardan en `%LOCALAPPDATA%\LiveAudio\models\onnx` en Windows.
 
 ### Dispositivo de cómputo
 
@@ -124,9 +109,10 @@ Los cambios no se activan hasta pulsar **Aplicar cambios**. Si modificas un pres
 ### 5.5. Ajustar latencia
 
 - **Detección de silencio:** tiempo de espera después de que dejas de hablar para cortar el segmento.
-  - Valor recomendado: **0.4s - 0.8s**
+  - Valor recomendado: **0.4s - 0.8s** (por defecto 0.5s)
 - **Guillotina (max audio):** duración máxima de un segmento antes de forzar el corte.
-  - Valor recomendado: **5s - 15s**
+  - Valor recomendado: **3s - 15s** (por defecto 3s)
+- **Subtítulos parciales en vivo** (Avanzado, requiere reiniciar el servicio): mientras hablas, muestra el texto provisional de la frase cada ~0,5 s en la vista previa y en OBS, y la versión final lo reemplaza. Reduce la espera percibida, pero cada parcial es una transcripción extra: se recomienda con una GPU rápida (CUDA). En DirectML o CPU aumenta la carga y puede retrasar los finales. Los parciales no se guardan en archivos. Está desactivado por defecto y solo funciona en la app de escritorio, no en `liveaudio-cli`.
 
 ### 5.6. Configurar subtítulos y OBS
 
@@ -244,12 +230,13 @@ Cada vez que inicias una sesión, LiveAudio crea una carpeta con timestamp:
 ```
 sessions/
 └── session_2026-05-04_143022/
-    ├── subtitles.vtt      # Subtítulos en formato WebVTT
+    ├── subtitles.vtt      # Subtítulos en formato WebVTT estándar
+    ├── subtitles.srt      # Los mismos subtítulos en SubRip (p. ej. para DaVinci Resolve)
     ├── transcript.jsonl   # Transcripción cruda con metadatos
     └── session.json       # Metadatos de la sesión
 ```
 
-`transcript.jsonl` y `subtitles.vtt` conservan completo el texto transcrito después de la sanitización. Las marcas de tiempo VTT usan el momento de captura relativo al inicio de la sesión, por lo que reflejan también las pausas entre frases; las capturas históricas sin marcas de tiempo no reciben una hora inventada. La presentación de subtítulos en OBS/WebSocket mantiene el límite actual de 600 caracteres. Los controles de guardado de JSONL y VTT siguen siendo independientes.
+`transcript.jsonl`, `subtitles.vtt` y `subtitles.srt` conservan completo el texto transcrito después de la sanitización. Las marcas de tiempo VTT usan el momento de captura relativo al inicio de la sesión, por lo que reflejan también las pausas entre frases; las capturas históricas sin marcas de tiempo no reciben una hora inventada. La presentación de subtítulos en OBS/WebSocket mantiene el límite actual de 600 caracteres. El archivo `.srt` se escribe siempre que el guardado de VTT esté activo. Los controles de guardado de JSONL y VTT siguen siendo independientes.
 
 Cada entrada nueva de JSONL incluye la duración derivada del audio PCM y una instantánea limitada a ajustes de captura y tiempo máximo de decodificación; no incluye prompts ni identificadores de dispositivos.
 
@@ -258,11 +245,6 @@ Si la cola o el almacenamiento de una salida de sesión falla, LiveAudio detiene
 ---
 
 ## 8. Solución de problemas comunes
-
-### Error: `No module named 'torch'`
-
-- **Instalador:** la primera instalación quedó incompleta. Ejecuta el launcher con `--reinstall`.
-- **Desarrolladores:** falta el extra de torch. Ejecuta `uv sync --extra cpu` (o `--extra cu121`) y lanza la app con `uv run liveaudio`.
 
 ### Error: `CUDA out of memory`
 
@@ -330,14 +312,6 @@ Si necesitás más detalle puntual, subí `diagnostics_level` a `deep` temporalm
 ---
 
 ## 10. Consejos de rendimiento
-
-## 10.1 Recorrido unificado de primera ejecución
-
-El checkpoint actual alinea el launcher y la app con la misma secuencia: seleccion de instalacion, uv, codigo, dependencias, apertura de LiveAudio, VAD, Whisper y listo para iniciar. El handoff y la copia de fases estan presentes, pero la experiencia unificada completa sigue pendiente de runtime empaquetado, revision, VM y evidencia manual. **Abriendo LiveAudio** significa que la ventana ya es visible; no significa que Whisper este listo.
-
-`uv sync`, VAD y la carga posterior a la descarga son indeterminados cuando no hay evidencia real por bytes o tqdm; el fix de porcentajes globales esta registrado, pero aun requiere validacion en Python 3.11 y runtime empaquetado. La implementacion candidata clasifica fallos VAD como `provision-network`, `provision-tls` o `provision-cache-corrupt`; **Reintentar fase** y su limite de productor requieren evidencia manual antes de considerarse cerrados.
-
-
 
 - **Cierra programas innecesarios** mientras streameas para liberar CPU/GPU.
 - **Usa SSD** para la carpeta de sesiones; escribir VTT/JSONL en disco lento puede causar micro-lag.

@@ -1,21 +1,16 @@
 // SPDX-License-Identifier: MIT
 
-//! Explicit provisioning and readiness checks for the hybrid Python ASR worker.
+//! Provisioning, discovery, and readiness checks for the native Rust ASR worker binary.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::str::FromStr;
 use std::time::Duration;
 
 use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
 
-const MANAGED_RUNTIME_DIR: &str = "asr-runtime";
-const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
-const PYPROJECT_TOML: &str = include_str!("../../../pyproject.toml");
-const UV_LOCK: &str = include_str!("../../../uv.lock");
-const IMPORT_PROBE: &str = "import faster_whisper, numpy, sounddevice, websockets, torch; import liveaudio.service.asr_worker";
+const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[cfg(test)]
 mod probe_lifecycle_tests {
@@ -34,10 +29,29 @@ mod probe_lifecycle_tests {
         ));
         fs::create_dir_all(&root).unwrap();
         let pid_file = root.join("probe.pid");
-        let script =
-            "import os,sys,time; open(sys.argv[1], 'w').write(str(os.getpid())); time.sleep(60)";
-        let args = ["-c", script, pid_file.to_str().unwrap()];
-        let mut command = command_for(Path::new("python"), &args);
+        #[cfg(windows)]
+        let (cmd, args) = (
+            "powershell.exe",
+            vec![
+                "-NoProfile".to_string(),
+                "-NonInteractive".to_string(),
+                "-Command".to_string(),
+                format!(
+                    "[System.IO.File]::WriteAllText('{}', $PID); Start-Sleep -Seconds 60",
+                    pid_file.display()
+                ),
+            ],
+        );
+        #[cfg(not(windows))]
+        let (cmd, args) = (
+            "sh",
+            vec![
+                "-c".to_string(),
+                format!("echo $$ > '{}'; sleep 60", pid_file.display()),
+            ],
+        );
+
+        let mut command = command_for(Path::new(cmd), &args);
         command
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -57,60 +71,23 @@ mod probe_lifecycle_tests {
             wait_for_probe(&mut child, Duration::from_millis(100))
                 .await
                 .is_err(),
-            "slow import probe must time out"
+            "slow probe must time out"
         );
         assert!(
             child.try_wait().expect("reaped probe status").is_some(),
             "timeout must kill and reap the actual probe child"
         );
-        fs::remove_dir_all(root).unwrap();
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AsrBackend {
-    Cpu,
-    Cu121,
-}
-
-impl AsrBackend {
-    fn extra(self) -> &'static str {
-        match self {
-            Self::Cpu => "cpu",
-            Self::Cu121 => "cu121",
-        }
-    }
-}
-
-impl FromStr for AsrBackend {
-    type Err = RuntimeError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
-            "cpu" => Ok(Self::Cpu),
-            "cu121" => Ok(Self::Cu121),
-            _ => Err(RuntimeError::UnsupportedBackend(value.to_string())),
-        }
+        let _ = fs::remove_dir_all(root);
     }
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum RuntimeError {
-    #[error("unsupported ASR backend '{0}'; choose cpu or cu121 explicitly")]
-    UnsupportedBackend(String),
-    #[error("uv was not found; install/bundle uv or put uv.exe on PATH")]
-    UvNotFound,
-    #[error("ASR worker package source was not found; include the liveaudio package with the app")]
-    PackageSourceMissing,
     #[error("could not prepare managed ASR runtime: {0}")]
     Io(#[from] std::io::Error),
-    #[error("uv sync failed with exit status {status}: {details}")]
-    UvFailed { status: String, details: String },
     #[error("ASR dependency preflight exceeded {0} seconds")]
     ProbeTimedOut(u64),
-    #[error("ASR runtime preparation was cancelled")]
-    Cancelled,
-    #[error("ASR runtime is not ready ({details}). Run `liveaudio setup-runtime --backend cpu` or choose `cu121` for NVIDIA CUDA 12.1.")]
+    #[error("Native ASR worker runtime unavailable: {details}")]
     DependenciesUnavailable { details: String },
 }
 
@@ -121,17 +98,13 @@ pub struct RuntimeSetupProgress {
     pub percent: Option<f64>,
 }
 
-pub fn managed_runtime_root() -> PathBuf {
-    crate::config::get_data_home().join(MANAGED_RUNTIME_DIR)
-}
-
 #[cfg(windows)]
 pub(crate) const fn windows_no_console_flag() -> u32 {
     0x0800_0000
 }
 
 #[cfg(windows)]
-pub(crate) fn apply_no_console_to_tokio(command: &mut Command) {
+pub fn apply_no_console_to_tokio(command: &mut Command) {
     use std::os::windows::process::CommandExt;
     command
         .as_std_mut()
@@ -139,310 +112,201 @@ pub(crate) fn apply_no_console_to_tokio(command: &mut Command) {
 }
 
 #[cfg(windows)]
-fn apply_no_console_to_std(command: &mut std::process::Command) {
+pub fn apply_no_console_to_std(command: &mut std::process::Command) {
     use std::os::windows::process::CommandExt;
     command.creation_flags(windows_no_console_flag());
 }
 
-pub fn managed_python(root: &Path) -> PathBuf {
-    #[cfg(windows)]
-    {
-        root.join(".venv").join("Scripts").join("python.exe")
-    }
-    #[cfg(not(windows))]
-    {
-        root.join(".venv").join("bin").join("python")
-    }
+fn normalize_path(path: &Path) -> PathBuf {
+    let canon = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let raw = canon.to_string_lossy();
+    let clean = raw.strip_prefix(r"\\?\").unwrap_or(&raw);
+    PathBuf::from(clean)
 }
 
-pub fn discover_managed_python(root: &Path) -> Option<PathBuf> {
-    let python = managed_python(root);
-    python
-        .is_file()
-        .then(|| fs::canonicalize(&python).unwrap_or(python))
-}
+/// Discovers the native Rust ASR worker binary (`liveaudio-asr-worker` or `.exe`).
+pub fn discover_native_worker() -> Option<PathBuf> {
+    let bin_name = if cfg!(windows) {
+        "liveaudio-asr-worker.exe"
+    } else {
+        "liveaudio-asr-worker"
+    };
 
-pub fn discover_managed_worker(root: &Path) -> Option<PathBuf> {
-    let worker = root.join("liveaudio").join("service").join("asr_worker.py");
-    worker
-        .is_file()
-        .then(|| fs::canonicalize(&worker).unwrap_or(worker))
-}
-
-/// Find bundled uv candidates in order, then explicit PATH candidates.
-pub fn discover_uv_in(bundle_roots: &[PathBuf], path_candidates: &[PathBuf]) -> Option<PathBuf> {
-    let mut bundled = Vec::new();
-    for root in bundle_roots {
-        let binary = if cfg!(windows) { "uv.exe" } else { "uv" };
-        bundled.extend([
-            root.join(binary),
-            root.join("vendor").join(binary),
-            root.join("packaging").join("vendor").join(binary),
-            root.join("resources").join("vendor").join(binary),
-        ]);
-    }
-    bundled
-        .into_iter()
-        .chain(path_candidates.iter().cloned())
-        .find(|path| path.is_file())
-}
-
-/// Bundled uv is looked up only beside the exe. The current directory and the exe's parent are
-/// never searched, and relative PATH entries are ignored, so a planted `uv` cannot run first.
-pub fn find_uv_executable() -> Option<PathBuf> {
-    let roots = std::env::current_exe()
-        .ok()
-        .and_then(|executable| executable.parent().map(Path::to_path_buf))
-        .into_iter()
-        .collect::<Vec<_>>();
-    let binary = if cfg!(windows) { "uv.exe" } else { "uv" };
-    let path_candidates = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
-        .filter(|directory| directory.is_absolute())
-        .map(|directory| directory.join(binary))
-        .collect::<Vec<_>>();
-    discover_uv_in(&roots, &path_candidates)
-}
-
-/// Explicit setup operation. It stages the locked project and package, then invokes uv.
-pub fn setup_managed_runtime(backend: AsrBackend) -> Result<PathBuf, RuntimeError> {
-    let uv = find_uv_executable().ok_or(RuntimeError::UvNotFound)?;
-    let worker = crate::supervisor::WorkerProcessConfig::find_asr_worker_source()
-        .ok_or(RuntimeError::PackageSourceMissing)?;
-    let source_root = crate::supervisor::WorkerProcessConfig::find_package_root(&Some(worker))
-        .ok_or(RuntimeError::PackageSourceMissing)?;
-    let root = managed_runtime_root();
-    provision_runtime_with_uv(&root, &source_root, backend, &uv)?;
-    Ok(root)
-}
-
-/// Materialize manifests and the Python package in `root`, then run locked uv sync.
-pub fn provision_runtime_with_uv(
-    root: &Path,
-    package_source_root: &Path,
-    backend: AsrBackend,
-    uv_executable: &Path,
-) -> Result<(), RuntimeError> {
-    if !package_source_root.join("liveaudio").is_dir() {
-        return Err(RuntimeError::PackageSourceMissing);
-    }
-    fs::create_dir_all(root)?;
-    fs::write(root.join("pyproject.toml"), PYPROJECT_TOML)?;
-    fs::write(root.join("uv.lock"), UV_LOCK)?;
-    copy_package_tree(
-        &package_source_root.join("liveaudio"),
-        &root.join("liveaudio"),
-    )?;
-
-    let args = [
-        "sync".to_string(),
-        "--project".to_string(),
-        root.to_string_lossy().into_owned(),
-        "--locked".to_string(),
-        "--no-install-project".to_string(),
-        "--no-dev".to_string(),
-        "--extra".to_string(),
-        backend.extra().to_string(),
-        "--python".to_string(),
-        "3.11".to_string(),
-    ];
-    let output = sync_command_for(uv_executable, &args)
-        .current_dir(root)
-        .stdin(Stdio::null())
-        .output()?;
-    if !output.status.success() {
-        return Err(RuntimeError::UvFailed {
-            status: output
-                .status
-                .code()
-                .map(|code| code.to_string())
-                .unwrap_or_else(|| "terminated".to_string()),
-            details: "uv sync did not complete; review the setup command output".to_string(),
-        });
-    }
-    Ok(())
-}
-
-/// Stage and publish a managed runtime without damaging the current one if setup is cancelled.
-pub async fn provision_runtime_with_uv_cancellable<F>(
-    root: &Path,
-    package_source_root: &Path,
-    backend: AsrBackend,
-    uv_executable: &Path,
-    cancellation: tokio_util::sync::CancellationToken,
-    mut report: F,
-) -> Result<(), RuntimeError>
-where
-    F: FnMut(RuntimeSetupProgress) + Send,
-{
-    if !package_source_root.join("liveaudio").is_dir() {
-        return Err(RuntimeError::PackageSourceMissing);
-    }
-
-    let staged_root = setup_staging_root(root);
-    let _staging_cleanup = StagingCleanup(staged_root.clone());
-    fs::create_dir_all(&staged_root)?;
-    fs::write(staged_root.join("pyproject.toml"), PYPROJECT_TOML)?;
-    fs::write(staged_root.join("uv.lock"), UV_LOCK)?;
-    copy_package_tree(
-        &package_source_root.join("liveaudio"),
-        &staged_root.join("liveaudio"),
-    )?;
-    report(RuntimeSetupProgress {
-        phase: "sync".to_string(),
-        text: "Downloading Python and ASR dependencies. This may take several minutes.".to_string(),
-        percent: None,
-    });
-
-    let args = [
-        "sync".to_string(),
-        "--project".to_string(),
-        staged_root.to_string_lossy().into_owned(),
-        "--locked".to_string(),
-        "--no-install-project".to_string(),
-        "--no-dev".to_string(),
-        "--extra".to_string(),
-        backend.extra().to_string(),
-        "--python".to_string(),
-        "3.11".to_string(),
-    ];
-    let mut child = command_for(uv_executable, &args)
-        .current_dir(&staged_root)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .kill_on_drop(true)
-        .spawn()?;
-    let mut heartbeat = tokio::time::interval_at(
-        tokio::time::Instant::now() + std::time::Duration::from_secs(15),
-        std::time::Duration::from_secs(15),
-    );
-    let status = loop {
-        tokio::select! {
-            status = child.wait() => break status?,
-            _ = cancellation.cancelled() => {
-                let _ = child.start_kill();
-                let _ = child.wait().await;
-                return Err(RuntimeError::Cancelled);
-            }
-            _ = heartbeat.tick() => report(RuntimeSetupProgress {
-                phase: "sync".to_string(),
-                text: "Still preparing Python and ASR dependencies…".to_string(),
-                percent: None,
-            }),
+    // 1. Explicit env var override
+    if let Ok(worker) = std::env::var("LIVEAUDIO_WORKER_PATH") {
+        let p = PathBuf::from(worker);
+        if p.is_file() {
+            return Some(normalize_path(&p));
         }
-    };
-    if !status.success() {
-        return Err(RuntimeError::UvFailed {
-            status: status
-                .code()
-                .map(|code| code.to_string())
-                .unwrap_or_else(|| "terminated".to_string()),
-            details: "dependency preparation did not complete; retry or use Repair ASR Runtime"
-                .to_string(),
+    }
+
+    // 2. Relative to std::env::current_exe() parent exe_dir
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(exe_dir) = current_exe.parent() {
+            let candidates = [
+                exe_dir.join(bin_name),
+                exe_dir.join("binaries").join(bin_name),
+                exe_dir.join("resources").join(bin_name),
+                // Dev workspace build outputs (e.g. current_exe in target/debug/deps/)
+                exe_dir.join("..").join(bin_name),
+                exe_dir.join("../../release").join(bin_name),
+                exe_dir.join("../../debug").join(bin_name),
+                exe_dir.join("../../../target/debug").join(bin_name),
+                exe_dir.join("../../../target/release").join(bin_name),
+            ];
+            for cand in &candidates {
+                if cand.is_file() {
+                    return Some(normalize_path(cand));
+                }
+            }
+        }
+    }
+
+    // 3. In debug assertions, dev workspace paths relative to current working dir
+    if cfg!(debug_assertions) {
+        let cwd_candidates = [
+            PathBuf::from(format!("target/debug/{bin_name}")),
+            PathBuf::from(format!("target/release/{bin_name}")),
+            PathBuf::from(format!("../target/debug/{bin_name}")),
+            PathBuf::from(format!("../target/release/{bin_name}")),
+            PathBuf::from(format!("../../target/debug/{bin_name}")),
+            PathBuf::from(format!("../../target/release/{bin_name}")),
+        ];
+        for cand in &cwd_candidates {
+            if cand.is_file() {
+                return Some(normalize_path(cand));
+            }
+        }
+    }
+
+    None
+}
+
+fn ort_dylib_rel() -> &'static Path {
+    if cfg!(windows) {
+        Path::new("onnxruntime/windows-x64/onnxruntime.dll")
+    } else {
+        Path::new("onnxruntime/linux-x64/libonnxruntime.so.1.24.4")
+    }
+}
+
+/// Probes install-relative locations for the ONNX Runtime library.
+/// `../lib/LiveAudio` is the Tauri 2 Linux (AppImage) resource dir.
+fn find_ort_dylib_near(exe_dir: &Path, rel: &Path) -> Option<PathBuf> {
+    [
+        exe_dir.join(rel),
+        exe_dir.join("resources").join(rel),
+        exe_dir.join("../lib/LiveAudio").join(rel),
+        exe_dir.join("_up_/packaging").join(rel),
+        exe_dir.join("../packaging").join(rel),
+        exe_dir.join("../../packaging").join(rel),
+        exe_dir.join("../../../packaging").join(rel),
+        exe_dir.join("../../../../packaging").join(rel),
+    ]
+    .into_iter()
+    .find(|cand| cand.is_file())
+    .map(|cand| fs::canonicalize(&cand).unwrap_or(cand))
+}
+
+/// Discovers ONNX Runtime dynamic library for native ASR execution.
+pub fn discover_ort_dylib() -> Option<PathBuf> {
+    if let Ok(path_str) = std::env::var("LIVEAUDIO_ORT_DYLIB_PATH") {
+        let p = PathBuf::from(path_str);
+        if p.is_file() {
+            return fs::canonicalize(&p).ok().or(Some(p));
+        }
+    }
+
+    let rel = ort_dylib_rel();
+
+    if let Some(found) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().and_then(|dir| find_ort_dylib_near(dir, rel)))
+    {
+        return Some(found);
+    }
+
+    if cfg!(debug_assertions) {
+        let cwd_candidates = [
+            PathBuf::from("packaging").join(rel),
+            PathBuf::from("../packaging").join(rel),
+            PathBuf::from("../../packaging").join(rel),
+        ];
+        for cand in &cwd_candidates {
+            if cand.is_file() {
+                return fs::canonicalize(cand).ok().or_else(|| Some(cand.clone()));
+            }
+        }
+    }
+
+    None
+}
+
+/// Preflight check for the native ASR worker binary via `--self-test`.
+pub async fn preflight_asr_runtime(
+    worker_executable: &Path,
+    ort_dylib: Option<&Path>,
+) -> Result<(), RuntimeError> {
+    preflight_inner(worker_executable, ort_dylib, None).await
+}
+
+async fn preflight_inner(
+    worker_executable: &Path,
+    ort_dylib: Option<&Path>,
+    path_env: Option<std::ffi::OsString>,
+) -> Result<(), RuntimeError> {
+    if !worker_executable.is_file() {
+        return Err(RuntimeError::DependenciesUnavailable {
+            details: format!(
+                "ASR worker binary not found at {}",
+                worker_executable.display()
+            ),
         });
     }
 
-    report(RuntimeSetupProgress {
-        phase: "publishing".to_string(),
-        text: "Finalizing the prepared ASR runtime…".to_string(),
-        percent: None,
-    });
-    publish_staged_runtime(&staged_root, root)?;
-    report(RuntimeSetupProgress {
-        phase: "ready".to_string(),
-        text: "ASR runtime is ready.".to_string(),
-        percent: Some(100.0),
-    });
-    Ok(())
-}
-
-fn setup_staging_root(root: &Path) -> PathBuf {
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
-    let name = root
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("asr-runtime");
-    root.with_file_name(format!("{name}.setup-{}-{stamp}", std::process::id()))
-}
-
-fn publish_staged_runtime(staged_root: &Path, root: &Path) -> Result<(), RuntimeError> {
-    let Some(parent) = root.parent() else {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "managed runtime root has no parent directory",
-        )
-        .into());
-    };
-    fs::create_dir_all(parent)?;
-    if !root.exists() {
-        fs::rename(staged_root, root)?;
-        return Ok(());
-    }
-
-    let staged_name = setup_staging_root(root);
-    let backup_root = staged_name.with_file_name(format!(
-        "{}.previous",
-        staged_name
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("asr-runtime.setup")
-    ));
-    fs::rename(root, &backup_root)?;
-    if let Err(error) = fs::rename(staged_root, root) {
-        let _ = fs::rename(&backup_root, root);
-        return Err(error.into());
-    }
-    let _ = fs::remove_dir_all(backup_root);
-    Ok(())
-}
-
-struct StagingCleanup(PathBuf);
-
-impl Drop for StagingCleanup {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
-/// Check imports without starting a model, choosing a GPU, or invoking a package manager.
-pub async fn preflight_asr_runtime(
-    python: &Path,
-    package_root: Option<&Path>,
-) -> Result<(), RuntimeError> {
-    let args = ["-c", IMPORT_PROBE];
-    let mut command = command_for(python, &args);
+    let args = ["--self-test"];
+    let mut command = command_for(worker_executable, &args);
     command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    if let Some(root) = package_root {
-        command.env("PYTHONPATH", root);
+
+    let effective_ort = ort_dylib
+        .filter(|p| p.is_file())
+        .map(Path::to_path_buf)
+        .or_else(discover_ort_dylib);
+
+    if let Some(ort_path) = effective_ort {
+        command.env("LIVEAUDIO_ORT_DYLIB_PATH", ort_path);
     }
+    if let Some(path) = path_env {
+        command.env("PATH", path);
+    }
+
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
             return Err(RuntimeError::DependenciesUnavailable {
                 details: format!(
-                    "could not run the selected Python interpreter ({})",
+                    "could not run the ASR worker binary ({})",
                     error.kind()
                 ),
-            })
+            });
         }
     };
+
     let mut stderr = child
         .stderr
         .take()
-        .expect("stderr is piped for import diagnostics");
+        .expect("stderr is piped for diagnostics");
     let stderr_task = tokio::spawn(async move {
         let mut limited = (&mut stderr).take(4096);
         let mut bytes = Vec::new();
         let _ = limited.read_to_end(&mut bytes).await;
         bytes
     });
+
     let status = wait_for_probe(&mut child, PROBE_TIMEOUT).await;
     if status.is_err() {
         let _ = stderr_task.await;
@@ -453,11 +317,37 @@ pub async fn preflight_asr_runtime(
     if status.success() {
         return Ok(());
     }
-    let stderr = String::from_utf8_lossy(&stderr);
-    let details = missing_module_name(&stderr)
-        .unwrap_or_else(|| "required Python imports failed".to_string());
+    let details = self_test_failure_details(&String::from_utf8_lossy(&stderr), status.code());
     Err(RuntimeError::DependenciesUnavailable { details })
 }
+
+/// Windows loader failure (STATUS_DLL_NOT_FOUND) when a dependent DLL such as VCRUNTIME140.dll is absent.
+const STATUS_DLL_NOT_FOUND: i32 = 0xC000_0135u32 as i32;
+
+fn self_test_failure_details(stderr: &str, code: Option<i32>) -> String {
+    if !stderr.trim().is_empty() {
+        stderr.trim().to_string()
+    } else if code == Some(STATUS_DLL_NOT_FOUND) {
+        "Microsoft Visual C++ runtime DLL missing; reinstall LiveAudio".to_string()
+    } else {
+        format!("ASR worker self-test exited with status {}", code.map_or("unknown".into(), |c| c.to_string()))
+    }
+}
+
+/// Makes missing-DLL loader failures in this process and its children exit immediately instead of
+/// blocking on a modal system dialog. Call once at startup.
+#[cfg(windows)]
+pub fn suppress_loader_error_dialogs() {
+    use windows_sys::Win32::System::Diagnostics::Debug::{SetErrorMode, SEM_FAILCRITICALERRORS};
+    // SAFETY: SetErrorMode only changes process-wide error-mode flags.
+    unsafe {
+        let prev = SetErrorMode(0);
+        SetErrorMode(prev | SEM_FAILCRITICALERRORS);
+    }
+}
+
+#[cfg(not(windows))]
+pub fn suppress_loader_error_dialogs() {}
 
 async fn wait_for_probe(
     child: &mut Child,
@@ -474,44 +364,43 @@ async fn wait_for_probe(
     }
 }
 
-fn missing_module_name(stderr: &str) -> Option<String> {
-    let marker = "No module named ";
-    let tail = stderr.split_once(marker)?.1;
-    let module = tail
-        .trim_start_matches(['\'', '"'])
-        .split(['\'', '"', '\r', '\n'])
-        .next()?
-        .chars()
-        .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_' || *ch == '.')
-        .collect::<String>();
-    (!module.is_empty()).then_some(module)
+pub const CT2_WORKER_EXE: &str = "liveaudio-asr-worker-cuda.exe";
+
+/// Env override first, then the NVIDIA runtime dir (the worker sits next to the CUDA DLLs).
+fn find_ct2_worker(env_override: Option<&str>, runtime_dir: &Path) -> Option<PathBuf> {
+    env_override
+        .map(PathBuf::from)
+        .filter(|p| p.is_file())
+        .or_else(|| Some(runtime_dir.join(CT2_WORKER_EXE)).filter(|p| p.is_file()))
 }
 
-fn copy_package_tree(source: &Path, target: &Path) -> Result<(), std::io::Error> {
-    if let (Ok(source), Ok(target)) = (fs::canonicalize(source), fs::canonicalize(target)) {
-        if source == target {
-            return Ok(());
-        }
+/// Discovers the ct2 CUDA worker: env `LIVEAUDIO_CT2_WORKER_PATH`, the NVIDIA runtime dir, then
+/// (debug builds only) dev build outputs.
+pub fn discover_ct2_worker() -> Option<PathBuf> {
+    let env = std::env::var("LIVEAUDIO_CT2_WORKER_PATH").ok();
+    let found = find_ct2_worker(env.as_deref(), &crate::nvidia_runtime::runtime_dir());
+    if found.is_some() || !cfg!(debug_assertions) {
+        return found.map(|p| normalize_path(&p));
     }
-    fs::create_dir_all(target)?;
-    for entry in fs::read_dir(source)? {
-        let entry = entry?;
-        let source_path = entry.path();
-        let target_path = target.join(entry.file_name());
-        let metadata = fs::symlink_metadata(&source_path)?;
-        if metadata.file_type().is_symlink() {
-            continue;
-        }
-        if metadata.is_dir() {
-            if entry.file_name() == "__pycache__" {
-                continue;
-            }
-            copy_package_tree(&source_path, &target_path)?;
-        } else if metadata.is_file() {
-            fs::copy(source_path, target_path)?;
-        }
-    }
-    Ok(())
+    let exe_dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    ["", "..", "../../release", "../../debug"]
+        .iter()
+        .map(|rel| exe_dir.join(rel).join(CT2_WORKER_EXE))
+        .chain(["target/release", "target/debug"].map(|d| Path::new(d).join(CT2_WORKER_EXE)))
+        .find(|p| p.is_file())
+        .map(|p| normalize_path(&p))
+}
+
+/// `dir` prepended to a PATH value, so the ct2 worker finds the CUDA DLLs.
+pub fn prepend_path(dir: &Path, existing: Option<std::ffi::OsString>) -> std::ffi::OsString {
+    let rest = existing.iter().flat_map(std::env::split_paths);
+    std::env::join_paths(std::iter::once(dir.to_path_buf()).chain(rest)).unwrap_or_else(|_| dir.into())
+}
+
+/// Preflight of the ct2 worker (`--self-test`) with the NVIDIA runtime dir on its PATH.
+pub async fn preflight_ct2_worker(worker: &Path) -> Result<(), RuntimeError> {
+    let path = prepend_path(&crate::nvidia_runtime::runtime_dir(), std::env::var_os("PATH"));
+    preflight_inner(worker, None, Some(path)).await
 }
 
 fn command_for(executable: &Path, args: &[impl AsRef<std::ffi::OsStr>]) -> Command {
@@ -522,7 +411,6 @@ fn command_for(executable: &Path, args: &[impl AsRef<std::ffi::OsStr>]) -> Comma
     {
         let mut command = Command::new("cmd.exe");
         command.arg("/D").arg("/C").arg(executable).args(args);
-        #[cfg(windows)]
         apply_no_console_to_tokio(&mut command);
         return command;
     }
@@ -530,28 +418,6 @@ fn command_for(executable: &Path, args: &[impl AsRef<std::ffi::OsStr>]) -> Comma
     command.args(args);
     #[cfg(windows)]
     apply_no_console_to_tokio(&mut command);
-    command
-}
-
-fn sync_command_for(
-    executable: &Path,
-    args: &[impl AsRef<std::ffi::OsStr>],
-) -> std::process::Command {
-    #[cfg(windows)]
-    if executable
-        .extension()
-        .is_some_and(|extension| extension.to_string_lossy().eq_ignore_ascii_case("cmd"))
-    {
-        let mut command = std::process::Command::new("cmd.exe");
-        command.arg("/D").arg("/C").arg(executable).args(args);
-        #[cfg(windows)]
-        apply_no_console_to_std(&mut command);
-        return command;
-    }
-    let mut command = std::process::Command::new(executable);
-    command.args(args);
-    #[cfg(windows)]
-    apply_no_console_to_std(&mut command);
     command
 }
 
@@ -566,14 +432,81 @@ mod tests {
     }
 
     #[test]
-    fn missing_module_message_is_reduced_to_module_name() {
-        assert_eq!(
-            missing_module_name("ModuleNotFoundError: No module named 'faster_whisper'"),
-            Some("faster_whisper".to_string())
-        );
-        assert_eq!(
-            missing_module_name("generic import failure at C:\\private\\path"),
-            None
-        );
+    fn dll_not_found_exit_maps_to_vc_runtime_message() {
+        let msg = self_test_failure_details("", Some(0xC000_0135u32 as i32));
+        assert!(msg.contains("Visual C++ runtime DLL missing"), "{msg}");
+        assert_eq!(self_test_failure_details("boom", Some(0xC000_0135u32 as i32)), "boom");
+        assert!(self_test_failure_details("", Some(1)).contains("status"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn loader_error_dialogs_are_suppressed() {
+        suppress_loader_error_dialogs();
+        // SetErrorMode returns the previous mode; restore it to keep the test side-effect free.
+        use windows_sys::Win32::System::Diagnostics::Debug::{SetErrorMode, SEM_FAILCRITICALERRORS};
+        let prev = unsafe { SetErrorMode(0) };
+        unsafe { SetErrorMode(prev) };
+        assert!(prev & SEM_FAILCRITICALERRORS != 0, "SEM_FAILCRITICALERRORS must be set");
+    }
+
+    #[test]
+    fn ct2_worker_is_found_by_env_override_then_runtime_dir() {
+        let root = std::env::temp_dir().join(format!("liveaudio-ct2-find-{}", std::process::id()));
+        let rt = root.join("cuda12");
+        fs::create_dir_all(&rt).unwrap();
+        assert_eq!(find_ct2_worker(None, &rt), None);
+
+        let in_rt = rt.join(CT2_WORKER_EXE);
+        fs::write(&in_rt, b"x").unwrap();
+        assert_eq!(find_ct2_worker(None, &rt), Some(in_rt.clone()));
+        assert_eq!(find_ct2_worker(Some("missing.exe"), &rt), Some(in_rt.clone()), "bad override falls through");
+
+        let custom = root.join("custom.exe");
+        fs::write(&custom, b"x").unwrap();
+        assert_eq!(find_ct2_worker(Some(custom.to_str().unwrap()), &rt), Some(custom));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ort_dylib_is_found_in_tauri_linux_resource_dir() {
+        let root = std::env::temp_dir().join(format!("liveaudio-ort-res-{}", std::process::id()));
+        let exe_dir = root.join("usr").join("bin");
+        fs::create_dir_all(&exe_dir).unwrap();
+        let rel = ort_dylib_rel();
+        assert_eq!(find_ort_dylib_near(&exe_dir, rel), None);
+
+        let lib = root.join("usr/lib/LiveAudio").join(rel);
+        fs::create_dir_all(lib.parent().unwrap()).unwrap();
+        fs::write(&lib, b"x").unwrap();
+        let found = find_ort_dylib_near(&exe_dir, rel).expect("resource_dir probe");
+        assert_eq!(found.file_name(), lib.file_name());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn prepend_path_puts_the_runtime_dir_first() {
+        // join_paths uses the platform separator (';' on Windows, ':' elsewhere).
+        let existing = std::env::join_paths(["a", "b"]).unwrap();
+        let joined = prepend_path(Path::new("rt"), Some(existing));
+        let parts: Vec<_> = std::env::split_paths(&joined).collect();
+        assert_eq!(parts, vec![PathBuf::from("rt"), PathBuf::from("a"), PathBuf::from("b")]);
+        assert_eq!(prepend_path(Path::new("rt"), None), std::ffi::OsString::from("rt"));
+    }
+
+    #[tokio::test]
+    async fn ct2_preflight_of_a_missing_worker_fails() {
+        let r = preflight_ct2_worker(Path::new("nonexistent_ct2_worker.exe")).await;
+        assert!(matches!(r, Err(RuntimeError::DependenciesUnavailable { .. })));
+    }
+
+    #[tokio::test]
+    async fn test_preflight_missing_worker_fails() {
+        let nonexistent = Path::new("nonexistent_binary_file_never_exists.xyz");
+        let result = preflight_asr_runtime(nonexistent, None).await;
+        assert!(matches!(
+            result,
+            Err(RuntimeError::DependenciesUnavailable { .. })
+        ));
     }
 }

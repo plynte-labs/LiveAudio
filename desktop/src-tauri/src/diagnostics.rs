@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-//! Privacy scrubbing for diagnostics exports. Mirrors Python `liveaudio/core/diagnostics.py`:
+//! Privacy scrubbing for diagnostics exports:
 //! sensitive key tokens are replaced wholesale, Windows absolute paths and URLs are redacted in
 //! strings. POSIX home directories are redacted too, since exports are shared for support.
 
@@ -27,7 +27,7 @@ pub(crate) fn scrub_diagnostics_value(value: &mut Value) {
     }
 }
 
-/// Path-like keys are kept, matching the Python rule.
+/// Path-like keys are kept.
 fn is_sensitive_key(key: &str) -> bool {
     if key.contains('/') || key.contains('\\') {
         return false;
@@ -63,7 +63,7 @@ fn redact_runs(input: &str, is_start: fn(&str) -> bool) -> String {
     output
 }
 
-/// `[A-Za-z]:\` followed by a non-separator, as in the Python pattern.
+/// `[A-Za-z]:\` followed by a non-separator.
 fn starts_windows_path(text: &str) -> bool {
     let bytes = text.as_bytes();
     bytes.len() > 3

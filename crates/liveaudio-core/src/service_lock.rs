@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-//! Single-owner service lock in the data home (Python `liveaudio/service/lock.py` parity).
+//! Single-owner service lock in the data home.
 //!
 //! Whoever runs the service pipeline (desktop `start_service`, CLI `serve`) holds it. Exclusivity
 //! comes from a non-blocking OS lock on byte 0 (the OS releases it when the owner exits); the
@@ -23,7 +23,7 @@ pub struct ServiceLock {
 pub struct ServiceLockHolder {
     /// PID from the lock metadata; `None` when it is missing or unreadable.
     pub pid: Option<u32>,
-    /// WebSocket port the holder bound, once it recorded one (Python owners never do).
+    /// WebSocket port the holder bound, once it recorded one (older owners never do).
     pub ws_port: Option<u16>,
 }
 
@@ -51,7 +51,7 @@ impl ServiceLock {
         self.write_metadata(&format!(", \"ws_port\": {port}"))
     }
 
-    /// Rewrites `{"pid": N<extra>}`; the pid stays first (Python `lock.py` format).
+    /// Rewrites `{"pid": N<extra>}`; the pid stays first (format kept for older readers).
     fn write_metadata(&mut self, extra: &str) -> io::Result<()> {
         self.file.set_len(0)?;
         self.file.seek(SeekFrom::Start(0))?;
@@ -95,7 +95,7 @@ fn read_metadata(file: &mut File) -> Option<serde_json::Value> {
     serde_json::from_str(&format!("{{{rest}")).ok()
 }
 
-/// Locks byte 0 like Python `msvcrt.locking(..., 1)`, so the two implementations exclude
+/// Locks byte 0 like `msvcrt.locking(..., 1)`, so concurrent owners exclude
 /// each other and the rest of the file stays readable for the holder query.
 #[cfg(windows)]
 fn try_lock_first_byte(file: &File) -> io::Result<bool> {
@@ -222,7 +222,7 @@ mod tests {
     }
 
     #[test]
-    fn service_lock_writes_python_compatible_pid_metadata() {
+    fn service_lock_writes_legacy_compatible_pid_metadata() {
         let home = isolated_home();
         let lock = ServiceLock::try_acquire(&home)
             .expect("lock file opens")
@@ -281,7 +281,7 @@ mod tests {
         assert_eq!(
             content,
             format!("{{\"pid\": {}, \"ws_port\": 8766}}", std::process::id()),
-            "pid stays first so Python-style readers keep working"
+            "pid stays first so legacy-style readers keep working"
         );
         let _ = std::fs::remove_dir_all(home);
     }

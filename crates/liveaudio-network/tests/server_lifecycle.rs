@@ -175,13 +175,54 @@ async fn test_handshake_origin_rejection_and_acceptance() {
     let obs_conn = connect_async(obs_req).await;
     assert!(obs_conn.is_ok(), "http://absolute must be accepted");
 
-    // 3. Localhost integration origin (http://localhost:1420) must be accepted
-    let mut local_req = ws_url.clone().into_client_request().unwrap();
-    local_req
+    // 3. Loopback origin in default allowlist (http://localhost:1420) must be accepted
+    let mut local_1420_req = ws_url.clone().into_client_request().unwrap();
+    local_1420_req
         .headers_mut()
         .insert("Origin", "http://localhost:1420".parse().unwrap());
-    let local_conn = connect_async(local_req).await;
-    assert!(local_conn.is_ok(), "http://localhost:1420 must be accepted");
+    let local_1420_conn = connect_async(local_1420_req).await;
+    assert!(local_1420_conn.is_ok(), "http://localhost:1420 must be accepted by default allowlist");
+
+    // 3a. Loopback origin on an unlisted port (http://localhost:5173) must be rejected
+    let mut unlisted_req = ws_url.clone().into_client_request().unwrap();
+    unlisted_req
+        .headers_mut()
+        .insert("Origin", "http://localhost:5173".parse().unwrap());
+    let unlisted_conn = connect_async(unlisted_req).await;
+    assert!(unlisted_conn.is_err(), "http://localhost:5173 must be rejected when unlisted");
+
+    // 3b. Dynamically allow port 5173 without restarting server -> now accepted
+    server.update_allowed_loopback_ports(vec![5173]);
+    let mut allow_req = ws_url.clone().into_client_request().unwrap();
+    allow_req
+        .headers_mut()
+        .insert("Origin", "http://localhost:5173".parse().unwrap());
+    let allow_conn = connect_async(allow_req).await;
+    assert!(allow_conn.is_ok(), "http://localhost:5173 must be accepted after dynamic allow");
+
+    // 3c. Dynamically revoke 5173 -> now rejected
+    server.update_allowed_loopback_ports(vec![]);
+    let mut revoke_req = ws_url.clone().into_client_request().unwrap();
+    revoke_req
+        .headers_mut()
+        .insert("Origin", "http://localhost:5173".parse().unwrap());
+    let revoke_conn = connect_async(revoke_req).await;
+    assert!(revoke_conn.is_err(), "http://localhost:5173 must be rejected after dynamic revoke");
+
+    // 3d. Loopback origin on the bound port must always be accepted
+    let mut bound_req = ws_url.clone().into_client_request().unwrap();
+    bound_req
+        .headers_mut()
+        .insert("Origin", format!("http://localhost:{}", port).parse().unwrap());
+    let bound_conn = connect_async(bound_req).await;
+    assert!(bound_conn.is_ok(), "loopback origin on the bound port must be accepted");
+
+    // Verify rejected origins were recorded in tracker
+    let rejected_snap = server.rejected_origins().lock().unwrap().snapshot();
+    assert!(
+        rejected_snap.iter().any(|e| e.origin.contains("5173")),
+        "Rejected origins tracker must record 5173 attempts"
+    );
 
     // 4. Tauri release webview origin (http://tauri.localhost) must be accepted
     let mut tauri_req = ws_url.clone().into_client_request().unwrap();
@@ -192,6 +233,17 @@ async fn test_handshake_origin_rejection_and_acceptance() {
     assert!(
         tauri_conn.is_ok(),
         "http://tauri.localhost must be accepted"
+    );
+
+    // 5. Tauri Linux webview origin (tauri://localhost) must be accepted
+    let mut tauri_linux_req = ws_url.clone().into_client_request().unwrap();
+    tauri_linux_req
+        .headers_mut()
+        .insert("Origin", "tauri://localhost".parse().unwrap());
+    let tauri_linux_conn = connect_async(tauri_linux_req).await;
+    assert!(
+        tauri_linux_conn.is_ok(),
+        "tauri://localhost must be accepted"
     );
 
     // Metrics check
@@ -248,17 +300,17 @@ async fn test_late_joining_client_replay() {
 
     // 1. Hello frame
     let msg1 = read.next().await.unwrap().unwrap();
-    let hello: HelloMessage = serde_json::from_str(&msg1.to_text().unwrap()).unwrap();
+    let hello: HelloMessage = serde_json::from_str(msg1.to_text().unwrap()).unwrap();
     assert_eq!(hello.message_type, "hello");
 
     // 2. Replayed cue 1
     let msg2 = read.next().await.unwrap().unwrap();
-    let replayed1: SubtitleWireMessage = serde_json::from_str(&msg2.to_text().unwrap()).unwrap();
+    let replayed1: SubtitleWireMessage = serde_json::from_str(msg2.to_text().unwrap()).unwrap();
     assert_eq!(replayed1.id, "msg-1");
 
     // 3. Replayed cue 2
     let msg3 = read.next().await.unwrap().unwrap();
-    let replayed2: SubtitleWireMessage = serde_json::from_str(&msg3.to_text().unwrap()).unwrap();
+    let replayed2: SubtitleWireMessage = serde_json::from_str(msg3.to_text().unwrap()).unwrap();
     assert_eq!(replayed2.id, "msg-2");
 
     server.stop().await.expect("Stop server");
@@ -621,6 +673,63 @@ async fn test_silent_tcp_peer_is_dropped_after_handshake_timeout() {
         .await
         .expect("server must close a peer that never completes the handshake");
     assert_eq!(read.expect("read succeeds"), 0, "expected EOF");
+
+    server.stop().await.expect("Failed to stop server");
+}
+
+async fn wait_client_count(server: &WsServer, n: usize) {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while server.client_count() != n {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("client_count never reached {n}"));
+}
+
+#[tokio::test]
+async fn test_connection_cap_rejects_extra_clients_and_frees_slots() {
+    let port = 19970;
+    let mut server = WsServer::new(WsServerConfig {
+        base_port: port,
+        max_connections: 2,
+        ..Default::default()
+    });
+    let bound = server.start(port).await.expect("Failed to start server");
+    let url = format!("ws://127.0.0.1:{bound}");
+    let (a, _) = connect_async(&url).await.expect("first client");
+    let (_b, _) = connect_async(&url).await.expect("second client");
+    wait_client_count(&server, 2).await;
+
+    let third = tokio::time::timeout(Duration::from_secs(3), connect_async(&url))
+        .await
+        .expect("third connect resolves");
+    assert!(third.is_err(), "connection above the cap must be refused");
+
+    drop(a);
+    wait_client_count(&server, 1).await;
+    connect_async(&url).await.expect("slot is reusable after a disconnect");
+
+    server.stop().await.expect("Failed to stop server");
+}
+
+#[tokio::test]
+async fn test_oversized_inbound_message_closes_the_connection() {
+    let port = 19980;
+    let mut server = WsServer::new(WsServerConfig {
+        base_port: port,
+        max_inbound_message_bytes: 1024,
+        ..Default::default()
+    });
+    let bound = server.start(port).await.expect("Failed to start server");
+    let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{bound}"))
+        .await
+        .expect("client connects");
+    wait_client_count(&server, 1).await;
+
+    use futures_util::SinkExt;
+    let _ = ws.send(Message::Text("x".repeat(8192).into())).await;
+    wait_client_count(&server, 0).await;
 
     server.stop().await.expect("Failed to stop server");
 }

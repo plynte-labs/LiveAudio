@@ -12,4 +12,4 @@ pub use error::SinkError;
 pub use jsonl::JsonlSink;
 pub use traits::TranscriptionSink;
 pub use types::{SinkStats, TranscriptionCue};
-pub use webvtt::{format_vtt_timestamp, last_cue_counter, WebVttSink};
+pub use webvtt::{format_srt_timestamp, format_vtt_timestamp, last_cue_counter, CueFileSink};

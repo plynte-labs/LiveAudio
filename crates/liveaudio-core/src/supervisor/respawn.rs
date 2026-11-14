@@ -60,7 +60,7 @@ impl RespawnTracker {
     }
 
     /// Record a new crash/failure. Returns the required backoff duration, or errors once the
-    /// failure count in the window reaches the ceiling (Python parity: fatal on the 3rd of 3).
+    /// failure count in the window reaches the ceiling (fatal on the 3rd of 3).
     pub fn record_failure(&mut self) -> Result<Duration, SupervisorError> {
         self.prune();
         self.failure_timestamps.push_back(Instant::now());

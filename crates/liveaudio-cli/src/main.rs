@@ -3,7 +3,7 @@
 //! LiveAudio CLI - Headless binary and service runner.
 //!
 //! Provides headless background service execution for OpenCohost, VoiceAI, and automated deployments:
-//! - Full pipeline: Hardware Audio Capture (CPAL) -> Silero VAD (ONNX) -> Faster-Whisper Worker (Python) -> WebSocket Server (Tokio).
+//! - Full pipeline: Hardware Audio Capture (CPAL) -> Silero VAD (ONNX) -> Native ASR Worker -> WebSocket Server (Tokio).
 //! - Zero GUI, ~28MB core RAM footprint.
 //! - Parent PID Watchdog and Windows Job Object 100% orphan/zombie prevention.
 
@@ -13,6 +13,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::time::sleep;
+
+mod mcp;
 
 const THIRD_PARTY_NOTICES: &str = include_str!("../../../THIRD_PARTY_NOTICES.md");
 
@@ -25,16 +27,24 @@ use liveaudio_core::acoustic_events::{
 use liveaudio_core::asr::worker::{
     presentation_text, transcript_text_from_result, worker_init_payload,
 };
+use liveaudio_core::backend::{
+    backend_name, ct2_fallback, doctor_lines, ort_fallback_config, prepare_worker, select_backend,
+    Ct2Failure,
+};
 use liveaudio_core::config::{get_data_home, get_hf_home, load_config, LiveAudioConfig};
 use liveaudio_core::job_object::JobObject;
-use liveaudio_core::runtime::{preflight_asr_runtime, setup_managed_runtime, AsrBackend};
+use liveaudio_core::runtime::{discover_ct2_worker, discover_native_worker, discover_ort_dylib};
+use liveaudio_core::{
+    cuda_driver_version, detect_gpu_adapters, nvidia_runtime_dir, nvidia_runtime_status,
+    AsrBackendKind,
+};
 use liveaudio_core::service_lock::ServiceLock;
 use liveaudio_core::supervisor::{
-    is_parent_alive, HealthEmitter, ProcessSupervisor, SupervisorError, WorkerProcessConfig,
+    is_parent_alive, HealthEmitter, ProcessSupervisor, SupervisorError,
 };
 use liveaudio_ipc::ServiceEventType;
 use liveaudio_network::{
-    candidate_ports, subtitle_from_worker_result, BacklogPolicy, NetworkServer,
+    candidate_ports, start_if_enabled, subtitle_from_worker_result, BacklogPolicy,
     PendingUtteranceTracker, WsServer, WsServerConfig,
 };
 use liveaudio_vad::{
@@ -188,7 +198,7 @@ fn encode_f32_le_base64(samples: &[f32]) -> String {
         bytes.extend_from_slice(&s.to_le_bytes());
     }
     const B64_CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     let mut i = 0;
     while i < bytes.len() {
         let b0 = bytes[i];
@@ -238,29 +248,9 @@ mod parent_pid_tests {
 }
 
 #[cfg(test)]
-mod runtime_setup_args_tests {
-    use super::{parse_setup_runtime_args, AsrBackend};
-
-    #[test]
-    fn setup_requires_an_explicit_supported_backend() {
-        assert!(parse_setup_runtime_args(&["setup-runtime".into()]).is_err());
-        assert!(parse_setup_runtime_args(&[
-            "setup-runtime".into(),
-            "--backend".into(),
-            "auto".into()
-        ])
-        .is_err());
-        assert_eq!(
-            parse_setup_runtime_args(&["setup-runtime".into(), "--backend".into(), "cpu".into()])
-                .unwrap(),
-            Some(AsrBackend::Cpu)
-        );
-    }
-}
-
-#[cfg(test)]
 mod acoustic_event_adapter_tests {
     use super::*;
+    use liveaudio_core::supervisor::WorkerProcessConfig;
     use std::sync::atomic::Ordering;
 
     #[test]
@@ -354,17 +344,33 @@ mod acoustic_event_adapter_tests {
 
     #[tokio::test]
     async fn cli_audio_send_cancellation_closes_active_acoustic_event_once() {
-        let mut config = WorkerProcessConfig::default();
-        config.name = "cli-nonreading-worker".to_string();
-        config.command = "python".to_string();
-        config.args = vec![
-            "-u".to_string(),
-            "-c".to_string(),
-            "import json,time; print(json.dumps({'event':'ready'}), flush=True); time.sleep(60)"
-                .to_string(),
-        ];
-        config.ready_timeout = Duration::from_secs(5);
-        config.auto_respawn = false;
+        #[cfg(windows)]
+        let (command, args) = (
+            "powershell.exe".to_string(),
+            vec![
+                "-NoProfile".to_string(),
+                "-NonInteractive".to_string(),
+                "-Command".to_string(),
+                "Write-Output '{\"event\":\"ready\"}'; Start-Sleep -Seconds 60".to_string(),
+            ],
+        );
+        #[cfg(not(windows))]
+        let (command, args) = (
+            "sh".to_string(),
+            vec![
+                "-c".to_string(),
+                "printf '{\"event\":\"ready\"}\\n'; sleep 60".to_string(),
+            ],
+        );
+
+        let config = WorkerProcessConfig {
+            name: "cli-nonreading-worker".to_string(),
+            command,
+            args,
+            ready_timeout: Duration::from_secs(5),
+            auto_respawn: false,
+            ..WorkerProcessConfig::default()
+        };
         let mut supervisor = ProcessSupervisor::new(config, std::process::id(), 0, None)
             .expect("supervisor creation");
         supervisor
@@ -438,7 +444,7 @@ mod acoustic_event_adapter_tests {
             producer.abort();
             let _ = producer.await;
         }
-        let mut supervisor = Arc::try_unwrap(supervisor).unwrap_or_else(|_| {
+        let supervisor = Arc::try_unwrap(supervisor).unwrap_or_else(|_| {
             panic!("all worker queue producers and audio send task must be released")
         });
         supervisor
@@ -563,7 +569,7 @@ mod acoustic_event_adapter_tests {
     }
 }
 
-/// Takes the service lock for this pipeline; the error is a Python-compatible `ServiceError` code.
+/// Takes the service lock for this pipeline.
 fn acquire_service_lock(dir: &Path) -> Result<ServiceLock, &'static str> {
     match ServiceLock::try_acquire(dir) {
         Ok(Some(lock)) => Ok(lock),
@@ -604,19 +610,6 @@ mod service_lock_tests {
     }
 }
 
-fn parse_setup_runtime_args(args: &[String]) -> Result<Option<AsrBackend>, String> {
-    if args.first().map(String::as_str) != Some("setup-runtime") {
-        return Ok(None);
-    }
-    if args.len() != 3 || args[1] != "--backend" {
-        return Err("Usage: liveaudio setup-runtime --backend <cpu|cu121>".to_string());
-    }
-    args[2]
-        .parse::<AsrBackend>()
-        .map(Some)
-        .map_err(|error| error.to_string())
-}
-
 fn parse_parent_pid_args(args: &[String], env_pid: Option<&str>) -> Result<u32, String> {
     if let Some(index) = args
         .iter()
@@ -646,6 +639,7 @@ fn parse_positive_pid(raw: &str) -> Result<u32, String> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    liveaudio_core::suppress_loader_error_dialogs();
     let args: Vec<String> = env::args().collect();
 
     if args
@@ -656,9 +650,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    if let Some(backend) = parse_setup_runtime_args(&args[1..])? {
-        let root = setup_managed_runtime(backend)?;
-        println!("ASR runtime provisioned at {}", root.display());
+    if args.get(1).map(String::as_str) == Some("mcp") {
+        mcp::run_stdio().await?;
         return Ok(());
     }
 
@@ -714,7 +707,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         || parent_pid > 0;
 
     if is_service {
-        eprintln!("🚀 Starting LiveAudio headless background service daemon...");
+        eprintln!("Starting LiveAudio headless background service daemon...");
         run_service(parent_pid, custom_port).await?;
     } else {
         eprintln!("Starting LiveAudio pipeline in standalone mode...");
@@ -730,12 +723,14 @@ fn print_usage() {
     println!("Commands:");
     println!("  serve, --service  Run as headless daemon for OpenCohost/OBS (default if parent-pid is given)");
     println!("  devices           Enumerate audio input devices");
+    println!(
+        "  mcp               Serve MCP over stdio for agents (requires enabling MCP in LiveAudio)"
+    );
     println!("  doctor            Run environment and hardware diagnostics");
     println!("  help, --help      Print this help message\n");
     println!("Options:");
     println!("  --parent-pid, -p <PID>   Parent process ID for watchdog supervision");
     println!("  --port, -P <PORT>        WebSocket listen port (default: 8765)");
-    println!("  setup-runtime --backend <cpu|cu121>  Provision the managed ASR runtime");
     println!("  --licenses               Show bundled third-party notices");
 }
 
@@ -767,13 +762,13 @@ async fn run_service(
     let config = load_config().unwrap_or_default();
     let effective_base_port = port_override.unwrap_or(config.ws_port);
 
-    // Validate imports before opening listeners or audio resources. This probe never installs packages.
-    let mut worker_config = WorkerProcessConfig::discover_asr_worker();
-    preflight_asr_runtime(
-        std::path::Path::new(&worker_config.command),
-        worker_config.working_dir.as_deref(),
-    )
-    .await?;
+    // Validate native worker binary and ONNX Runtime library before opening listeners or audio resources.
+    let mut selected = prepare_worker(liveaudio_core::backend::effective_backend_pref(&config.asr_backend, &config.device)).await?;
+    eprintln!(
+        "ASR backend: {} ({})",
+        backend_name(selected.kind),
+        selected.reason
+    );
 
     emitter.emit_service_state("starting");
 
@@ -801,25 +796,40 @@ async fn run_service(
         max_live_delay_sec: config.subtitle_max_live_delay_sec as f32,
         ..Default::default()
     });
-    let effective_port = match NetworkServer::start(&mut ws, effective_base_port).await {
-        Ok(port) => {
-            eprintln!("✅ WebSocket server listening on ws://127.0.0.1:{}", port);
-            port
-        }
-        Err(e) => {
-            eprintln!("❌ Failed to bind WebSocket server: {}", e);
-            return Err(e.into());
-        }
-    };
+    let effective_port =
+        match start_if_enabled(&mut ws, config.obs_enabled, effective_base_port).await {
+            Ok(Some(port)) => {
+                eprintln!("WebSocket server listening on ws://127.0.0.1:{}", port);
+                Some(port)
+            }
+            Ok(None) => {
+                eprintln!("WebSocket server disabled (obs_enabled=false); transcription continues");
+                None
+            }
+            Err(e) => {
+                eprintln!("Failed to bind WebSocket server: {}", e);
+                return Err(e.into());
+            }
+        };
 
-    // Emit ws_port event immediately over stdout JSON-lines for OpenCohost discovery
-    emitter.emit_ws_port(effective_base_port, effective_port);
-    // Desktop monitors read the bound port from the lock (it may differ after port fallback).
-    if let Err(error) = service_lock.record_ws_port(effective_port) {
-        eprintln!("Could not record the WebSocket port in the service lock: {error}");
+    if effective_port.is_some() {
+        // Stored by the server, so overlays that connect later receive the saved theme.
+        if let Err(error) = ws.broadcast_theme(config.subtitle_theme.clone().into_iter().collect())
+        {
+            eprintln!("Could not send the subtitle theme: {error}");
+        }
     }
 
-    // 3. Faster-Whisper Supervised Worker
+    if let Some(effective_port) = effective_port {
+        // Emit ws_port event immediately over stdout JSON-lines for OpenCohost discovery
+        emitter.emit_ws_port(effective_base_port, effective_port);
+        // Desktop monitors read the bound port from the lock (it may differ after port fallback).
+        if let Err(error) = service_lock.record_ws_port(effective_port) {
+            eprintln!("Could not record the WebSocket port in the service lock: {error}");
+        }
+    }
+
+    // 3. Supervised ASR Worker
     let clean_model_name = config
         .model_size
         .split_whitespace()
@@ -840,26 +850,43 @@ async fn run_service(
         &config.whisper_context_prompt_es
     };
 
-    worker_config.init_payload = Some(worker_init_payload(
+    selected.config.init_payload = Some(worker_init_payload(
         &config,
         &clean_model_name,
         &clean_lang,
         Some(prompt.as_str()).filter(|prompt| !prompt.is_empty()),
     ));
-    worker_config.decode_timeout = Some(Duration::from_secs(config.asr_decode_timeout_sec.into()));
+    selected.config.decode_timeout =
+        Some(Duration::from_secs(config.asr_decode_timeout_sec.into()));
 
     emitter.emit_asr_state("starting", Some("starting"), Some(1));
     eprintln!(
-        "🐍 Spawning Faster-Whisper worker ('{}' on {})...",
+        "Spawning ASR worker ('{}' on {})...",
         clean_model_name, config.device
     );
     emitter.emit_asr_state("loading", Some("loading"), Some(1));
 
-    let mut supervisor = ProcessSupervisor::new(worker_config, current_pid, parent_pid, None)?;
+    let mut supervisor =
+        ProcessSupervisor::new(selected.config.clone(), current_pid, parent_pid, None)?;
 
     let mut worker_events = supervisor.subscribe_worker_events();
-    supervisor.start_internal().await?;
-    eprintln!("✅ Faster-Whisper worker ready for inference");
+    if let Err(error) = supervisor.start_internal().await {
+        if selected.kind != AsrBackendKind::Ct2Cuda {
+            return Err(error.into());
+        }
+        // A failed ct2 start is retried once on the ORT worker for this session.
+        let _ = supervisor.stop_internal(Duration::from_secs(2)).await;
+        let (kind, reason) = ct2_fallback(Ct2Failure::Start);
+        eprintln!(
+            "ct2 CUDA worker failed ({error}); falling back to ASR backend {} ({reason})",
+            backend_name(kind)
+        );
+        let config = ort_fallback_config(&selected.config);
+        supervisor = ProcessSupervisor::new(config, current_pid, parent_pid, None)?;
+        worker_events = supervisor.subscribe_worker_events();
+        supervisor.start_internal().await?;
+    }
+    eprintln!("ASR worker ready for inference");
 
     emitter.emit_asr_state("ready", Some("ready"), Some(1));
     emitter.emit_service_state("running");
@@ -881,7 +908,7 @@ async fn run_service(
     .await?;
     let mut audio_state_rx = audio_capture.state();
     eprintln!(
-        "🎙️ Audio capture on {device_label} (16kHz mono): {:?}",
+        "Audio capture on {device_label} (16kHz mono): {:?}",
         *audio_state_rx.borrow_and_update()
     );
 
@@ -895,7 +922,7 @@ async fn run_service(
         max_chunk_duration_sec: config.max_chunk_duration as f32,
     };
     let mut vad = SileroVad::new(vad_cfg)?;
-    eprintln!("🧠 Silero VAD engine active");
+    eprintln!("Silero VAD engine active");
 
     // Emit Ready Event (legacy compatibility)
     let mut ready_payload = serde_json::Map::new();
@@ -931,7 +958,7 @@ async fn run_service(
                                             let utt_id = payload.get("utterance_id").and_then(|u| u.as_str()).unwrap_or("utt");
                                             let inference_sec = payload.get("inference_sec").and_then(|d| d.as_f64())
                                                 .or_else(|| payload.get("latency_sec").and_then(|d| d.as_f64())).unwrap_or(0.0);
-                                            let timing = pending_events.lock().unwrap().complete(utt_id, inference_sec);
+                                            let timing = pending_events.lock().unwrap_or_else(|p| p.into_inner()).complete(utt_id, inference_sec);
                                             if !text.is_empty() {
                                                 let dur_sec = payload.get("duration_sec").and_then(|d| d.as_f64()).unwrap_or(3.0);
                                                 eprintln!("[ASR Transcription] [{}] \"{}\" ({:.2}s)", utt_id, text, dur_sec);
@@ -1024,76 +1051,87 @@ async fn run_service(
                             close_reason = AcousticSpeechEndReason::CaptureError;
                             break 'capture;
                         }
-                        if let Ok(decision) = vad.evaluate_chunk(frame) {
-                            observe_and_publish_acoustic_transition(
-                                &mut acoustic_lifecycle,
-                                &ws_audio,
-                                acoustic_events_enabled,
-                                decision.transition,
-                            );
-                            match decision.transition {
-                                VadTransition::SpeechStart => {
-                                    is_in_utterance = true;
-                                    utterance_samples.clear();
-                                    for pre in pre_roll_chunks.drain(..) {
-                                        utterance_samples.extend_from_slice(&pre);
-                                    }
-                                    utterance_samples.extend_from_slice(frame);
-                                }
-                                VadTransition::SpeechEnd { duration_ms, .. } => {
-                                    if is_in_utterance {
-                                        utterance_samples.extend_from_slice(frame);
-                                        is_in_utterance = false;
-
-                                        if utterance_samples.len() >= 4800 {
-                                            utterance_seq += 1;
-                                            let b64_audio = encode_f32_le_base64(&utterance_samples);
-                                            let cmd = serde_json::json!({
-                                                "version": 1,
-                                                "cmd": "transcribe",
-                                                "timestamp_ms": SystemTime::now()
-                                                    .duration_since(UNIX_EPOCH)
-                                                    .map(|d| d.as_millis() as u64)
-                                                    .unwrap_or(0),
-                                                "payload": {
-                                                    "utterance_id": format!("utt_{}", utterance_seq),
-                                                    "sequence": utterance_seq,
-                                                    "audio_data": b64_audio,
-                                                    "sample_rate": 16000,
-                                                    "channels": 1,
-                                                    "duration_ms": duration_ms,
-                                                    "language": lang_clone,
-                                                    "timeout_ms": decode_timeout_ms,
-                                                }
-                                            });
-                                            let utterance_id = format!("utt_{}", utterance_seq);
-                                            let created_at_sec = SystemTime::now().duration_since(UNIX_EPOCH)
-                                                .map(|d| d.as_secs_f64()).unwrap_or(0.0);
-                                            pending_utterances.lock().unwrap().track(utterance_id.clone(), created_at_sec);
-                                            if send_audio_command_until_cancelled(
-                                                &supervisor_audio,
-                                                &cancel_audio,
-                                                &cmd,
-                                            )
-                                            .await
-                                            .is_err()
-                                            {
-                                                pending_utterances.lock().unwrap().remove(&utterance_id);
-                                            }
-                                        }
+                        match vad.evaluate_chunk(frame) {
+                            Ok(decision) => {
+                                observe_and_publish_acoustic_transition(
+                                    &mut acoustic_lifecycle,
+                                    &ws_audio,
+                                    acoustic_events_enabled,
+                                    decision.transition,
+                                );
+                                match decision.transition {
+                                    VadTransition::SpeechStart => {
+                                        is_in_utterance = true;
                                         utterance_samples.clear();
-                                    }
-                                }
-                                VadTransition::None => {
-                                    if is_in_utterance {
-                                        utterance_samples.extend_from_slice(frame);
-                                    } else {
-                                        if pre_roll_chunks.len() >= pre_buffer_capacity {
-                                            pre_roll_chunks.pop_front();
+                                        for pre in pre_roll_chunks.drain(..) {
+                                            utterance_samples.extend_from_slice(&pre);
                                         }
-                                        pre_roll_chunks.push_back(frame.to_vec());
+                                        utterance_samples.extend_from_slice(frame);
+                                    }
+                                    VadTransition::SpeechEnd { duration_ms, .. } => {
+                                        if is_in_utterance {
+                                            utterance_samples.extend_from_slice(frame);
+                                            is_in_utterance = false;
+
+                                            if utterance_samples.len() >= 4800 {
+                                                utterance_seq += 1;
+                                                let b64_audio = encode_f32_le_base64(&utterance_samples);
+                                                let cmd = serde_json::json!({
+                                                    "version": 1,
+                                                    "cmd": "transcribe",
+                                                    "timestamp_ms": SystemTime::now()
+                                                        .duration_since(UNIX_EPOCH)
+                                                        .map(|d| d.as_millis() as u64)
+                                                        .unwrap_or(0),
+                                                    "payload": {
+                                                        "utterance_id": format!("utt_{}", utterance_seq),
+                                                        "sequence": utterance_seq,
+                                                        "audio_data": b64_audio,
+                                                        "sample_rate": 16000,
+                                                        "channels": 1,
+                                                        "duration_ms": duration_ms,
+                                                        "language": lang_clone,
+                                                        "timeout_ms": decode_timeout_ms,
+                                                    }
+                                                });
+                                                let utterance_id = format!("utt_{}", utterance_seq);
+                                                let created_at_sec = SystemTime::now().duration_since(UNIX_EPOCH)
+                                                    .map(|d| d.as_secs_f64()).unwrap_or(0.0);
+                                                pending_utterances.lock().unwrap_or_else(|p| p.into_inner()).track(utterance_id.clone(), created_at_sec);
+                                                if send_audio_command_until_cancelled(
+                                                    &supervisor_audio,
+                                                    &cancel_audio,
+                                                    &cmd,
+                                                )
+                                                .await
+                                                .is_err()
+                                                {
+                                                    pending_utterances.lock().unwrap_or_else(|p| p.into_inner()).remove(&utterance_id);
+                                                }
+                                            }
+                                            utterance_samples.clear();
+                                        }
+                                    }
+                                    VadTransition::None => {
+                                        if is_in_utterance {
+                                            utterance_samples.extend_from_slice(frame);
+                                            if utterance_samples.len() >= max_samples {
+                                                utterance_samples.truncate(max_samples);
+                                            }
+                                        } else {
+                                            if pre_roll_chunks.len() >= pre_buffer_capacity {
+                                                pre_roll_chunks.pop_front();
+                                            }
+                                            pre_roll_chunks.push_back(frame.to_vec());
+                                        }
                                     }
                                 }
+                            }
+                            Err(e) => {
+                                eprintln!("Silero VAD evaluation error: {e}");
+                                is_in_utterance = false;
+                                utterance_samples.clear();
+                                vad.reset();
                             }
                         }
                     }
@@ -1120,7 +1158,7 @@ async fn run_service(
                 sleep(Duration::from_secs(1)).await;
                 if !is_parent_alive(parent_pid) {
                     eprintln!(
-                        "\n🚨 Parent process PID {} died. Triggering graceful shutdown.",
+                        "\nParent process PID {} died. Triggering graceful shutdown.",
                         parent_pid
                     );
                     cancel_watchdog.cancel();
@@ -1130,7 +1168,7 @@ async fn run_service(
         });
     }
 
-    eprintln!("\n🟢 LiveAudio service daemon running. Waiting for audio / connections... (Press Ctrl+C to stop)");
+    eprintln!("\nLiveAudio service daemon running. Waiting for audio / connections... (Press Ctrl+C to stop)");
 
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
@@ -1187,12 +1225,25 @@ async fn run_doctor() -> Result<(), Box<dyn std::error::Error>> {
         job_object_status(cfg!(windows), || JobObject::create().map(drop))
     );
 
-    // Python Worker Discovery
-    let py_path = WorkerProcessConfig::find_python_executable();
-    println!("Python Runtime: {}", py_path.display());
-    match WorkerProcessConfig::find_asr_worker_script() {
-        Some(script) => println!("ASR Worker Script: DISCOVERED ({})", script.display()),
-        None => println!("ASR Worker Script: NOT FOUND"),
+    // Native ASR Worker Discovery
+    match discover_native_worker() {
+        Some(worker) => println!("Native ASR Worker: DISCOVERED ({})", worker.display()),
+        None => println!("Native ASR Worker: NOT FOUND"),
+    }
+    match discover_ort_dylib() {
+        Some(dylib) => println!("ONNX Runtime Library: DISCOVERED ({})", dylib.display()),
+        None => println!("ONNX Runtime Library: NOT FOUND"),
+    }
+
+    // GPU / NVIDIA runtime / backend selection
+    let adapters = detect_gpu_adapters();
+    let driver = cuda_driver_version();
+    let nvidia = nvidia_runtime_status(&nvidia_runtime_dir());
+    let ct2_worker = discover_ct2_worker();
+    let pref = load_config().unwrap_or_default().asr_backend;
+    let selected = select_backend(&pref, &adapters, driver, &nvidia, ct2_worker.as_deref());
+    for line in doctor_lines(&adapters, driver, &nvidia, ct2_worker.as_deref(), selected) {
+        println!("{line}");
     }
 
     // Model Cache Directory Layout
@@ -1277,21 +1328,38 @@ mod headless_parity_tests {
 #[cfg(test)]
 mod shutdown_tests {
     use super::*;
+    use liveaudio_core::supervisor::WorkerProcessConfig;
     use std::time::Instant;
 
     #[tokio::test]
     async fn shutdown_stops_a_worker_that_ignores_the_shutdown_command() {
-        let mut config = WorkerProcessConfig::default();
-        config.name = "cli-shutdown-worker".to_string();
-        config.command = "python".to_string();
-        config.args = vec![
-            "-u".to_string(),
-            "-c".to_string(),
-            "import json,time; print(json.dumps({'event':'ready'}), flush=True); time.sleep(60)"
-                .to_string(),
-        ];
-        config.ready_timeout = Duration::from_secs(5);
-        config.auto_respawn = false;
+        #[cfg(windows)]
+        let (command, args) = (
+            "powershell.exe".to_string(),
+            vec![
+                "-NoProfile".to_string(),
+                "-NonInteractive".to_string(),
+                "-Command".to_string(),
+                "Write-Output '{\"event\":\"ready\"}'; Start-Sleep -Seconds 60".to_string(),
+            ],
+        );
+        #[cfg(not(windows))]
+        let (command, args) = (
+            "sh".to_string(),
+            vec![
+                "-c".to_string(),
+                "printf '{\"event\":\"ready\"}\\n'; sleep 60".to_string(),
+            ],
+        );
+
+        let config = WorkerProcessConfig {
+            name: "cli-shutdown-worker".to_string(),
+            command,
+            args,
+            ready_timeout: Duration::from_secs(5),
+            auto_respawn: false,
+            ..WorkerProcessConfig::default()
+        };
         let mut supervisor = ProcessSupervisor::new(config, std::process::id(), 0, None)
             .expect("supervisor creation");
         supervisor

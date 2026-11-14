@@ -21,10 +21,51 @@ const RUNTIME_SETTINGS = [
   'save_vtt_enabled',
   'rnnoise_enabled',
   'acoustic_events_enabled',
+  'live_partial_subtitles_enabled',
+  'asr_backend',
 ];
 
 export function runtimeSettingsChanged(before, after) {
   return RUNTIME_SETTINGS.some((key) => JSON.stringify(before?.[key]) !== JSON.stringify(after?.[key]));
+}
+
+// Fields owned by the Style tab's save path. The general form never merges them.
+export const STYLE_CONFIG_KEYS = Object.freeze(['subtitle_style', 'subtitle_theme', 'subtitle_presets']);
+
+export function styleFields(config) {
+  return Object.fromEntries(STYLE_CONFIG_KEYS.map((key) => [key, config[key]]));
+}
+
+// The general form's fields only: a pending Style tab edit is not an unsaved general edit.
+export function generalFields(config) {
+  return Object.fromEntries(Object.entries(config).filter(([key]) => !STYLE_CONFIG_KEYS.includes(key)));
+}
+
+// After a general save, the form shows the backend's config for fields the user has not touched
+// since the save was sent; fields edited while the save was in flight keep the user's value.
+// Style fields are skipped: the form keeps its own copy, which the Style tab keeps current.
+export function mergeSavedConfigIntoForm(sent, formNow, saved) {
+  const merged = { ...formNow };
+  for (const key of Object.keys(saved)) {
+    if (STYLE_CONFIG_KEYS.includes(key)) continue;
+    if (JSON.stringify(formNow[key]) === JSON.stringify(sent[key])) merged[key] = saved[key];
+  }
+  return merged;
+}
+
+// A Style save adopts the style fields the backend returned and nothing else.
+export function adoptSavedStyle(config, saved) {
+  const next = { ...config };
+  for (const key of STYLE_CONFIG_KEYS) next[key] = saved[key];
+  return next;
+}
+
+// What to do when config.json changed outside this window: a clean form adopts the new values,
+// a form with unsaved edits keeps them (the save merges with the file either way).
+export function externalConfigUpdate({ hasUnsavedEdits, restartRequired, isRunning }) {
+  let messageKey = hasUnsavedEdits ? 'toast_config_changed_pending' : 'toast_config_changed';
+  if (restartRequired && isRunning) messageKey = 'toast_config_changed_restart';
+  return { refreshForm: !hasUnsavedEdits, messageKey };
 }
 
 export function applyProfilePreset(draft, profile) {
@@ -58,7 +99,7 @@ export function bindProfileSelection(selectElement, { getDraft, setDraft, getPre
   });
 }
 
-export function bindTabNavigation(tablist) {
+export function bindTabNavigation(tablist, { canLeave, onActivate } = {}) {
   const tabs = Array.from(tablist.querySelectorAll('[role="tab"]'));
   if (tabs.length === 0) return;
 
@@ -75,13 +116,29 @@ export function bindTabNavigation(tablist) {
       }
     });
     if (moveFocus) tabs[activeIndex].focus();
+    onActivate?.(tabs[activeIndex]);
+  };
+
+  // `canLeave(fromTab, toTab)` may be async and returns false to stay on the current tab.
+  let deciding = false;
+  const select = (index, moveFocus = false) => {
+    const current = tabs.findIndex((tab) => tab.classList.contains('active'));
+    if (!canLeave || index === current) {
+      activate(index, moveFocus);
+      return undefined;
+    }
+    if (deciding) return undefined;
+    deciding = true;
+    return Promise.resolve(canLeave(tabs[current], tabs[index]))
+      .then((ok) => { if (ok) activate(index, moveFocus); })
+      .finally(() => { deciding = false; });
   };
 
   const initialIndex = Math.max(0, tabs.findIndex((tab) => tab.classList.contains('active')));
   activate(initialIndex);
 
   tabs.forEach((tab, index) => {
-    tab.addEventListener('click', () => activate(index));
+    tab.addEventListener('click', () => select(index));
     tab.addEventListener('keydown', (event) => {
       let nextIndex;
       switch (event.key) {
@@ -101,14 +158,30 @@ export function bindTabNavigation(tablist) {
           return;
       }
       event.preventDefault();
-      activate(nextIndex, true);
+      select(nextIndex, true);
     });
   });
 }
 
 export function hardwareStatusLabel(status) {
   const runtimeLabel = status.is_running ? 'Activo' : 'Configurado';
-  return `${runtimeLabel}: ${status.model_size.split(' ')[0]} | ${status.device.toUpperCase()} | ${status.active_device || 'Default input'}`;
+  let deviceLabel = (status.device || 'cpu').toUpperCase();
+
+  if (status.is_running && status.effective_device) {
+    const eff = String(status.effective_device).toLowerCase();
+    if (eff === 'cuda') {
+      deviceLabel = 'GPU (CUDA)';
+    } else if (eff === 'directml' || eff === 'dml') {
+      deviceLabel = 'GPU (DirectML)';
+    } else if (eff === 'cpu') {
+      deviceLabel = status.fallback_occurred ? 'CPU (Fallback)' : 'CPU';
+    } else {
+      deviceLabel = status.effective_device.toUpperCase();
+    }
+  }
+
+  const modelPart = (status.model_size || '').split(' ')[0] || 'base';
+  return `${runtimeLabel}: ${modelPart} | ${deviceLabel} | ${status.active_device || 'Default input'}`;
 }
 
 /** i18n key for a live audio capture state worth surfacing, or '' while capturing or stopped. */
@@ -173,4 +246,110 @@ export function isServiceTransitioning(isPending, asrState) {
     || asrState === 'stopping'
     || (asrState && asrState.startsWith('Descargando'))
   );
+}
+
+const GPU_REASONS = ['no_nvidia_gpu', 'cuda_driver_missing', 'cuda_driver_too_old', 'nvidia_runtime_not_installed',
+  'nvidia_cuda_ready', 'user_selected_ort', 'ct2_preflight_failed', 'ct2_start_failed'];
+
+/** i18n key for a backend selection reason code; unknown codes fall back to a generic message. */
+export function gpuReasonKey(code) {
+  return GPU_REASONS.includes(code) ? `gpu_reason_${code}` : 'gpu_reason_unknown';
+}
+
+/** Minimum CUDA driver version (major * 1000 + minor * 10) for the NVIDIA runtime. */
+export const NVIDIA_MIN_DRIVER = 12080;
+
+/**
+ * Engine a status points to, as 'cuda', 'directml' or 'cpu': the live engine while the service runs,
+ * otherwise the selected one (ONNX uses DirectML when a GPU is present). Null when nothing is known.
+ */
+export function engineKind(gpu, live) {
+  if (live?.is_running && live.active_backend) {
+    const device = String(live.effective_device || '').toLowerCase();
+    if (live.active_backend === 'ct2_cuda' || device === 'cuda') return 'cuda';
+    return device === 'directml' || device === 'dml' ? 'directml' : 'cpu';
+  }
+  if (!gpu) return null;
+  if (gpu.selected_backend === 'ct2_cuda') return 'cuda';
+  return gpu.adapters?.length ? 'directml' : 'cpu';
+}
+
+/**
+ * Card state derived from live data: 'success' means "NVIDIA is ready and not yet in use" (restart when
+ * running, used on next start when stopped); 'idle' shows nothing but the offer. In-flight and failed
+ * installs keep their own state.
+ */
+export function nvidiaCardView(gpu, live, state) {
+  if (state !== 'idle' && state !== 'success') return state;
+  const ready = Boolean(gpu?.nvidia_runtime?.installed && gpu.selected_backend === 'ct2_cuda');
+  if (!ready) return 'idle';
+  if (!live?.is_running) return state;
+  const failed = String(live.backend_reason || '').startsWith('ct2_');
+  return live.active_backend === 'ct2_cuda' || failed ? 'idle' : 'success';
+}
+
+/** Config to save after installing the runtime so the next start uses it; null keeps an explicit ort choice. */
+export function nvidiaInstallConfig(config) {
+  if (config.asr_backend === 'ort') return null;
+  return { ...config, device: 'cuda', asr_backend: config.asr_backend === 'ct2_cuda' ? 'ct2_cuda' : 'auto' };
+}
+
+/** True when the opt-in NVIDIA runtime offer should be shown. */
+export function nvidiaOfferVisible(status, dismissed) {
+  return Boolean(status && !dismissed
+    && status.adapters?.some((adapter) => adapter.vendor === 'nvidia')
+    && status.cuda_driver_version >= NVIDIA_MIN_DRIVER
+    && status.nvidia_runtime && !status.nvidia_runtime.installed);
+}
+
+// The Advanced tab's own settings. Styles, saved styles, vocabulary (prompts, blacklist), audio device,
+// language and session files belong to other tabs and are never part of an Advanced reset.
+export const ADVANCED_KEYS = Object.freeze([
+  'model_size', 'device', 'cpu_threads', 'asr_backend', 'silence_timeout', 'max_chunk_duration', 'vad_speech_pad_ms',
+  'vad_threshold', 'rnnoise_enabled', 'live_partial_subtitles_enabled', 'subtitle_backlog_policy',
+  'subtitle_max_live_delay_sec', 'subtitle_catchup_interval_sec', 'ws_port', 'acoustic_events_enabled',
+  'mcp_style_enabled', 'mcp_system_enabled', 'check_updates_enabled',
+]);
+
+// Defaults of the Advanced keys, same as LiveAudioConfig::default (cpu_threads is half the cores).
+export function advancedDefaults(cores = 4) {
+  return {
+    model_size: 'small (Balance CPU)', device: 'cpu', cpu_threads: Math.min(16, Math.max(1, Math.floor(cores / 2))), asr_backend: 'auto',
+    silence_timeout: 0.5, max_chunk_duration: 3.0, vad_speech_pad_ms: 200, vad_threshold: 0.5, rnnoise_enabled: false,
+    live_partial_subtitles_enabled: false, subtitle_backlog_policy: 'auto', subtitle_max_live_delay_sec: 10.0,
+    subtitle_catchup_interval_sec: 1.5, ws_port: 8765, acoustic_events_enabled: false, mcp_style_enabled: false, mcp_system_enabled: false, check_updates_enabled: true,
+  };
+}
+
+// Footer Reset: the settings each tab owns (i18n label keys, shown in the confirmation) and their defaults.
+// Home has nothing resettable and Style has its own Reset style, so neither is listed. Saved styles, language,
+// NVIDIA runtime files, usage stats and session files are never part of a tab reset.
+export const TAB_RESETS = Object.freeze({
+  'tab-subtitles': {
+    title: 'tab_subtitles',
+    labels: ['lbl_display_mode', 'lbl_ribbon_lines'],
+    defaults: () => ({ subtitle_display_mode: 'adaptive', subtitle_ribbon_max_lines: 3 }),
+  },
+  'tab-advanced': {
+    title: 'tab_advanced',
+    labels: ['lbl_model_size', 'lbl_compute_device', 'lbl_cpu_threads', 'lbl_asr_backend', 'lbl_silence_timeout', 'lbl_max_chunk', 'lbl_vad_pad',
+      'lbl_vad_threshold', 'lbl_rnnoise_enabled', 'lbl_live_partial_subtitles', 'lbl_backlog_policy', 'lbl_max_live_delay', 'lbl_catchup_interval',
+      'lbl_ws_port', 'lbl_acoustic_events_enabled', 'lbl_mcp_style_enabled', 'lbl_mcp_system_enabled', 'lbl_check_updates_auto'],
+    defaults: advancedDefaults,
+  },
+  'tab-files': {
+    title: 'tab_files',
+    labels: ['lbl_continuous', 'lbl_save_jsonl', 'lbl_save_vtt'],
+    defaults: () => ({ continuous_session: true, save_transcript_enabled: true, save_vtt_enabled: true }),
+  },
+});
+
+// Comparable view of the Advanced settings; model_size keeps only its first word (the form stores the long label).
+export function advancedView(config) {
+  const view = Object.fromEntries(ADVANCED_KEYS.map((key) => [key, config?.[key]]));
+  view.model_size = String(view.model_size ?? '').split(' ')[0];
+  view.blacklist = String(config?.blacklist ?? '').trim();
+  view.prompt_es = String(config?.whisper_context_prompt_es ?? '').trim();
+  view.prompt_en = String(config?.whisper_context_prompt_en ?? '').trim();
+  return view;
 }

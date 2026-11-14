@@ -1,22 +1,19 @@
 // SPDX-License-Identifier: MIT
 
-//! Rust-side helpers for the Python ASR worker protocol
-//! (`liveaudio/service/asr_worker_protocol.py`) and the transcript text hygiene
-//! ported from `liveaudio/core/engine.py`.
+//! Helpers for the native ASR worker protocol and transcript text hygiene.
 
 use serde_json::{json, Value};
 
 use crate::config::LiveAudioConfig;
 
-/// Subtitle presentation cap, in characters (`engine.py` `MAX_SUBTITLE_CHARS`).
+/// Subtitle presentation cap, in characters.
 pub const MAX_SUBTITLE_CHARS: usize = 600;
-/// Segments more likely silence than speech are dropped (`engine.py`).
+/// Segments more likely silence than speech are dropped.
 const MAX_NO_SPEECH_PROB: f64 = 0.6;
-/// Segments this short or shorter are dropped as noise (`engine.py`).
+/// Segments this short or shorter are dropped as noise.
 const MIN_SEGMENT_CHARS: usize = 2;
 
-/// Builds the worker `init` payload. The worker rejects unknown keys
-/// (`InitPayload(**raw)`), so only fields that dataclass declares may be sent.
+/// Builds the worker `init` payload.
 pub fn worker_init_payload(
     config: &LiveAudioConfig,
     model_name: &str,
@@ -33,8 +30,7 @@ pub fn worker_init_payload(
     })
 }
 
-/// Unicode format (Cf) characters, which Python's `str.isprintable` rejects:
-/// bidi overrides/isolates/marks, zero-width characters and invisible operators.
+/// Unicode format (Cf) characters: bidi overrides/isolates/marks, zero-width characters and invisible operators.
 fn is_format_char(ch: char) -> bool {
     matches!(
         ch,
@@ -53,8 +49,7 @@ fn is_format_char(ch: char) -> bool {
     )
 }
 
-/// Removes control and bidi/format characters and collapses whitespace
-/// (`engine.py` `_sanitize_text`).
+/// Removes control and bidi/format characters and collapses whitespace.
 pub fn sanitize_transcript_text(text: &str) -> String {
     let printable: String = text
         .chars()
@@ -63,7 +58,7 @@ pub fn sanitize_transcript_text(text: &str) -> String {
     printable.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Bounded projection used for live subtitles (`engine.py` `_presentation_text`).
+/// Bounded projection used for live subtitles.
 pub fn presentation_text(text: &str) -> String {
     match text.char_indices().nth(MAX_SUBTITLE_CHARS) {
         Some((cut, _)) => format!("{}...", text[..cut].trim_end()),
@@ -72,7 +67,7 @@ pub fn presentation_text(text: &str) -> String {
 }
 
 /// Transcript text of a worker `transcription_result` payload: per-segment
-/// sanitization and the `no_speech_prob`/length filters of `engine.py`. Falls back
+/// sanitization and the `no_speech_prob`/length filters. Falls back
 /// to the payload `text` when the worker reports no segments.
 pub fn transcript_text_from_result(payload: &Value) -> String {
     let segments = payload.get("segments").and_then(Value::as_array);
@@ -100,7 +95,7 @@ pub fn transcript_text_from_result(payload: &Value) -> String {
 mod tests {
     use super::*;
 
-    /// Fields declared by `InitPayload` in `asr_worker_protocol.py`.
+    /// Fields declared by `InitPayload` in the worker protocol.
     const INIT_PAYLOAD_FIELDS: &[&str] = &[
         "model_name",
         "device",

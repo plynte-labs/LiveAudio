@@ -8,8 +8,8 @@ use crate::commands::{
     ensure_startup_websocket, get_service_status_internal, is_text_blacklisted,
     persist_config_and_apply, poll_foreign_service, profile_presets, refresh_foreign_service,
     retry_once_if_already_running, shutdown_service_resources, stop_active_websocket,
-    trim_boundary_overlap, trim_boundary_overlap_with_max, worker_attempt_is_current,
-    ForeignServicePoll,
+    partial_due, trim_boundary_overlap, trim_boundary_overlap_with_max, with_subtitle_style,
+    worker_attempt_is_current, ForeignServicePoll, PartialSubtitleGate,
 };
 use crate::dto::*;
 use crate::state::AppState;
@@ -103,7 +103,7 @@ fn respawn_generation_rejects_late_ready_and_progress_from_previous_worker() {
 #[test]
 fn desktop_managed_runtime_preflight_error_routes_to_repair_ui_not_cli() {
     let error = RuntimeError::DependenciesUnavailable {
-        details: "No module named faster_whisper".to_string(),
+        details: "Native ASR worker binary not found".to_string(),
     };
     let desktop_message = desktop_runtime_preflight_error(&error);
 
@@ -112,7 +112,7 @@ fn desktop_managed_runtime_preflight_error_routes_to_repair_ui_not_cli() {
     assert!(!desktop_message.contains("Run `liveaudio"));
     assert!(error
         .to_string()
-        .contains("liveaudio setup-runtime --backend cpu"));
+        .contains("Native ASR worker runtime unavailable"));
 }
 
 #[test]
@@ -289,6 +289,18 @@ async fn desktop_fatal_capture_discards_queued_would_start_chunk_and_closes_acti
 }
 
 #[test]
+fn nvidia_license_opener_only_accepts_pinned_license_urls() {
+    let pinned = liveaudio_core::license_urls();
+    assert!(!pinned.is_empty());
+    for url in &pinned {
+        assert!(crate::commands::is_nvidia_license_url(url));
+    }
+    assert!(!crate::commands::is_nvidia_license_url("https://example.com/"));
+    assert!(!crate::commands::is_nvidia_license_url("file:///C:/Windows/System32/calc.exe"));
+    assert!(!crate::commands::is_nvidia_license_url(""));
+}
+
+#[test]
 fn author_profile_opener_uses_the_fixed_github_destination() {
     let (program, args) = crate::commands::author_profile_open_command();
 
@@ -317,13 +329,24 @@ fn author_profile_opener_uses_the_fixed_github_destination() {
 async fn desktop_audio_dispatch_cancels_while_worker_command_queue_is_saturated() {
     let mut config = WorkerProcessConfig::default();
     config.name = "desktop-nonreading-worker".to_string();
-    config.command = "python".to_string();
-    config.args = vec![
-        "-u".to_string(),
-        "-c".to_string(),
-        "import json,time; print(json.dumps({'event':'ready'}), flush=True); time.sleep(60)"
-            .to_string(),
-    ];
+    #[cfg(windows)]
+    {
+        config.command = "powershell.exe".to_string();
+        config.args = vec![
+            "-NoProfile".to_string(),
+            "-NonInteractive".to_string(),
+            "-Command".to_string(),
+            "[Console]::Out.WriteLine('{\"event\":\"ready\"}'); Start-Sleep -Seconds 60".to_string(),
+        ];
+    }
+    #[cfg(not(windows))]
+    {
+        config.command = "sh".to_string();
+        config.args = vec![
+            "-c".to_string(),
+            "printf '{\"event\":\"ready\"}\\n'; sleep 60".to_string(),
+        ];
+    }
     config.ready_timeout = std::time::Duration::from_secs(5);
     config.auto_respawn = false;
     let mut supervisor =
@@ -422,8 +445,8 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturedLogs {
     }
 }
 
-#[test]
-fn test_app_state_initialization() {
+#[tokio::test]
+async fn test_app_state_initialization() {
     let mut config = LiveAudioConfig::default();
     config.ws_port = 8765;
     config.device = "cuda".to_string();
@@ -433,7 +456,32 @@ fn test_app_state_initialization() {
     assert!(!state.is_running());
     assert!(!state.vad_onset());
     assert_eq!(state.ws_port(), 8765);
-    assert_eq!(state.ws_clients(), 0);
+    assert_eq!(state.ws_clients().await, 0);
+    assert!(!state.is_busy().await);
+}
+
+#[tokio::test]
+async fn test_app_state_stream_safety_and_busy_gating() {
+    let state = AppState::default();
+    assert!(!state.is_busy().await);
+    assert!(state.check_stream_safety().await.is_ok());
+
+    // 1. is_running makes state busy
+    state.is_running.store(true, Ordering::SeqCst);
+    assert!(state.is_busy().await);
+    assert!(state.check_stream_safety().await.is_err());
+    state.is_running.store(false, Ordering::SeqCst);
+    assert!(!state.is_busy().await);
+
+    // 2. foreign_service makes state busy
+    *state.foreign_service.write().await = Some(liveaudio_core::service_lock::ServiceLockHolder {
+        pid: Some(12345),
+        ws_port: Some(8765),
+    });
+    assert!(state.is_busy().await);
+    assert!(state.check_stream_safety().await.is_err());
+    *state.foreign_service.write().await = None;
+    assert!(!state.is_busy().await);
 }
 
 #[tokio::test]
@@ -660,6 +708,39 @@ async fn websocket_bind_failure_during_start_rolls_back_starting_state() {
     assert!(state.ws_server.lock().await.is_none());
     let status = get_service_status_internal(&state).await.unwrap();
     assert!(!status.is_running);
+}
+
+#[tokio::test]
+async fn obs_disabled_startup_does_not_bind_the_websocket() {
+    // Occupying the top port would make a bind fail, so an Ok result proves no bind was attempted.
+    let _occupied = std::net::TcpListener::bind(("127.0.0.1", u16::MAX));
+    let config = LiveAudioConfig {
+        ws_port: u16::MAX,
+        obs_enabled: false,
+        ..LiveAudioConfig::default()
+    };
+    let state = AppState::new(config.clone());
+
+    let (ws, created_here) = ensure_startup_websocket(&state, &config)
+        .await
+        .expect("obs-disabled startup must not bind");
+
+    assert!(!created_here);
+    assert_eq!(ws.bound_port(), None);
+    assert!(state.ws_server.lock().await.is_none());
+}
+
+#[tokio::test]
+async fn obs_disabled_status_reports_no_websocket_port() {
+    let config = LiveAudioConfig {
+        obs_enabled: false,
+        ..LiveAudioConfig::default()
+    };
+    let state = AppState::new(config);
+
+    let status = get_service_status_internal(&state).await.expect("status");
+
+    assert_eq!(status.ws_port, 0);
 }
 
 #[tokio::test]
@@ -928,7 +1009,7 @@ async fn transcript_and_vtt_flags_independently_control_session_sinks() {
 }
 
 #[test]
-fn profile_presets_match_python_runtime_values() {
+fn profile_presets_match_expected_values() {
     let presets = profile_presets();
     assert_eq!(
         presets
@@ -978,6 +1059,7 @@ async fn optional_audio_flags_are_persisted_before_runtime_config_update() {
     let mut config = LiveAudioConfig::default();
     config.rnnoise_enabled = true;
     config.acoustic_events_enabled = true;
+    config.live_partial_subtitles_enabled = true;
     let persisted = Arc::new(Mutex::new(None));
     let persisted_copy = Arc::clone(&persisted);
 
@@ -989,6 +1071,14 @@ async fn optional_audio_flags_are_persisted_before_runtime_config_update() {
     .expect("persist and apply config");
 
     assert!(persisted.lock().unwrap().as_ref().unwrap().rnnoise_enabled);
+    assert!(
+        persisted
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .live_partial_subtitles_enabled
+    );
     assert!(
         persisted
             .lock()
@@ -1012,27 +1102,6 @@ async fn failed_audio_start_releases_started_resources_and_resets_state() {
     let state = AppState::default();
     let test_home = isolated_test_home();
     std::fs::create_dir_all(&test_home).expect("create isolated test home");
-    let worker_script = test_home.join("mock_asr_worker.py");
-    std::fs::write(
-        &worker_script,
-        r#"
-import json
-import sys
-
-for raw in sys.stdin:
-    try:
-        command = json.loads(raw).get("cmd")
-    except Exception:
-        continue
-    if command == "init":
-        print(json.dumps({"event": "ready", "payload": {"device": "cpu"}}), flush=True)
-    elif command == "ping":
-        print(json.dumps({"event": "pong", "payload": {"state": "idle"}}), flush=True)
-    elif command == "shutdown":
-        break
-"#,
-    )
-    .expect("write deterministic mock worker");
 
     state.is_running.store(true, Ordering::SeqCst);
     *state.asr_state.write().await = "listening".to_string();
@@ -1058,11 +1127,24 @@ for raw in sys.stdin:
 
     let mut worker_config = WorkerProcessConfig::default();
     worker_config.name = "startup-rollback-test-worker".to_string();
-    worker_config.command = "python".to_string();
-    worker_config.args = vec![
-        "-u".to_string(),
-        worker_script.to_string_lossy().to_string(),
-    ];
+    #[cfg(windows)]
+    {
+        worker_config.command = "powershell.exe".to_string();
+        worker_config.args = vec![
+            "-NoProfile".to_string(),
+            "-NonInteractive".to_string(),
+            "-Command".to_string(),
+            "$input | ForEach-Object { if ($_ -match '\"init\"') { [Console]::Out.WriteLine('{\"event\":\"ready\",\"payload\":{\"device\":\"cpu\"}}') } elseif ($_ -match '\"ping\"') { [Console]::Out.WriteLine('{\"event\":\"pong\",\"payload\":{\"state\":\"idle\"}}') } elseif ($_ -match '\"shutdown\"') { break } }".to_string(),
+        ];
+    }
+    #[cfg(not(windows))]
+    {
+        worker_config.command = "sh".to_string();
+        worker_config.args = vec![
+            "-c".to_string(),
+            "while IFS= read -r line; do case \"$line\" in *init*) echo '{\"event\":\"ready\",\"payload\":{\"device\":\"cpu\"}}';; *ping*) echo '{\"event\":\"pong\",\"payload\":{\"state\":\"idle\"}}';; *shutdown*) break;; esac; done".to_string(),
+        ];
+    }
     worker_config.ready_timeout = std::time::Duration::from_secs(5);
     worker_config.watchdog_interval = std::time::Duration::from_millis(100);
     worker_config.watchdog_timeout = std::time::Duration::from_secs(2);
@@ -1255,17 +1337,29 @@ fn test_is_text_blacklisted_cases() {
     let blacklist = "amara.org, subtítulos por, suscríbete, dale like, \"gracias por ver\"";
 
     // Matches exact and substring
-    assert!(is_text_blacklisted("Subtítulos realizados por la comunidad de amara.org", blacklist));
+    assert!(is_text_blacklisted(
+        "Subtítulos realizados por la comunidad de amara.org",
+        blacklist
+    ));
     assert!(is_text_blacklisted("subtítulos por favor", blacklist));
     assert!(is_text_blacklisted("SUSCRÍBETE a mi canal", blacklist));
-    assert!(is_text_blacklisted("No olvides dale like y comentar", blacklist));
-    assert!(is_text_blacklisted("Muchas gracias por ver este video", blacklist));
+    assert!(is_text_blacklisted(
+        "No olvides dale like y comentar",
+        blacklist
+    ));
+    assert!(is_text_blacklisted(
+        "Muchas gracias por ver este video",
+        blacklist
+    ));
 
     // Accent and diacritic folding: matches even if transcript has no accent or blacklist has no accent
     assert!(is_text_blacklisted("Suscribete a mi canal", blacklist)); // unaccented text matches accented blacklist
     assert!(is_text_blacklisted("¡SUSCRIBETE!", blacklist));
     let unaccented_bl = "suscribete, subtitulos por";
-    assert!(is_text_blacklisted("¡Suscríbete a mi canal!", unaccented_bl)); // accented text matches unaccented blacklist
+    assert!(is_text_blacklisted(
+        "¡Suscríbete a mi canal!",
+        unaccented_bl
+    )); // accented text matches unaccented blacklist
     assert!(is_text_blacklisted("Subtítulos por favor", unaccented_bl));
 
     // Multiline and semicolon delimiters
@@ -1281,8 +1375,14 @@ fn test_is_text_blacklisted_cases() {
     assert!(is_text_blacklisted("dale like", smart_quotes_bl));
 
     // Clean text does not match
-    assert!(!is_text_blacklisted("Hola a todos, hoy vamos a programar en Rust", blacklist));
-    assert!(!is_text_blacklisted("Este es un audio completamente normal", blacklist));
+    assert!(!is_text_blacklisted(
+        "Hola a todos, hoy vamos a programar en Rust",
+        blacklist
+    ));
+    assert!(!is_text_blacklisted(
+        "Este es un audio completamente normal",
+        blacklist
+    ));
 
     // Empty blacklist passes everything
     assert!(!is_text_blacklisted("amara.org", ""));
@@ -1495,9 +1595,6 @@ async fn test_multi_chunk_overlap_streaming_simulation() {
         "vamos a ver este gran proyecto genial de código abierto para la comunidad"
     );
 }
-
-
-
 
 #[tokio::test]
 async fn start_fails_cleanly_while_another_process_holds_the_service_lock() {
@@ -1716,13 +1813,15 @@ fn unique_test_dir(label: &str) -> PathBuf {
 #[test]
 fn test_obs_overlay_resolves_bundled_resource_first() {
     let resource_dir = unique_test_dir("obs-resource");
-    let assets = resource_dir.join("liveaudio").join("assets");
+    let assets = resource_dir.join("assets");
     std::fs::create_dir_all(&assets).unwrap();
-    std::fs::write(assets.join("subtitulos_obs.html"), "<html></html>").unwrap();
+    let file = assets.join("subtitulos_obs.html");
+    std::fs::write(&file, "<html></html>").unwrap();
 
     let resolved = crate::commands::resolve_obs_overlay_path(Some(&resource_dir))
         .expect("bundled overlay must resolve");
-    assert_eq!(resolved, assets.join("subtitulos_obs.html"));
+    let expected = std::path::absolute(&file).unwrap_or(file);
+    assert_eq!(resolved, expected);
 
     let _ = std::fs::remove_dir_all(&resource_dir);
 }
@@ -1731,31 +1830,19 @@ fn test_obs_overlay_resolves_bundled_resource_first() {
 fn test_obs_overlay_missing_resource_is_not_resolved_there() {
     let resource_dir = unique_test_dir("obs-missing");
     let resolved = crate::commands::resolve_obs_overlay_path(Some(&resource_dir));
-    assert!(resolved.map_or(true, |path| !path.starts_with(&resource_dir)));
+    assert!(resolved.is_none_or(|path| !path.starts_with(&resource_dir)));
     let _ = std::fs::remove_dir_all(&resource_dir);
 }
 
-#[cfg(windows)]
 #[test]
-fn test_obs_overlay_url_percent_encodes_windows_path() {
-    let path =
-        PathBuf::from(r"\\?\C:\Users\José Ñ\Live Audio\liveaudio\assets\subtitulos_obs.html");
+fn test_obs_overlay_url_generates_loopback_http() {
+    let path = PathBuf::from(if cfg!(windows) {
+        r"C:\LiveAudio\assets\subtitulos_obs.html"
+    } else {
+        "/opt/liveaudio/assets/subtitulos_obs.html"
+    });
     let url = crate::commands::obs_overlay_url(&path, 8765).expect("url");
-    assert_eq!(
-        url,
-        "file:///C:/Users/Jos%C3%A9%20%C3%91/Live%20Audio/liveaudio/assets/subtitulos_obs.html?port=8765"
-    );
-}
-
-#[cfg(not(windows))]
-#[test]
-fn test_obs_overlay_url_percent_encodes_unix_path() {
-    let path = PathBuf::from("/home/José Ñ/Live Audio/liveaudio/assets/subtitulos_obs.html");
-    let url = crate::commands::obs_overlay_url(&path, 8765).expect("url");
-    assert_eq!(
-        url,
-        "file:///home/Jos%C3%A9%20%C3%91/Live%20Audio/liveaudio/assets/subtitulos_obs.html?port=8765"
-    );
+    assert_eq!(url, "http://127.0.0.1:8765/overlay?port=8765");
 }
 
 #[test]
@@ -1763,45 +1850,6 @@ fn test_obs_overlay_url_rejects_relative_path() {
     assert!(crate::commands::obs_overlay_url(&PathBuf::from("assets/x.html"), 1).is_err());
 }
 
-#[test]
-fn test_bundled_uv_resource_uses_platform_binary_name() {
-    let expected = if cfg!(windows) {
-        "packaging/vendor/uv.exe"
-    } else {
-        "packaging/vendor/uv"
-    };
-    assert_eq!(crate::commands::BUNDLED_UV_RESOURCE, expected);
-}
-
-#[test]
-fn test_select_uv_prefers_existing_bundled_file() {
-    let dir = unique_test_dir("uv-bundled");
-    let bundled = dir.join("uv");
-    std::fs::write(&bundled, "").unwrap();
-    let selected = crate::commands::select_uv_executable(Some(bundled.clone()), || {
-        panic!("fallback not expected")
-    });
-    assert_eq!(selected, Ok(bundled));
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn test_select_uv_falls_back_when_bundled_file_absent() {
-    let dir = unique_test_dir("uv-fallback");
-    let fallback = dir.join("system-uv");
-    let selected = crate::commands::select_uv_executable(Some(dir.join("missing-uv")), || {
-        Some(fallback.clone())
-    });
-    assert_eq!(selected, Ok(fallback));
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn test_select_uv_reports_actionable_error_when_nothing_found() {
-    let error = crate::commands::select_uv_executable(None, || None).unwrap_err();
-    assert!(error.contains("uv"));
-    assert!(error.contains("PATH"));
-}
 
 #[test]
 fn test_subtitle_cue_broadcasts_as_live_wire_message() {
@@ -1821,4 +1869,454 @@ fn test_subtitle_cue_broadcasts_as_live_wire_message() {
     assert_eq!(wire.style, "neon");
     assert!(!wire.is_replay);
     assert_eq!(wire.catchup_interval_sec, 0.0);
+}
+
+#[tokio::test]
+async fn saving_subtitle_theme_pushes_it_to_the_running_obs_server() {
+    let state = AppState::default();
+    let base = 46_000
+        + (SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .subsec_millis()
+            % 1000) as u16;
+    let mut ws = WsServer::new(WsServerConfig {
+        base_port: base,
+        ..Default::default()
+    });
+    NetworkServer::start(&mut ws, base)
+        .await
+        .expect("bind obs server");
+    *state.ws_server.lock().await = Some(ws.clone());
+    let before = ws.metrics().broadcast_messages_total.load(Ordering::SeqCst);
+
+    let mut config = LiveAudioConfig::default();
+    config
+        .subtitle_theme
+        .insert("--sub-color".to_string(), "#ff0000".to_string());
+    persist_config_and_apply(&state, config, |_| Ok(true))
+        .await
+        .expect("save config");
+
+    assert_eq!(
+        ws.metrics().broadcast_messages_total.load(Ordering::SeqCst),
+        before + 1
+    );
+    NetworkServer::stop(&mut ws).await.expect("stop obs server");
+}
+
+#[test]
+fn subtitle_style_update_sanitizes_theme_and_keeps_other_settings() {
+    let base = LiveAudioConfig {
+        device: "cuda".to_string(),
+        ..LiveAudioConfig::default()
+    };
+    let theme = std::collections::BTreeMap::from([
+        (
+            "--sub-color".to_string(),
+            "url(http://evil.test/x)".to_string(),
+        ),
+        ("--sub-font-size".to_string(), "500px".to_string()),
+    ]);
+    let presets = vec![liveaudio_core::config::SubtitlePreset {
+        name: "  Night  ".to_string(),
+        style: Some("neon".to_string()),
+        tokens: std::collections::BTreeMap::new(),
+    }];
+
+    let updated = with_subtitle_style(&base, theme, presets, None);
+
+    assert_eq!(updated.device, "cuda");
+    assert!(!updated.subtitle_theme.contains_key("--sub-color"));
+    assert_eq!(
+        updated
+            .subtitle_theme
+            .get("--sub-font-size")
+            .map(String::as_str),
+        Some("120px")
+    );
+    assert_eq!(updated.subtitle_presets.len(), 1);
+    assert_eq!(updated.subtitle_presets[0].name, "Night");
+    assert_eq!(updated.subtitle_presets[0].style.as_deref(), Some("neon"));
+}
+
+#[test]
+fn general_save_from_a_stale_form_keeps_the_saved_subtitle_style() {
+    use liveaudio_core::config::SubtitlePreset;
+    let base = LiveAudioConfig::default();
+    let theme: std::collections::BTreeMap<String, String> =
+        [("--sub-color".to_string(), "#ff0000".to_string())]
+            .into_iter()
+            .collect();
+    let presets = vec![SubtitlePreset {
+        name: "Night".to_string(),
+        tokens: [("--sub-bg".to_string(), "rgba(0, 0, 0, 0.5)".to_string())]
+            .into_iter()
+            .collect(),
+        ..Default::default()
+    }];
+    // The style save landed after the general form took its copy of the config.
+    let saved_style = crate::commands::with_subtitle_style(&base, theme, presets, None);
+    let mut stale_form = base.clone();
+    stale_form.subtitle_ribbon_max_lines = 5;
+
+    let merged = crate::commands::keep_subtitle_style(stale_form, &saved_style);
+
+    assert_eq!(merged.subtitle_theme, saved_style.subtitle_theme);
+    assert_eq!(merged.subtitle_presets, saved_style.subtitle_presets);
+    assert_eq!(
+        merged.subtitle_ribbon_max_lines, 5,
+        "general fields still come from the form"
+    );
+}
+
+#[test]
+fn style_save_keeps_general_changes_saved_before_it() {
+    let current = LiveAudioConfig {
+        subtitle_ribbon_max_lines: 6,
+        ..LiveAudioConfig::default()
+    };
+    let theme: std::collections::BTreeMap<String, String> =
+        [("--sub-color".to_string(), "#00ff00".to_string())]
+            .into_iter()
+            .collect();
+
+    let updated = crate::commands::with_subtitle_style(&current, theme, Vec::new(), None);
+
+    assert_eq!(updated.subtitle_ribbon_max_lines, 6);
+}
+
+#[test]
+fn built_in_style_is_saved_with_the_theme_and_unknown_names_fall_back() {
+    let base = LiveAudioConfig {
+        subtitle_style: "karaoke".to_string(),
+        ..LiveAudioConfig::default()
+    };
+
+    let neon = with_subtitle_style(
+        &base,
+        Default::default(),
+        Vec::new(),
+        Some("neon".to_string()),
+    );
+    let unknown = with_subtitle_style(
+        &base,
+        Default::default(),
+        Vec::new(),
+        Some("rainbow".to_string()),
+    );
+    let untouched = with_subtitle_style(&base, Default::default(), Vec::new(), None);
+
+    assert_eq!(neon.subtitle_style, "neon");
+    assert_eq!(unknown.subtitle_style, "default");
+    assert_eq!(untouched.subtitle_style, "karaoke");
+}
+
+#[test]
+fn general_save_from_a_stale_form_keeps_the_saved_built_in_style() {
+    let stored = LiveAudioConfig {
+        subtitle_style: "neon".to_string(),
+        ..LiveAudioConfig::default()
+    };
+    let stale_form = LiveAudioConfig {
+        subtitle_style: "default".to_string(),
+        subtitle_ribbon_max_lines: 5,
+        ..LiveAudioConfig::default()
+    };
+
+    let merged = crate::commands::keep_subtitle_style(stale_form, &stored);
+
+    assert_eq!(merged.subtitle_style, "neon");
+    assert_eq!(
+        merged.subtitle_ribbon_max_lines, 5,
+        "general fields still come from the form"
+    );
+}
+
+#[tokio::test]
+async fn reset_waits_for_the_config_write_lock() {
+    let state = std::sync::Arc::new(AppState::new(LiveAudioConfig {
+        subtitle_ribbon_max_lines: 6,
+        subtitle_theme: [("--sub-color".to_string(), "#ff0000".to_string())]
+            .into_iter()
+            .collect(),
+        subtitle_presets: vec![liveaudio_core::config::SubtitlePreset {
+            name: "Night".to_string(),
+            tokens: std::collections::BTreeMap::new(),
+            ..Default::default()
+        }],
+        ..LiveAudioConfig::default()
+    }));
+    let guard = state.config_write_lock.lock().await;
+    let reset = {
+        let state = std::sync::Arc::clone(&state);
+        tokio::spawn(async move {
+            crate::commands::reset_config_to_defaults(&state, |_| Ok(true)).await
+        })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(
+        !reset.is_finished(),
+        "reset ran while a config save held the write lock"
+    );
+    drop(guard);
+    let defaults = reset.await.expect("reset task").expect("reset");
+    assert_eq!(
+        defaults.subtitle_presets,
+        LiveAudioConfig::default().subtitle_presets
+    );
+    assert!(state.config.read().await.subtitle_theme.is_empty());
+}
+
+#[tokio::test]
+async fn status_surfaces_active_backend_and_reason_until_shutdown() {
+    let state = AppState::default();
+    let idle = get_service_status_internal(&state).await.expect("service status");
+    assert_eq!((idle.active_backend, idle.backend_reason), (None, None));
+
+    *state.active_backend.write().await = Some(("ort".into(), "ct2_start_failed".into()));
+    let status = get_service_status_internal(&state).await.expect("service status");
+    assert_eq!(status.active_backend.as_deref(), Some("ort"));
+    assert_eq!(status.backend_reason.as_deref(), Some("ct2_start_failed"));
+    let legacy: ServiceStatusDto = serde_json::from_value({
+        let mut json = serde_json::to_value(&status).unwrap();
+        json.as_object_mut().unwrap().remove("active_backend");
+        json.as_object_mut().unwrap().remove("backend_reason");
+        json
+    })
+    .expect("older payload without backend fields");
+    assert_eq!(legacy.active_backend, None);
+
+    crate::commands::shutdown_service_resources(&state).await.expect("shutdown");
+    let stopped = get_service_status_internal(&state).await.expect("service status");
+    assert_eq!((stopped.active_backend, stopped.backend_reason), (None, None));
+}
+
+#[tokio::test]
+async fn test_update_worker_ready_hardware_directml_and_cpu_fallback() {
+    let state = AppState::default();
+
+    // 1. DirectML hardware initialization
+    let directml_payload = serde_json::json!({
+        "device": "directml",
+        "compute_type": "float16",
+        "fallback_occurred": false,
+        "fallback_reason": null,
+    });
+    crate::commands::update_worker_ready_hardware(&state, Some(&directml_payload)).await;
+
+    let status = get_service_status_internal(&state).await.expect("service status");
+    assert_eq!(status.effective_device.as_deref(), Some("directml"));
+    assert_eq!(status.compute_type.as_deref(), Some("float16"));
+    assert!(!status.fallback_occurred);
+    assert_eq!(status.fallback_reason, None);
+
+    // 2. CPU fallback with reason
+    let fallback_payload = serde_json::json!({
+        "device": "cpu",
+        "compute_type": "int8",
+        "fallback_occurred": true,
+        "fallback_reason": "DirectML device creation failed: 0x887A0004",
+    });
+    crate::commands::update_worker_ready_hardware(&state, Some(&fallback_payload)).await;
+
+    let status_fallback = get_service_status_internal(&state).await.expect("service status");
+    assert_eq!(status_fallback.effective_device.as_deref(), Some("cpu"));
+    assert_eq!(status_fallback.compute_type.as_deref(), Some("int8"));
+    assert!(status_fallback.fallback_occurred);
+    assert_eq!(
+        status_fallback.fallback_reason.as_deref(),
+        Some("DirectML device creation failed: 0x887A0004")
+    );
+
+    // 3. Reset hardware surfacing fields on stop
+    crate::commands::shutdown_service_resources(&state).await.expect("shutdown");
+    let status_stopped = get_service_status_internal(&state).await.expect("service status");
+    assert_eq!(status_stopped.effective_device, None);
+    assert_eq!(status_stopped.compute_type, None);
+    assert!(!status_stopped.fallback_occurred);
+    assert_eq!(status_stopped.fallback_reason, None);
+}
+
+#[test]
+fn partial_gate_allows_one_partial_in_flight_per_utterance() {
+    let gate = PartialSubtitleGate::default();
+    assert!(gate.try_begin(3));
+    assert!(!gate.try_begin(3), "a second partial must wait for the first");
+    assert!(gate.finish(3), "the in-flight result is still current");
+    assert!(gate.try_begin(3), "the slot is free after the result");
+}
+
+#[test]
+fn partial_gate_drops_stale_results_and_reset_frees_the_slot() {
+    let gate = PartialSubtitleGate::default();
+    assert!(gate.try_begin(3));
+    gate.reset();
+    assert!(!gate.finish(3), "a result after the final is stale");
+    assert!(gate.try_begin(4));
+    assert!(!gate.finish(3), "an older utterance must not free the new slot");
+    assert!(!gate.try_begin(4));
+    assert!(gate.finish(4));
+}
+
+#[test]
+fn partial_due_needs_half_a_second_of_new_audio() {
+    assert!(!partial_due(false, 20_000, 0));
+    assert!(!partial_due(true, 8_000, 0), "under 0.5 s of audio");
+    assert!(partial_due(true, 8_192, 0));
+    assert!(!partial_due(true, 12_000, 8_192), "under 0.5 s since the last partial");
+    assert!(partial_due(true, 16_384, 8_192));
+}
+
+#[test]
+fn partial_gate_reports_shown_text_once_so_a_silent_final_can_clear_it() {
+    let gate = PartialSubtitleGate::default();
+    assert!(!gate.take_shown(5), "nothing shown yet");
+    gate.mark_shown(5);
+    assert!(!gate.take_shown(6));
+    assert!(gate.take_shown(5));
+    assert!(!gate.take_shown(5), "cleared once");
+    assert!(!gate.take_shown(0));
+}
+
+#[test]
+fn test_gpu_backend_status_dto() {
+    use liveaudio_core::{GpuAdapter, GpuVendor, NvidiaRuntimeStatus};
+    let adapters = vec![GpuAdapter { vendor: GpuVendor::Nvidia, name: "RTX".into(), dedicated_vram_mb: 12115 }];
+    let missing = NvidiaRuntimeStatus { installed: false, missing: vec!["cudnn64_9.dll".into()] };
+    let dto = crate::commands::build_gpu_backend_status("auto", &adapters, Some(13040), missing, None);
+    assert_eq!(dto.selected_backend, "ort");
+    assert_eq!(dto.adapters[0].vendor, "nvidia");
+    assert_eq!(dto.license_urls.len(), 2);
+    let json = serde_json::to_string(&dto).unwrap();
+    assert!(json.contains("\"cuda_driver_version\":13040"));
+    assert!(json.contains("\"installed\":false"));
+    let ready = NvidiaRuntimeStatus { installed: true, missing: vec![] };
+    let worker = std::path::Path::new("liveaudio-asr-worker-cuda.exe");
+    let pick = |pref, w| crate::commands::build_gpu_backend_status(pref, &adapters, Some(13040), ready.clone(), w);
+    assert_eq!(pick("auto", Some(worker)).selected_backend, "ct2_cuda");
+    let no_worker = pick("auto", None);
+    assert_eq!((no_worker.selected_backend.as_str(), no_worker.reason.as_str()), ("ort", "nvidia_runtime_not_installed"));
+    assert_eq!(pick("ort", Some(worker)).reason, "user_selected_ort");
+}
+
+#[test]
+fn gpu_status_preference_honors_device_like_start() {
+    let mut config = LiveAudioConfig::default();
+    config.asr_backend = "auto".into();
+    config.device = "cpu".into();
+    assert_eq!(crate::commands::gpu_status_pref(&config), "ort");
+    config.device = "cuda".into();
+    assert_eq!(crate::commands::gpu_status_pref(&config), "auto");
+    config.asr_backend = "ort".into();
+    assert_eq!(crate::commands::gpu_status_pref(&config), "ort");
+}
+
+#[test]
+fn support_links_are_a_fixed_allowlist() {
+    use crate::commands::support_link_url;
+    assert_eq!(
+        support_link_url("issues"),
+        Some("https://github.com/plynte-labs/LiveAudio/issues/new/choose")
+    );
+    assert_eq!(support_link_url("repo"), Some("https://github.com/plynte-labs/LiveAudio"));
+    assert_eq!(support_link_url("sponsor"), Some("https://github.com/sponsors/FranGuh/"));
+    for bad in ["", "ISSUES", "https://example.com/", "file:///C:/Windows/System32/calc.exe"] {
+        assert_eq!(support_link_url(bad), None, "{bad}");
+    }
+}
+
+#[test]
+fn support_environment_text_is_safe_to_paste() {
+    use liveaudio_core::{GpuAdapter, GpuVendor};
+    let gpus = [GpuAdapter {
+        vendor: GpuVendor::Nvidia,
+        name: "NVIDIA GeForce RTX 4060".to_string(),
+        dedicated_vram_mb: 8188,
+    }];
+    let text = crate::commands::support_environment_text("1.6.0", Some("ort"), &gpus);
+    assert!(text.contains("LiveAudio 1.6.0"));
+    assert!(text.contains(std::env::consts::OS) && text.contains(std::env::consts::ARCH));
+    assert!(text.contains("ort"));
+    assert!(text.contains("NVIDIA GeForce RTX 4060"));
+    assert!(!text.contains(":\\") && !text.contains("/home/") && !text.contains("/Users/"));
+    let no_gpu = crate::commands::support_environment_text("1.6.0", None, &[]);
+    assert!(no_gpu.contains("not running"));
+}
+
+#[tokio::test]
+async fn exit_cancels_the_running_nvidia_install() {
+    let state = AppState::default();
+    let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    *state.nvidia_install_cancel.lock().await = Some(flag.clone());
+
+    crate::commands::cancel_nvidia_install(&state).await;
+
+    assert!(flag.load(Ordering::SeqCst));
+    assert!(!crate::commands::cancel_nvidia_install(&AppState::default()).await);
+}
+
+#[test]
+fn cancel_flushes_only_a_long_enough_utterance_in_progress() {
+    use crate::commands::should_flush_utterance;
+    assert!(should_flush_utterance(true, 4800));
+    assert!(!should_flush_utterance(true, 4799));
+    assert!(!should_flush_utterance(false, 48_000));
+}
+
+#[tokio::test]
+async fn drain_wait_returns_when_pending_finals_complete_or_times_out() {
+    use crate::commands::wait_for_pending_drain;
+    use liveaudio_network::PendingUtteranceTracker;
+    let pending = Arc::new(Mutex::new(PendingUtteranceTracker::default()));
+    let short = std::time::Duration::from_millis(50);
+    assert!(wait_for_pending_drain(&pending, short).await, "nothing pending");
+
+    pending.lock().unwrap().track("utt_1", 0.0);
+    assert!(!wait_for_pending_drain(&pending, short).await, "never completes: bounded");
+
+    let completer = pending.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        completer.lock().unwrap().remove("utt_1");
+    });
+    assert!(wait_for_pending_drain(&pending, std::time::Duration::from_secs(2)).await);
+}
+
+#[tokio::test]
+async fn shutdown_lets_pending_finals_finish_before_stopping_the_event_task() {
+    let state = AppState::default();
+    let token = tokio_util::sync::CancellationToken::new();
+    let events_token = tokio_util::sync::CancellationToken::new();
+    *state.cancel_token.lock().await = Some(token.clone());
+    *state.events_cancel_token.lock().await = Some(events_token.clone());
+    state.pending_utterances.lock().unwrap().track("utt_1", 0.0);
+
+    let pending_at_stop = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let observed = pending_at_stop.clone();
+    let pending = state.pending_utterances.clone();
+    let event_task = tokio::spawn(async move {
+        events_token.cancelled().await;
+        observed.store(!pending.lock().unwrap().is_empty(), Ordering::SeqCst);
+    });
+    let audio_token = token.clone();
+    let audio_task = tokio::spawn(async move { audio_token.cancelled().await });
+    {
+        let mut tasks = state.background_tasks.lock().await;
+        tasks.push(event_task);
+        tasks.push(audio_task);
+    }
+    let completer = state.pending_utterances.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        completer.lock().unwrap().remove("utt_1");
+    });
+
+    crate::commands::shutdown_service_resources(&state).await.expect("shutdown");
+
+    assert!(token.is_cancelled());
+    assert!(
+        !pending_at_stop.load(Ordering::SeqCst),
+        "event task must keep running until the pending final was delivered"
+    );
 }

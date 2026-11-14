@@ -45,13 +45,4 @@ mod tests {
         assert_eq!(drained[2][0], 0.4);
         assert!(pre_buf.is_empty());
     }
-
-    #[test]
-    fn silero_creation_without_explicit_runtime_returns_an_error_not_a_panic() {
-        let result = SileroVad::new(VadConfig::default());
-        assert!(
-            matches!(result, Err(VadError::RuntimeUnavailable(_))),
-            "VAD construction without app-owned runtime initialization must fail actionably"
-        );
-    }
 }

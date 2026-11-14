@@ -1,0 +1,32 @@
+[package]
+name = "liveaudio-asr-worker-ct2"
+version = "1.6.0"
+edition = "2021"
+license = "MIT"
+authors = ["Plynte Labs / FranGuh"]
+publish = false
+description = "CTranslate2 (CUDA) Whisper ASR worker sidecar for LiveAudio, built outside the main workspace"
+
+# Standalone workspace: the main workspace, CI and release never build this crate.
+[workspace]
+
+[lib]
+name = "liveaudio_asr_worker_ct2"
+path = "src/lib.rs"
+
+[[bin]]
+name = "liveaudio-asr-worker-cuda"
+path = "src/main.rs"
+
+[dependencies]
+liveaudio-worker-protocol = { path = "../liveaudio-worker-protocol" }
+ct2rs = { version = "=0.10.4", default-features = false, features = ["whisper", "cuda", "cudnn", "cuda-dynamic-loading"] }
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "native-tls"] }
+serde_json = "1"
+dirs = "7"
+
+[profile.release]
+strip = true
+
+[target.'cfg(windows)'.build-dependencies]
+embed-resource = "3.0.11"

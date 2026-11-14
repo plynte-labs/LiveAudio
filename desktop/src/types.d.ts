@@ -16,6 +16,12 @@ export interface ServiceStatus {
   active_device: string | null;
   model_size: string;
   device: string;
+  effective_device?: string | null;
+  compute_type?: string | null;
+  fallback_occurred?: boolean;
+  fallback_reason?: string | null;
+  active_backend?: string | null;
+  backend_reason?: string | null;
   uptime_sec: number;
   restart_count: number;
   session_path: string | null;
@@ -63,6 +69,8 @@ export interface LiveAudioConfig {
   blacklist: string;
   continuous_session: boolean;
   subtitle_style: 'default' | 'karaoke' | 'neon' | 'minimal' | 'bold' | 'rgb' | 'typewriter';
+  subtitle_theme: Record<string, string>;
+  subtitle_presets: { name: string; tokens: Record<string, string> }[];
   subtitle_display_mode: 'single' | 'ribbon' | 'adaptive';
   subtitle_ribbon_max_lines: number;
   subtitle_backlog_policy: 'auto' | 'live_only' | 'send_all';
@@ -78,7 +86,12 @@ export interface LiveAudioConfig {
   ws_port: number;
   obs_enabled: boolean;
   rnnoise_enabled: boolean;
+  mcp_style_enabled: boolean;
+  mcp_system_enabled: boolean;
+  check_updates_enabled: boolean;
   acoustic_events_enabled: boolean;
+  live_partial_subtitles_enabled: boolean;
+  asr_backend: string;
   prewarm: boolean;
   save_transcript_enabled: boolean;
   save_vtt_enabled: boolean;
@@ -117,4 +130,30 @@ export interface SubtitleCue {
   text: string;
   style: string;
   timestamp_ms: number;
+}
+
+export interface UpdateMetadata {
+  version: string;
+  current_version: string;
+  notes: string | null;
+  pub_date: string | null;
+}
+
+export interface UpdaterStatus {
+  current_version: string;
+  available_update: UpdateMetadata | null;
+  install_on_close: boolean;
+  is_checking: boolean;
+  is_installing: boolean;
+  stream_busy: boolean;
+  last_check: number;
+}
+
+interface GpuBackendStatus {
+  adapters: { vendor: string; name: string; dedicated_vram_mb: number }[];
+  cuda_driver_version: number | null;
+  nvidia_runtime: { installed: boolean; missing: string[] };
+  license_urls: string[];
+  selected_backend: string;
+  reason: string;
 }

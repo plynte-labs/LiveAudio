@@ -93,11 +93,11 @@ packaging/_release_meta.py
 packaging/vendor/
 desktop/src-tauri/binaries/
 build_artifacts/
+/THIRD_PARTY_LICENSES.html
 
 # ============================================
 # Herramientas locales de diagnóstico (instrumentales, no parte del producto)
 # ============================================
-tools/
 
 # Local CodeGraph index (per checkout, never shared)
 .codegraph/
@@ -105,8 +105,17 @@ tools/
 # ============================================
 # Rust
 # ============================================
-/target/
+target/
 
 
-# Bundled ONNX Runtime provider companion must be tracked (tauri validates it)
-!packaging/onnxruntime/**/*.so
+# ONNX Runtime / DirectML binaries are downloaded (pinned SHA-256) by
+# `node packaging/fetch_onnxruntime.mjs`; never versioned. README.md stays tracked.
+packaging/onnxruntime/*/*
+
+# Audio fixtures stay local (not versioned)
+*.wav
+# Local benchmark recordings and transcripts (personal voice data)
+assets/fixtures/
+
+# Local ct2 CUDA worker staging (uploaded to the GitHub release by hand)
+dist-ct2/

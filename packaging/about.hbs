@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>LiveAudio third-party Rust crate licenses</title>
+    <style>
+        body { font-family: sans-serif; max-width: 900px; margin: 0 auto; padding: 0 16px; line-height: 1.4; }
+        .license-text { white-space: pre-wrap; font-family: monospace; font-size: 12px; background: #f4f4f4; padding: 8px; }
+        @media (prefers-color-scheme: dark) {
+            body { background: #222; color: #eee; }
+            .license-text { background: #333; }
+            a { color: #8cf; }
+        }
+    </style>
+</head>
+<body>
+    <main>
+        <h1>Third-party Rust crate licenses</h1>
+        <p>
+            This file lists the licenses of the Rust crates compiled into the LiveAudio binaries
+            (the desktop app, <code>liveaudio-cli</code> and <code>liveaudio-asr-worker</code>) for the
+            <code>x86_64-pc-windows-msvc</code> and <code>x86_64-unknown-linux-gnu</code> targets.
+            LiveAudio itself is licensed under the MIT License (see LICENSE). Model, ONNX Runtime and
+            DirectML notices are in THIRD_PARTY_NOTICES.md.
+        </p>
+
+        <h2>Overview</h2>
+        <ul>
+            {{#each overview}}
+            <li><a href="#{{id}}">{{name}}</a> ({{id}})</li>
+            {{/each}}
+        </ul>
+
+        <h2>Licenses and crates</h2>
+        {{#each licenses}}
+        <section id="{{id}}-{{@index}}">
+            {{#if first_of_kind}}<h3 id="{{id}}">{{name}} ({{id}})</h3>{{/if}}
+            <h4>Crates under this license text</h4>
+            <ul>
+                {{#each used_by}}{{#if crate.source}}<li>{{crate.name}} {{crate.version}}</li>{{/if}}{{/each}}
+            </ul>
+            <pre class="license-text">{{text}}</pre>
+        </section>
+        {{/each}}
+    </main>
+</body>
+</html>

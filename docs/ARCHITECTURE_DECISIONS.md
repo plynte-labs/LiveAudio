@@ -1,4 +1,5 @@
 # Architecture Decisions — LiveAudio
+> **Status note (2026-11).** ADR-001 to ADR-015 were written while the audio and ASR pipeline was Python (`core/`, multiprocessing, CustomTkinter, torch). The runtime is now Rust with ONNX Runtime. The **Estado** line of each ADR says whether its decision still holds. The **Archivo** lines name the Python files each decision was written against; they are kept for history only. Current behavior is documented in `WEBSOCKET_OBS.md`, `GETTING_STARTED.md` and `PACKAGING_AND_UPDATES.md`.
 
 Este documento registra las decisiones de arquitectura del proyecto LiveAudio, el porqué de cada una, y los trade-offs considerados.
 
@@ -6,7 +7,7 @@ Este documento registra las decisiones de arquitectura del proyecto LiveAudio, e
 
 ## ADR-001: Silero VAD como módulo separado de Whisper
 
-**Estado**: ✅ Implementado
+**Estado**: Still valid (Rust: `liveaudio-vad`, Silero v6 on ONNX Runtime; ASR runs in a separate process)
 **Archivo**: `core/audio.py`
 
 ### Decisión
@@ -36,7 +37,7 @@ Silero VAD corre **antes** de Whisper, en un proceso separado (`audio_producer`)
 
 ## ADR-002: Ring Buffer desacoplado entre captura y VAD
 
-**Estado**: ✅ Implementado
+**Estado**: Still valid (Rust: `liveaudio-audio` ring buffer between capture and VAD)
 **Archivo**: `core/audio.py`
 
 ### Decisión
@@ -67,7 +68,7 @@ El callback de C **solo copia** audio al ring buffer (~0.01ms). El VAD Worker le
 
 ## ADR-003: VAD en CPU, ASR en GPU
 
-**Estado**: ✅ Implementado
+**Estado**: Partly valid: ASR now runs on ONNX Runtime (DirectML, CUDA or CPU) instead of Faster-Whisper; VAD device placement not re-verified for Rust
 
 ### Decisión
 
@@ -92,7 +93,7 @@ Si Silero corriera en GPU, competiría con Whisper por VRAM, especialmente en el
 
 ## ADR-004: Audio producer como proceso separado (multiprocessing)
 
-**Estado**: ✅ Implementado
+**Estado**: Still valid in principle: ASR runs in a separate supervised process (`liveaudio-asr-worker`); the Python `multiprocessing` mechanism is gone
 **Archivo**: `core/audio.py` → `audio_producer()`
 
 ### Decisión
@@ -114,7 +115,7 @@ El `audio_producer` corre en un `mp.Process` dedicado, separado del proceso prin
 
 ## ADR-005: SessionWriter para I/O asíncrono de disco
 
-**Estado**: ✅ Implementado
+**Estado**: Not verified for Rust: written for the Python `SessionWriter`
 **Archivo**: `core/engine.py` → `SessionWriter`
 
 ### Decisión
@@ -135,7 +136,7 @@ La escritura de transcript (JSONL + VTT) se abstrae en un `SessionWriter` con hi
 
 ## ADR-006: Subtítulos como HTML estático con WebSocket
 
-**Estado**: ✅ Implementado
+**Estado**: Still valid: the overlay is served by `liveaudio-network` and fed over WebSocket
 **Archivo**: `subtitulos_obs.html`
 
 ### Decisión
@@ -160,7 +161,7 @@ Los subtítulos se renderizan en un archivo HTML estático que OBS consume como 
 
 ## ADR-007: Pre-buffer para recuperar primera palabra
 
-**Estado**: ✅ Implementado (2026-05-12)
+**Estado**: Still valid (Rust: `liveaudio-vad/src/pre_buffer.rs`); the pre-roll is now configurable
 **Archivo**: `core/audio.py` → `vad_worker()`
 
 ### Decisión
@@ -200,7 +201,7 @@ else:
 
 ## ADR-008: Whisper `initial_prompt` para reducir alucinaciones
 
-**Estado**: ✅ Implementado (2026-05-12)
+**Estado**: Still valid: the context prompt is passed to the ASR worker
 **Archivos**: `utils/config.py`, `main.py`, `core/engine.py`
 
 ### Decisión
@@ -220,7 +221,7 @@ Faster-whisper soporta `initial_prompt` como contexto de vocabulario. El modelo 
 
 ## ADR-009: Backpressure y backlog policy para OBS
 
-**Estado**: ✅ Implementado
+**Estado**: Still valid: backlog policy in `WEBSOCKET_OBS.md` section 5.1 (`auto`, `live_only`, `send_all`)
 **Archivos**: `core/engine.py`, `core/network.py`, `subtitulos_obs.html`
 
 ### Decisión
@@ -243,7 +244,7 @@ Después de un freeze de GPU/CPU, el backlog acumulado puede causar un "burst" d
 
 ## ADR-010: CSS Custom Properties para temas de subtítulos
 
-**Estado**: ✅ Implementado
+**Estado**: Still valid in principle: themes are sent as tokens over WebSocket; current presets live in `crates/liveaudio-core/src/config/subtitle_theme.rs`
 **Archivo**: `subtitulos_obs.html`
 
 ### Decisión
@@ -260,7 +261,7 @@ Usar CSS custom properties (`--sub-bg`, `--sub-color`, etc.) como motor de temas
 
 ## ADR-011: OBS enable/disable toggle (modo solo transcript)
 
-**Estado**: ✅ Implementado (2026-05-12)
+**Estado**: Still valid: `obs_enabled` in config and server
 **Archivos**: `utils/config.py`, `core/engine.py`, `main.py`
 
 ### Decisión
@@ -275,7 +276,7 @@ Algunos usuarios solo necesitan la transcripción guardada (JSONL + VTT) sin sub
 
 ## ADR-012: Animaciones de entrada/salida espejo
 
-**Estado**: ✅ Implementado (2026-05-12)
+**Estado**: Not re-verified against the current overlay
 **Archivo**: `subtitulos_obs.html`
 
 ### Decisión
@@ -290,7 +291,7 @@ Animaciones asimétricas (entrada diferente a salida) se sienten "rotas" visualm
 
 ## ADR-013: Desactivar el DPI awareness automático de CustomTkinter
 
-**Estado**: ✅ Implementado (2026-06-26)
+**Estado**: Obsolete: CustomTkinter has been removed
 **Archivos**: `app.py`, `utils/crash_handler.py`
 
 ### Decisión
@@ -317,7 +318,7 @@ El `minsize` resuelve un problema distinto: la columna de ajustes es un frame fi
 
 ## ADR-014: Procesos GUI y WebSocket libres de torch
 
-**Estado**: ✅ Implementado (2026-06-27)
+**Estado**: Obsolete: the Python GUI and torch have been removed
 **Archivos**: `app.py`, `core/workers.py`, `core/devices.py`, `utils/cuda.py`, `utils/config.py`, `utils/dllpath.py`
 
 ### Decisión
@@ -348,7 +349,7 @@ En Windows, `multiprocessing` usa `spawn`: cada hijo reimporta su módulo objeti
 
 ## ADR-015: Inferencia de Silero VAD bajo torch.inference_mode()
 
-**Estado**: ✅ Implementado (2026-06-27)
+**Estado**: Obsolete: torch and Python have been removed; Silero runs on ONNX Runtime
 **Archivo**: `core/audio.py` → `vad_worker()`
 
 ### Decisión

@@ -18,8 +18,8 @@ This document covers the contribution workflow, code conventions, and how to get
 
 ### Requirements
 
-- [uv](https://docs.astral.sh/uv/) — manages Python and all dependencies (no manual venv/conda needed)
-- NVIDIA GPU with CUDA (optional, CPU fallback works)
+- Rust stable toolchain (`rustup`)
+- Node.js (for the Tauri CLI and frontend tests)
 
 ### Steps
 
@@ -28,15 +28,18 @@ This document covers the contribution workflow, code conventions, and how to get
 git clone https://github.com/YOUR_USERNAME/LiveAudio.git
 cd LiveAudio
 
-# 2. Install dependencies (pick exactly one torch extra)
-uv sync --extra cpu      # CPU-only, smallest
-uv sync --extra cu121    # NVIDIA CUDA 12.1
+# 2. Download the pinned ONNX Runtime / DirectML binaries (not versioned in git)
+node packaging/fetch_onnxruntime.mjs
 
-# 3. Run the app
-uv run liveaudio
+# 3. Build the workspace
+cargo build --workspace
 
-# 4. Run tests
-uv run pytest
+# 4. Run the desktop app
+cd desktop && npm run dev
+
+# 5. Run tests
+cargo test --workspace
+node --test tests-js/*.mjs
 ```
 
 See [docs/PACKAGING_AND_UPDATES.md](docs/PACKAGING_AND_UPDATES.md) for how releases and the installer work.
@@ -56,7 +59,7 @@ See [docs/PACKAGING_AND_UPDATES.md](docs/PACKAGING_AND_UPDATES.md) for how relea
 
 3. **Run tests** before pushing:
    ```bash
-   uv run pytest
+   cargo test --workspace
    ```
 
 4. **Open a Pull Request** against `main`. Use a clear title and fill out the PR template.
@@ -65,10 +68,10 @@ See [docs/PACKAGING_AND_UPDATES.md](docs/PACKAGING_AND_UPDATES.md) for how relea
 
 ## Code Conventions
 
-- **Python style**: follow PEP 8; use `snake_case` for identifiers.
+- **Rust style**: run `cargo fmt` and keep `cargo clippy --workspace --all-targets -- -D warnings` clean.
 - **No API keys or secrets** in any file — `config.json` is gitignored for a reason.
 - **No external telemetry**: LiveAudio is 100% local by design. Do not add network calls that send user data anywhere.
-- **Multiprocessing safety**: the audio pipeline uses `multiprocessing`. Avoid shared mutable state across process boundaries.
+- **Process boundary**: the ASR worker (`liveaudio-asr-worker`) is a separate supervised process. Keep its IPC messages backward-compatible or versioned, and do not share mutable state across the process boundary.
 - **Comments**: write comments only when the *why* is non-obvious. Avoid restating what the code does.
 
 ---
@@ -98,7 +101,7 @@ We use [Conventional Commits](https://www.conventionalcommits.org/):
 feat: add support for turbo model
 fix: prevent crash when audio device disconnects
 docs: update installation steps for Linux
-chore: bump faster-whisper to 1.1.0
+chore: bump ort to 2.0.0
 ```
 
 ---

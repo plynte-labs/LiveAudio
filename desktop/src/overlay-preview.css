@@ -1,0 +1,285 @@
+/* GENERATED from assets/subtitulos_obs.html by packaging/sync_overlay_preview_css.mjs. Do not edit. */
+
+.sub-style-preview {
+  --sub-bg: rgba(0, 0, 0, 0.7);
+  --sub-color: #ffffff;
+  --sub-font-size: 42px;
+  --sub-font-weight: 900;
+  --sub-radius: 10px;
+  --sub-shadow: 2px 2px 0 #000, -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000;
+  --sub-border: none;
+  --sub-padding: 10px 20px;
+  --sub-animation-duration: 0.3s;
+  --sub-lifetime: 5s;
+  --sub-slide-ease-out: cubic-bezier(0.0, 0.0, 0.2, 1);
+  --sub-slide-ease-in: cubic-bezier(0.4, 0.0, 1, 1);
+  --sub-font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  --sub-text-transform: none;
+  --sub-letter-spacing: normal;
+  --sub-word-spacing: normal;
+}
+
+.sub-style-preview .sub-box {
+  display: inline-block;
+  text-align: center !important;
+  word-spacing: var(--sub-word-spacing, normal);
+  opacity: 0;
+  transform: translateY(10px);
+  transition: opacity var(--sub-animation-duration) var(--sub-slide-ease-out), transform var(--sub-animation-duration) var(--sub-slide-ease-out);
+}
+
+.sub-style-preview .sub-box.visible {
+  opacity: 1 !important;
+  transform: translateY(0);
+}
+
+.sub-style-preview .sub-box.hiding {
+  opacity: 0 !important;
+  transform: translateY(10px) !important;
+  transition: opacity var(--sub-animation-duration) var(--sub-slide-ease-in), transform var(--sub-animation-duration) var(--sub-slide-ease-in);
+}
+
+.sub-style-preview[data-anim="fade"] .sub-box,
+.sub-style-preview[data-anim="fade"] .sub-box.hiding {
+  transform: none !important;
+}
+
+.sub-style-preview[data-anim="none"] .sub-box,
+.sub-style-preview[data-anim="none"] .sub-box.hiding {
+  transition: none;
+  transform: none !important;
+}
+
+.sub-style-preview .style-default {
+  color: var(--sub-color);
+  font-size: var(--sub-font-size);
+  font-weight: var(--sub-font-weight);
+  padding: var(--sub-user-padding, var(--sub-padding));
+  background-color: var(--sub-bg);
+  border-radius: var(--sub-user-radius, var(--sub-radius));
+  text-shadow: var(--sub-shadow);
+  border: var(--sub-user-border, var(--sub-border));
+  text-transform: var(--sub-user-text-transform, var(--sub-text-transform));
+  letter-spacing: var(--sub-user-letter-spacing, normal);
+  word-spacing: var(--sub-word-spacing, normal);
+  overflow-wrap: anywhere;
+  max-width: 100%;
+}
+
+.sub-style-preview .style-karaoke {
+  font-size: var(--sub-font-size);
+  font-weight: var(--sub-font-weight);
+  color: var(--sub-user-color, #ffcc00);
+  text-shadow: 3px 3px 0 #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000;
+  background-color: var(--sub-bg);
+  padding: var(--sub-user-padding, var(--sub-padding));
+  border-radius: var(--sub-user-radius, var(--sub-radius));
+  border: var(--sub-user-border, none);
+  text-transform: var(--sub-user-text-transform, none);
+  letter-spacing: var(--sub-user-letter-spacing, normal);
+  word-spacing: var(--sub-word-spacing, normal);
+  overflow-wrap: anywhere;
+  max-width: 100%;
+}
+
+.sub-style-preview .style-karaoke .word {
+  display: inline-block;
+  opacity: 0;
+  transform: scale(0.5);
+  animation: popIn 0.15s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+}
+
+@keyframes popIn {
+  0% {
+    opacity: 0;
+    transform: scale(0.5);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.sub-style-preview .style-karaoke.hiding .word {
+  animation: popOut 0.15s ease-in forwards;
+}
+
+@keyframes popOut {
+  0% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(0.7) translateY(8px);
+  }
+}
+
+.sub-style-preview .style-neon {
+  color: var(--sub-color);
+  font-size: var(--sub-font-size);
+  font-weight: var(--sub-font-weight);
+  padding: var(--sub-user-padding, 12px 24px);
+  background: var(--sub-user-bg, rgba(0, 20, 20, 0.6));
+  border: var(--sub-user-border, 2px solid #00ffff);
+  border-radius: var(--sub-user-radius, 15px);
+  box-shadow: 0 0 15px #00ffff, inset 0 0 10px #00ffff;
+  text-shadow: 0 0 8px #00ffff, 0 0 20px #00ffff;
+  text-transform: var(--sub-user-text-transform, uppercase);
+  letter-spacing: var(--sub-user-letter-spacing, 2px);
+  word-spacing: var(--sub-word-spacing, normal);
+  overflow-wrap: anywhere;
+  max-width: 100%;
+}
+
+.sub-style-preview .style-minimal {
+  color: var(--sub-color);
+  font-size: var(--sub-font-size);
+  font-weight: var(--sub-font-weight);
+  padding: var(--sub-user-padding, 6px 14px);
+  background-color: var(--sub-user-bg, rgba(0, 0, 0, 0.55));
+  border-radius: var(--sub-user-radius, 4px);
+  text-shadow: none;
+  border: var(--sub-user-border, none);
+  text-transform: var(--sub-user-text-transform, none);
+  letter-spacing: var(--sub-user-letter-spacing, normal);
+  word-spacing: var(--sub-word-spacing, normal);
+  overflow-wrap: anywhere;
+  max-width: 100%;
+}
+
+.sub-style-preview .style-bold {
+  color: var(--sub-color);
+  font-size: var(--sub-font-size);
+  font-weight: var(--sub-font-weight);
+  padding: var(--sub-user-padding, 12px 24px);
+  background-color: var(--sub-user-bg, rgba(0, 0, 0, 0.85));
+  border-radius: var(--sub-user-radius, 8px);
+  text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);
+  border: var(--sub-user-border, none);
+  text-transform: var(--sub-user-text-transform, uppercase);
+  letter-spacing: var(--sub-user-letter-spacing, 1px);
+  word-spacing: var(--sub-word-spacing, normal);
+  overflow-wrap: anywhere;
+  max-width: 100%;
+}
+
+.sub-style-preview .style-rgb {
+  color: var(--sub-color);
+  font-size: var(--sub-font-size);
+  font-weight: var(--sub-font-weight);
+  padding: var(--sub-user-padding, var(--sub-padding));
+  background-color: var(--sub-bg);
+  border-radius: var(--sub-user-radius, var(--sub-radius));
+  text-shadow: var(--sub-shadow);
+  border: var(--sub-user-border, var(--sub-border));
+  text-transform: var(--sub-user-text-transform, none);
+  letter-spacing: var(--sub-user-letter-spacing, normal);
+  word-spacing: var(--sub-word-spacing, normal);
+  overflow-wrap: anywhere;
+  max-width: 100%;
+}
+
+.sub-style-preview .style-rgb .word {
+  display: inline-block;
+  opacity: 0;
+  transform: translateY(10px);
+  animation: rgbFadeIn 0.2s ease-out forwards;
+}
+
+@keyframes rgbFadeIn {
+  0% {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.sub-style-preview .style-rgb.hiding .word {
+  animation: rgbFadeOut 0.2s ease-in forwards;
+}
+
+@keyframes rgbFadeOut {
+  0% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+
+.sub-style-preview .style-typewriter {
+  color: var(--sub-color);
+  font-size: var(--sub-font-size);
+  font-weight: var(--sub-font-weight);
+  font-family: 'Courier New', Courier, monospace;
+  padding: var(--sub-user-padding, var(--sub-padding));
+  background-color: var(--sub-user-bg, rgba(0, 0, 0, 0.75));
+  border-radius: var(--sub-user-radius, 2px);
+  text-shadow: none;
+  border: var(--sub-user-border, 1px solid rgba(255, 255, 255, 0.15));
+  text-transform: var(--sub-user-text-transform, none);
+  letter-spacing: var(--sub-user-letter-spacing, 1px);
+  word-spacing: var(--sub-word-spacing, normal);
+  overflow-wrap: anywhere;
+  max-width: 100%;
+}
+
+.sub-style-preview .style-typewriter .word {
+  display: inline-block;
+  opacity: 0;
+  animation: typeIn 0.15s ease-out forwards;
+}
+
+@keyframes typeIn {
+  0% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+.sub-style-preview[data-font="custom"] .style-typewriter {
+  font-family: var(--sub-font-family);
+}
+
+.sub-style-preview .style-typewriter::after {
+  content: '|';
+  animation: blink 0.8s step-end infinite;
+  color: var(--sub-color);
+}
+
+@keyframes blink {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+.sub-style-preview[data-anim="fade"] .word {
+  animation: subFade var(--sub-animation-duration) ease-out forwards;
+  transform: none;
+}
+
+.sub-style-preview[data-anim="none"] .word {
+  animation: none;
+  opacity: 1;
+  transform: none;
+}
+
+@keyframes subFade {
+  0% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
+  }
+}

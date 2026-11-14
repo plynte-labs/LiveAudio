@@ -101,6 +101,12 @@ pub struct AcousticEventLifecycle {
     active_utterance: Option<String>,
 }
 
+impl Default for AcousticEventLifecycle {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AcousticEventLifecycle {
     pub fn new() -> Self {
         Self {
