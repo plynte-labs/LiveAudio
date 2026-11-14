@@ -490,7 +490,7 @@ FunctionEnd
   ; 6. Purge old shortcuts so they do not conflict with v1.5.0
   !insertmacro PurgeLegacyShortcuts
 
-  DetailPrint "Legacy cleanup completed. Continuing with LiveAudio v1.5.0 installation."
+  DetailPrint "Legacy cleanup completed. Continuing with LiveAudio ${VERSION} installation."
 !macroend
 
 !macro NSIS_HOOK_POSTINSTALL
@@ -500,4 +500,14 @@ FunctionEnd
 !macroend
 
 !macro NSIS_HOOK_POSTUNINSTALL
+  ; Tauri's "delete app data" only removes the <identifier> folders. LiveAudio keeps its data in
+  ; fixed LiveAudio folders: config and sessions (%APPDATA%), models and the CUDA runtime
+  ; (%LOCALAPPDATA%). Remove them only on an explicit opt-in and never during an update.
+  ; Redirected data locations are deliberately ignored: only these fixed default paths are removed.
+  ${If} $DeleteAppDataCheckboxState = 1
+  ${AndIf} $UpdateMode <> 1
+    SetShellVarContext current
+    RMDir /r "$APPDATA\LiveAudio"
+    RMDir /r "$LOCALAPPDATA\LiveAudio"
+  ${EndIf}
 !macroend

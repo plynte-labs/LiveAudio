@@ -14,6 +14,34 @@ pub const DEFAULT_UPDATER_ENDPOINT: &str =
     "https://github.com/plynte-labs/LiveAudio/releases/latest/download/latest.json";
 pub const UPDATER_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 pub const STARTUP_CHECK_DELAY: Duration = Duration::from_secs(10);
+/// Upper bound for the install-on-close download so a stalled connection cannot keep the app alive windowless.
+pub const INSTALL_ON_CLOSE_DEADLINE: Duration = Duration::from_secs(120);
+
+const UNSUPPORTED_PLATFORM_MSG: &str =
+    "Automatic updates are only available on Windows. Download the new release manually.";
+
+/// `latest.json` only carries a `windows-x86_64` target (see docs/PACKAGING_AND_UPDATES.md).
+fn updater_supported_on(os: &str) -> bool {
+    os == "windows"
+}
+
+/// Runs an update download+install under `deadline`; returns whether it completed successfully.
+async fn run_bounded_install<E: std::fmt::Display>(
+    deadline: Duration,
+    install: impl std::future::Future<Output = Result<(), E>>,
+) -> bool {
+    match tokio::time::timeout(deadline, install).await {
+        Ok(Ok(())) => true,
+        Ok(Err(e)) => {
+            tracing::error!("Failed to install update on close: {e}");
+            false
+        }
+        Err(_) => {
+            tracing::warn!("Update download exceeded {deadline:?}; exiting without installing");
+            false
+        }
+    }
+}
 
 /// Parse and validate an updater endpoint URL.
 ///
@@ -96,6 +124,9 @@ pub async fn check_for_updates_internal<R: tauri::Runtime>(
     state: &AppState,
     force: bool,
 ) -> Result<Option<UpdateMetadataDto>, String> {
+    if !updater_supported_on(std::env::consts::OS) {
+        return if force { Err(UNSUPPORTED_PLATFORM_MSG.to_string()) } else { Ok(None) };
+    }
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -164,6 +195,9 @@ pub async fn install_update_now_internal<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     state: &AppState,
 ) -> Result<(), String> {
+    if !updater_supported_on(std::env::consts::OS) {
+        return Err(UNSUPPORTED_PLATFORM_MSG.to_string());
+    }
     if let Err(reason) = state.check_stream_safety().await {
         return Err(format!("Cannot install update: {reason}"));
     }
@@ -253,9 +287,11 @@ pub async fn execute_install_on_close<R: tauri::Runtime>(
 
     if let Some(update) = update {
         tracing::info!("Installing update v{} on close", update.version);
-        if let Err(e) = update.download_and_install(|_, _| {}, || {}).await {
-            tracing::error!("Failed to install update on close: {e}");
-        }
+        run_bounded_install(
+            INSTALL_ON_CLOSE_DEADLINE,
+            update.download_and_install(|_, _| {}, || {}),
+        )
+        .await;
     }
 }
 
@@ -290,6 +326,21 @@ pub async fn get_updater_status_internal(state: &AppState) -> UpdaterStatusDto {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn updater_is_supported_only_where_latest_json_has_a_target() {
+        assert!(updater_supported_on("windows"));
+        assert!(!updater_supported_on("linux"));
+        assert!(!updater_supported_on("macos"));
+    }
+
+    #[tokio::test]
+    async fn bounded_install_gives_up_when_the_download_hangs() {
+        let hang = std::future::pending::<Result<(), String>>();
+        assert!(!run_bounded_install(Duration::from_millis(20), hang).await);
+        assert!(run_bounded_install(Duration::from_secs(5), async { Ok::<(), String>(()) }).await);
+        assert!(!run_bounded_install(Duration::from_secs(5), async { Err::<(), _>("boom".to_string()) }).await);
+    }
 
     #[test]
     fn test_parse_updater_endpoint() {

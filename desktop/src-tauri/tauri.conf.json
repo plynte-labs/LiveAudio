@@ -23,7 +23,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: http://asset.localhost; font-src 'self'; connect-src 'self' ipc: http://ipc.localhost ws://127.0.0.1:*; object-src 'none'; base-uri 'none'; frame-src 'none'; form-action 'none'"
     }
   },
   "bundle": {
@@ -39,7 +39,7 @@
     "category": "Music",
     "shortDescription": "Real-time local transcription with OBS subtitle overlay",
     "longDescription": "LiveAudio provides fast, accurate, local speech-to-text: Whisper runs on ONNX Runtime (DirectML or CPU), with an optional NVIDIA CUDA engine (CTranslate2). Silero VAD detects speech, and an OBS subtitle overlay is served locally.",
-    "publisher": "Plynte Labs / FranGuh",
+    "publisher": "franguh",
     "copyright": "Copyright © 2026 Plynte Labs / FranGuh / LiveAudio Contributors",
     "resources": {
       "../../LICENSE": "LICENSE",

@@ -1688,7 +1688,9 @@ function applyStyleChoice() {
     elements.inputSubPresetName.value = preset.name;
     showSubStyleStatus(t('sub_preset_loaded'));
   } else {
-    currentConfig = { ...currentConfig, subtitle_style: elements.selectSubtitleStyle.value };
+    currentConfig = { ...currentConfig, subtitle_style: elements.selectSubtitleStyle.value, subtitle_theme: {} };
+    populateStyleControls(controlsFromTheme({}));
+    elements.inputSubPresetName.value = '';
     renderSubtitlePreview();
   }
   return true;

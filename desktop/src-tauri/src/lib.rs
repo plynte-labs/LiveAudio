@@ -39,6 +39,7 @@ fn focus_main_window(app: &tauri::AppHandle) {
 
 /// Initialize and execute the Tauri 2 desktop application.
 pub fn run() {
+    liveaudio_core::suppress_loader_error_dialogs();
     let _log_file = logging::init_logging();
     let corrupt_backup = config_sync::quarantine_corrupt_config();
     let initial_config = load_config().unwrap_or_default();

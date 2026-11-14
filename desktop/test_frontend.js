@@ -847,6 +847,20 @@ async function runTests() {
   assert(rootCargo.includes('version = "1.6.0"'), 'Root Cargo.toml has version 1.6.0');
   const tauriConf = JSON.parse(fs.readFileSync(path.join(__dirname, 'src-tauri', 'tauri.conf.json'), 'utf8'));
   assert(tauriConf.version === '1.6.0', 'tauri.conf.json has version 1.6.0');
+  // NSIS locates the previous install via HKCU\Software\<publisher>\<productName>;
+  // every released build used "franguh", so changing it breaks upgrades and updates.
+  assert(tauriConf.bundle.publisher === 'franguh',
+    'bundle.publisher stays "franguh" so upgrades find the previous install');
+  const csp = tauriConf.app.security.csp;
+  assert(typeof csp === 'string' && csp.length > 0, 'webview CSP is set (not null)');
+  const cspDirectives = Object.fromEntries(String(csp).split(';').map((d) => d.trim()).filter(Boolean).map((d) => { const [name, ...values] = d.split(/\s+/); return [name, values]; }));
+  assert(cspDirectives['default-src']?.join(' ') === "'self'", "CSP default-src is 'self'");
+  assert(cspDirectives['script-src']?.join(' ') === "'self'", "CSP script-src is 'self' only (no inline or eval)");
+  assert(cspDirectives['object-src']?.join(' ') === "'none'", "CSP object-src is 'none'");
+  assert(cspDirectives['connect-src']?.includes('ipc:') && cspDirectives['connect-src']?.includes('http://ipc.localhost'), 'CSP connect-src allows Tauri IPC');
+  assert(cspDirectives['connect-src']?.includes('ws://127.0.0.1:*'), 'CSP connect-src allows the loopback feed WebSocket');
+  assert(cspDirectives['img-src']?.includes('data:'), 'CSP img-src allows data: images');
+  assert(cspDirectives['style-src']?.includes("'unsafe-inline'"), 'CSP style-src allows the inline style attributes in index.html');
   assert(tauriConf.bundle.category === 'Music', 'Tauri bundle category uses a supported audio-related category');
   const expectedResourceMap = {
     '../../LICENSE': 'LICENSE',
@@ -929,8 +943,18 @@ async function runTests() {
     'hooks.nsh inspects legacy Python installed.json and liveaudio.exe signatures');
   assert(hooksContent.includes('PurgeLegacyPythonDirectory') && hooksContent.includes('PurgeLegacyShortcuts'),
     'hooks.nsh purges deprecated Python files and legacy shortcuts');
-  assert(hooksContent.includes('$APPDATA\\LiveAudio') && !hooksContent.includes('RMDir /r "$APPDATA\\LiveAudio"'),
-    'hooks.nsh protects and preserves user configuration and data in %APPDATA%\\LiveAudio');
+  const postUninstallMatch = hooksContent.match(/!macro NSIS_HOOK_POSTUNINSTALL([\s\S]*?)!macroend/);
+  const postUninstall = postUninstallMatch ? postUninstallMatch[1] : '';
+  const outsidePostUninstall = hooksContent.replace(postUninstall, '');
+  assert(hooksContent.includes('$APPDATA\\LiveAudio') && !outsidePostUninstall.includes('RMDir /r "$APPDATA\\LiveAudio"'),
+    'hooks.nsh protects and preserves user configuration and data in %APPDATA%\\LiveAudio outside the opt-in uninstall hook');
+  assert(postUninstall.includes('$DeleteAppDataCheckboxState = 1') && postUninstall.includes('$UpdateMode <> 1'),
+    'POSTUNINSTALL removes LiveAudio data only when the delete-app-data box is ticked and not during an update');
+  assert(postUninstall.includes('SetShellVarContext current')
+    && postUninstall.includes('RMDir /r "$APPDATA\\LiveAudio"')
+    && postUninstall.includes('RMDir /r "$LOCALAPPDATA\\LiveAudio"'),
+    'POSTUNINSTALL removes the fixed default %APPDATA% and %LOCALAPPDATA% LiveAudio folders');
+  assert(!postUninstall.includes('LIVEAUDIO_HOME'), 'POSTUNINSTALL never deletes a LIVEAUDIO_HOME-redirected path');
   assert(hooksContent.includes('ExecWait'), 'hooks.nsh executes legacy uninstaller silently');
   assert(hooksContent.includes('/VERYSILENT') && hooksContent.includes('/S'),
     'hooks.nsh supports both InnoSetup and NSIS silent uninstaller switches');
@@ -1707,6 +1731,22 @@ return { sanitizeThemeTokens, applyTheme };`)(fakeDocument);
     h.el('select-sub-font').dispatch('input');
     await h.runTimers();
     assert(h.backend.config.subtitle_theme['--sub-font-family'] === 'Bahnschrift', 'An installed font is saved in the theme');
+  }
+  {
+    // Choosing a built-in style after a saved style replaces the whole theme, like "Restablecer estilo"
+    const h = await loadAppHarness({ ...styleBaseConfig, subtitle_presets: [
+      { name: 'Plynte', tokens: { '--sub-font-family': 'Bahnschrift', '--sub-font-size': '40px', '--sub-color': '#00ff00' } },
+    ] }, { systemFonts: ['Bahnschrift', 'Segoe UI'] });
+    const picker = h.el('select-subtitle-style');
+    const choose = async (value) => { picker.value = value; picker.dispatch('change'); await h.runTimers(); };
+    await choose('preset:Plynte');
+    assert(h.backend.config.subtitle_theme['--sub-color'] === '#00ff00' && h.el('input-sub-preset-name').value === 'Plynte',
+      'Precondition: the saved style is loaded');
+    await choose('neon');
+    assert(h.backend.config.subtitle_style === 'neon' && Object.keys(h.backend.config.subtitle_theme).length === 0,
+      'Choosing a built-in style after a saved style saves an empty theme');
+    assert(h.el('select-sub-font').value !== 'Bahnschrift' && h.el('input-sub-color').value !== '#00ff00' && h.el('input-sub-preset-name').value === '',
+      'Choosing a built-in style resets the controls and clears the preset name');
   }
   for (const reducedMotion of [false, true]) {
     // Preview Play replays enter, hold and exit on the preview line, then restores the static preview; reduced motion skips it
