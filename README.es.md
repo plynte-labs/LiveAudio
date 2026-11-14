@@ -63,7 +63,7 @@ En la pestaña **Inicio (Setup)**:
    http://127.0.0.1:8765/overlay
    ```
    *(O marca **Archivo local** y selecciona `assets/subtitulos_obs.html` en la carpeta de la aplicación).*
-3. Configura **Ancho: 1920**, **Alto: 200** y **FPS: 60**.
+3. Configura **Ancho: 1920**, **Alto: 1080** y **FPS: 60**.
 4. Desmarca *"Apagar fuente cuando no sea visible"* y desmarca *"Actualizar el navegador cuando la escena se active"* para mantener la conexión WebSocket estable.
 5. ¡Empieza a hablar! Los subtítulos aparecerán en pantalla de inmediato.
 
