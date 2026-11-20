@@ -26,16 +26,44 @@ pub fn clean_family_names(raw: Vec<String>) -> Vec<String> {
     names
 }
 
-/// Installed font families on this machine. Empty off Windows, or when DirectWrite fails.
+/// Parses `fc-list : family` stdout into theme-safe, sorted, deduplicated family names.
+pub fn parse_fc_list_output(output: &str) -> Vec<String> {
+    let raw = output
+        .lines()
+        .flat_map(|line| line.split(','))
+        .map(|name| name.to_string())
+        .collect();
+    clean_family_names(raw)
+}
+
+/// Installed font families on this machine. Empty when platform discovery is unavailable or fails.
 pub fn installed_font_families() -> Vec<String> {
     #[cfg(windows)]
     {
         clean_family_names(directwrite_families().unwrap_or_default())
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        fc_list_families().unwrap_or_default()
+    }
+    #[cfg(all(not(windows), not(target_os = "linux")))]
     {
         Vec::new()
     }
+}
+
+#[cfg(target_os = "linux")]
+fn fc_list_families() -> Option<Vec<String>> {
+    let output = std::process::Command::new("fc-list")
+        .args([":", "family"])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(parse_fc_list_output(&String::from_utf8_lossy(&output.stdout)))
 }
 
 #[cfg(windows)]
@@ -114,5 +142,33 @@ mod tests {
     #[test]
     fn rejects_over_long_names() {
         assert!(clean_family_names(vec!["a".repeat(MAX_FAMILY_LEN + 1)]).is_empty());
+    }
+
+    #[test]
+    fn parse_fc_list_output_splits_commas_dedups_and_filters() {
+        let sample = "DejaVu Sans,DejaVu Sans Condensed\n  Ubuntu  \n\nDejaVu Sans\ndejavu sans\nNoto Sans,  Noto-Mono  \nBad\x07Font\nEvil'; } body {\n";
+        assert_eq!(
+            parse_fc_list_output(sample),
+            names(&[
+                "DejaVu Sans",
+                "DejaVu Sans Condensed",
+                "Noto Sans",
+                "Noto-Mono",
+                "Ubuntu",
+            ])
+        );
+    }
+
+    #[test]
+    fn parse_fc_list_output_handles_empty_input() {
+        assert!(parse_fc_list_output("").is_empty());
+        assert!(parse_fc_list_output("  \n ,\n").is_empty());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_installed_font_families_does_not_panic() {
+        let families = installed_font_families();
+        assert!(families.iter().all(|name| !name.is_empty()));
     }
 }
