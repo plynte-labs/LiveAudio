@@ -10,7 +10,7 @@ use tracing::{debug, error, info, warn};
 use crate::device::enumerate_cpal_devices;
 use crate::error::AudioError;
 use crate::resampler::{mix_multichannel_to_mono, AudioResampler};
-use crate::ring_buffer::create_audio_ring_buffer;
+use crate::ring_buffer::{create_audio_ring_buffer, AudioRingConsumer};
 use crate::rnnoise::RnnoiseProcessor;
 use crate::traits::{AudioBoxFuture, AudioChunkReceiver, AudioSource};
 use crate::types::{AudioChunk, AudioDeviceInfo, AudioSourceStatus, AudioStreamConfig};
@@ -70,14 +70,56 @@ fn play_stream_or_stop_worker<E>(
     }
 }
 
-/// Hardware audio capture source using Cross-Platform Audio Library (CPAL).
+enum ActiveStream {
+    Cpal(cpal::Stream),
+    #[cfg(target_os = "linux")]
+    LinuxPulse(crate::linux_pulse::PulseCaptureHandle),
+}
+
+impl ActiveStream {
+    fn stop(self) {
+        match self {
+            ActiveStream::Cpal(stream) => {
+                let _ = stream.pause();
+                drop(stream);
+            }
+            #[cfg(target_os = "linux")]
+            ActiveStream::LinuxPulse(mut handle) => {
+                handle.stop();
+            }
+        }
+    }
+}
+
+pub(crate) enum ResolvedCaptureDevice {
+    Cpal(cpal::Device, bool),
+    #[cfg(target_os = "linux")]
+    LinuxPulse {
+        source_name: String,
+        is_loopback: bool,
+    },
+}
+
+impl ResolvedCaptureDevice {
+    #[cfg(test)]
+    fn is_loopback(&self) -> bool {
+        match self {
+            Self::Cpal(_, is_loopback) => *is_loopback,
+            #[cfg(target_os = "linux")]
+            Self::LinuxPulse { is_loopback, .. } => *is_loopback,
+        }
+    }
+}
+
+/// Hardware audio capture source using Cross-Platform Audio Library (CPAL)
+/// and, on Linux, PulseAudio/PipeWire capture for friendly sources and loopback.
 ///
-/// Supports microphone input and Windows WASAPI Loopback capture, with real-time
+/// Supports microphone input and system loopback capture, with real-time
 /// lock-free SPSC buffer isolation and automatic resampling to 16kHz mono.
 pub struct CpalAudioSource {
     status: AudioSourceStatus,
     rnnoise_enabled: bool,
-    active_stream: Option<cpal::Stream>,
+    active_stream: Option<ActiveStream>,
     worker_handle: Option<JoinHandle<()>>,
     stop_signal: Option<Arc<AtomicBool>>,
 }
@@ -183,14 +225,146 @@ impl CpalAudioSource {
             }
         }
     }
+    /// Locate a capture device by ID, routing PulseAudio/PipeWire sources on Linux
+    /// and CPAL devices on all platforms.
+    pub(crate) fn resolve_capture_device(
+        host: &cpal::Host,
+        device_id: Option<&str>,
+    ) -> Result<ResolvedCaptureDevice, AudioError> {
+        #[cfg(target_os = "linux")]
+        if let Some((source_name, is_loopback)) =
+            crate::linux_pulse::resolve_linux_pulse_source(device_id)?
+        {
+            return Ok(ResolvedCaptureDevice::LinuxPulse {
+                source_name,
+                is_loopback,
+            });
+        }
+
+        let (device, is_loopback) = Self::resolve_device(host, device_id)?;
+        Ok(ResolvedCaptureDevice::Cpal(device, is_loopback))
+    }
 }
 
 type StreamBundle = (
-    cpal::Stream,
+    ActiveStream,
     JoinHandle<()>,
     Arc<AtomicBool>,
     AudioChunkReceiver,
 );
+
+fn spawn_dsp_consumer_worker(
+    mut ring_consumer: AudioRingConsumer,
+    hw_channels: u16,
+    hw_sample_rate: u32,
+    config: &AudioStreamConfig,
+    rnnoise_enabled: bool,
+    stop_flag: Arc<AtomicBool>,
+    capture_failed: Arc<AtomicBool>,
+) -> Result<(JoinHandle<()>, AudioChunkReceiver), AudioError> {
+    let mut rnnoise_processor = create_capture_processor(rnnoise_enabled)?;
+    let (tx, rx) = mpsc::channel(config.ring_buffer_capacity);
+    let stop_flag_clone = Arc::clone(&stop_flag);
+    let worker_capture_failed = Arc::clone(&capture_failed);
+
+    let chunk_size = config.chunk_size;
+    let target_sample_rate = config.sample_rate;
+    let mut resampler = AudioResampler::new(hw_sample_rate, target_sample_rate, chunk_size)?;
+
+    let worker = std::thread::Builder::new()
+        .name("liveaudio-dsp-consumer".to_string())
+        .spawn(move || {
+            let mut read_buf = vec![0.0f32; 4096 * (hw_channels as usize)];
+            let mut mono_buf = Vec::with_capacity(4096);
+            let mut processing_failed = false;
+
+            while !audio_worker_should_stop(&stop_flag_clone, &worker_capture_failed) {
+                let available = ring_consumer.available_samples();
+                if available == 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                    continue;
+                }
+
+                let read_count = ring_consumer.pop_samples(&mut read_buf);
+                if read_count == 0 {
+                    continue;
+                }
+
+                mono_buf.clear();
+                mix_multichannel_to_mono(&read_buf[..read_count], hw_channels, &mut mono_buf);
+
+                let chunks = resampler.process_mono_samples(&mono_buf);
+                for chunk in chunks {
+                    let processed = match process_captured_chunk(
+                        chunk,
+                        &mut rnnoise_processor,
+                        &worker_capture_failed,
+                    ) {
+                        Ok(processed) => processed,
+                        Err(error) => {
+                            error!("RNNoise audio processing failed: {}", error);
+                            processing_failed = true;
+                            break;
+                        }
+                    };
+                    for output in processed {
+                        // Non-blocking try_send: drop the incoming chunk on saturation.
+                        if let Err(mpsc::error::TrySendError::Full(_)) = tx.try_send(output) {
+                            warn!("{}", QUEUE_FULL_WARNING);
+                        }
+                    }
+                }
+            }
+
+            if !processing_failed {
+                // Flush the source resampler before draining RNNoise's delayed tail.
+                if let Some(final_chunk) = resampler.flush() {
+                    match process_captured_chunk(
+                        final_chunk,
+                        &mut rnnoise_processor,
+                        &worker_capture_failed,
+                    ) {
+                        Ok(processed) => {
+                            for output in processed {
+                                if let Err(mpsc::error::TrySendError::Full(_)) = tx.try_send(output)
+                                {
+                                    warn!("{}", QUEUE_FULL_WARNING);
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            error!("RNNoise final audio processing failed: {}", error);
+                            processing_failed = true;
+                        }
+                    }
+                }
+            }
+
+            if !processing_failed {
+                match flush_capture_processor(&mut rnnoise_processor) {
+                    Ok(processed) => {
+                        for output in processed {
+                            if let Err(mpsc::error::TrySendError::Full(_)) = tx.try_send(output) {
+                                warn!("{}", QUEUE_FULL_WARNING);
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        error!("RNNoise tail drain failed: {}", error);
+                        worker_capture_failed.store(true, Ordering::SeqCst);
+                    }
+                }
+            }
+        })
+        .map_err(|e| {
+            AudioError::StreamError(format!("Failed to spawn audio worker thread: {}", e))
+        })?;
+
+    Ok((
+        worker,
+        AudioChunkReceiver::with_capture_error(rx, capture_failed),
+    ))
+}
 
 fn build_and_start_stream(
     config: &AudioStreamConfig,
@@ -198,8 +372,54 @@ fn build_and_start_stream(
 ) -> Result<StreamBundle, AudioError> {
     let host = cpal::default_host();
 
-    let (device, is_loopback) =
-        CpalAudioSource::resolve_device(&host, config.device_id.as_deref())?;
+    let resolved = CpalAudioSource::resolve_capture_device(&host, config.device_id.as_deref())?;
+
+    let (device, is_loopback) = match resolved {
+        ResolvedCaptureDevice::Cpal(device, is_loopback) => (device, is_loopback),
+        #[cfg(target_os = "linux")]
+        ResolvedCaptureDevice::LinuxPulse {
+            source_name,
+            is_loopback,
+        } => {
+            let capacity_samples = config.ring_buffer_capacity * config.chunk_size;
+            let (ring_producer, ring_consumer) =
+                create_audio_ring_buffer(capacity_samples, config.chunk_size);
+            let stop_flag = Arc::new(AtomicBool::new(false));
+            let capture_failed = Arc::new(AtomicBool::new(false));
+
+            info!(
+                "Initializing Linux PulseAudio/PipeWire stream: source={}, rate={}Hz, loopback={}",
+                source_name, config.sample_rate, is_loopback
+            );
+
+            let (worker, receiver) = spawn_dsp_consumer_worker(
+                ring_consumer,
+                1,
+                config.sample_rate,
+                config,
+                rnnoise_enabled,
+                Arc::clone(&stop_flag),
+                Arc::clone(&capture_failed),
+            )?;
+
+            let handle = match crate::linux_pulse::start_pulse_capture(
+                &source_name,
+                config.sample_rate,
+                ring_producer,
+                Arc::clone(&stop_flag),
+                Arc::clone(&capture_failed),
+            ) {
+                Ok(handle) => handle,
+                Err(error) => {
+                    stop_flag.store(true, Ordering::Relaxed);
+                    let _ = worker.join();
+                    return Err(error);
+                }
+            };
+
+            return Ok((ActiveStream::LinuxPulse(handle), worker, stop_flag, receiver));
+        }
+    };
 
     let supported_config = if is_loopback {
         device.default_output_config().map_err(|e| {
@@ -226,7 +446,7 @@ fn build_and_start_stream(
     // Ring buffer sized for capacity
     let capacity_samples =
         config.ring_buffer_capacity * config.chunk_size * (hw_channels as usize);
-    let (mut ring_producer, mut ring_consumer) =
+    let (mut ring_producer, ring_consumer) =
         create_audio_ring_buffer(capacity_samples, config.chunk_size);
 
     let capture_failed = Arc::new(AtomicBool::new(false));
@@ -292,114 +512,16 @@ fn build_and_start_stream(
     }
     .map_err(|e| AudioError::StreamError(format!("build_input_stream failed: {}", e)))?;
 
-    // Downstream async channel for chunks
-    let mut rnnoise_processor = create_capture_processor(rnnoise_enabled)?;
-    let (tx, rx) = mpsc::channel(config.ring_buffer_capacity);
     let stop_flag = Arc::new(AtomicBool::new(false));
-    let stop_flag_clone = Arc::clone(&stop_flag);
-    let worker_capture_failed = Arc::clone(&capture_failed);
-
-    let chunk_size = config.chunk_size;
-    let target_sample_rate = config.sample_rate;
-    let mut resampler =
-        AudioResampler::new(hw_sample_rate, target_sample_rate, chunk_size)?;
-
-    let worker = std::thread::Builder::new()
-        .name("liveaudio-dsp-consumer".to_string())
-        .spawn(move || {
-            let mut read_buf = vec![0.0f32; 4096 * (hw_channels as usize)];
-            let mut mono_buf = Vec::with_capacity(4096);
-            let mut processing_failed = false;
-
-            while !audio_worker_should_stop(&stop_flag_clone, &worker_capture_failed) {
-                let available = ring_consumer.available_samples();
-                if available == 0 {
-                    std::thread::sleep(std::time::Duration::from_millis(5));
-                    continue;
-                }
-
-                let read_count = ring_consumer.pop_samples(&mut read_buf);
-                if read_count == 0 {
-                    continue;
-                }
-
-                mono_buf.clear();
-                mix_multichannel_to_mono(
-                    &read_buf[..read_count],
-                    hw_channels,
-                    &mut mono_buf,
-                );
-
-                let chunks = resampler.process_mono_samples(&mono_buf);
-                for chunk in chunks {
-                    let processed = match process_captured_chunk(
-                        chunk,
-                        &mut rnnoise_processor,
-                        &worker_capture_failed,
-                    ) {
-                        Ok(processed) => processed,
-                        Err(error) => {
-                            error!("RNNoise audio processing failed: {}", error);
-                            processing_failed = true;
-                            break;
-                        }
-                    };
-                    for output in processed {
-                        // Non-blocking try_send: drop the incoming chunk on saturation.
-                        if let Err(mpsc::error::TrySendError::Full(_)) = tx.try_send(output)
-                        {
-                            warn!("{}", QUEUE_FULL_WARNING);
-                        }
-                    }
-                }
-            }
-
-            if !processing_failed {
-                // Flush the source resampler before draining RNNoise's delayed tail.
-                if let Some(final_chunk) = resampler.flush() {
-                    match process_captured_chunk(
-                        final_chunk,
-                        &mut rnnoise_processor,
-                        &worker_capture_failed,
-                    ) {
-                        Ok(processed) => {
-                            for output in processed {
-                                if let Err(mpsc::error::TrySendError::Full(_)) =
-                                    tx.try_send(output)
-                                {
-                                    warn!("{}", QUEUE_FULL_WARNING);
-                                }
-                            }
-                        }
-                        Err(error) => {
-                            error!("RNNoise final audio processing failed: {}", error);
-                            processing_failed = true;
-                        }
-                    }
-                }
-            }
-
-            if !processing_failed {
-                match flush_capture_processor(&mut rnnoise_processor) {
-                    Ok(processed) => {
-                        for output in processed {
-                            if let Err(mpsc::error::TrySendError::Full(_)) =
-                                tx.try_send(output)
-                            {
-                                warn!("{}", QUEUE_FULL_WARNING);
-                            }
-                        }
-                    }
-                    Err(error) => {
-                        error!("RNNoise tail drain failed: {}", error);
-                        worker_capture_failed.store(true, Ordering::SeqCst);
-                    }
-                }
-            }
-        })
-        .map_err(|e| {
-            AudioError::StreamError(format!("Failed to spawn audio worker thread: {}", e))
-        })?;
+    let (worker, receiver) = spawn_dsp_consumer_worker(
+        ring_consumer,
+        hw_channels,
+        hw_sample_rate,
+        config,
+        rnnoise_enabled,
+        Arc::clone(&stop_flag),
+        capture_failed,
+    )?;
 
     let worker = match play_stream_or_stop_worker(
         || {
@@ -417,12 +539,7 @@ fn build_and_start_stream(
         }
     };
 
-    Ok((
-        stream,
-        worker,
-        stop_flag,
-        AudioChunkReceiver::with_capture_error(rx, capture_failed),
-    ))
+    Ok((ActiveStream::Cpal(stream), worker, stop_flag, receiver))
 }
 
 impl AudioSource for CpalAudioSource {
@@ -444,24 +561,32 @@ impl AudioSource for CpalAudioSource {
             let bundle = match build_and_start_stream(config, self.rnnoise_enabled) {
                 Ok(bundle) => bundle,
                 Err(direct_err) => {
-                    debug!(
-                        "Direct CPAL stream initialization failed: {}. Retrying on clean audio thread.",
-                        direct_err
-                    );
-                    let cfg = config.clone();
-                    let rnnoise = self.rnnoise_enabled;
-                    match crate::device::with_clean_audio_thread(move || {
-                        build_and_start_stream(&cfg, rnnoise)
-                    }) {
-                        Some(Ok(bundle)) => bundle,
-                        Some(Err(err)) => {
-                            self.status = AudioSourceStatus::Standby;
-                            return Err(err);
+                    #[cfg(windows)]
+                    {
+                        debug!(
+                            "Direct CPAL stream initialization failed: {}. Retrying on clean audio thread.",
+                            direct_err
+                        );
+                        let cfg = config.clone();
+                        let rnnoise = self.rnnoise_enabled;
+                        match crate::device::with_clean_audio_thread(move || {
+                            build_and_start_stream(&cfg, rnnoise)
+                        }) {
+                            Some(Ok(bundle)) => bundle,
+                            Some(Err(err)) => {
+                                self.status = AudioSourceStatus::Standby;
+                                return Err(err);
+                            }
+                            None => {
+                                self.status = AudioSourceStatus::Standby;
+                                return Err(direct_err);
+                            }
                         }
-                        None => {
-                            self.status = AudioSourceStatus::Standby;
-                            return Err(direct_err);
-                        }
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        self.status = AudioSourceStatus::Standby;
+                        return Err(direct_err);
                     }
                 }
             };
@@ -489,8 +614,7 @@ impl AudioSource for CpalAudioSource {
             }
 
             if let Some(stream) = self.active_stream.take() {
-                let _ = stream.pause();
-                drop(stream);
+                stream.stop();
             }
 
             if let Some(handle) = self.worker_handle.take() {
@@ -643,7 +767,7 @@ mod tests {
     fn explicitly_missing_loopback_device_is_not_replaced_by_default_output() {
         let host = cpal::default_host();
         if host.default_output_device().is_some() {
-            let result = CpalAudioSource::resolve_device(
+            let result = CpalAudioSource::resolve_capture_device(
                 &host,
                 Some("loopback:__missing_liveaudio_device__"),
             );
@@ -655,9 +779,9 @@ mod tests {
     fn default_loopback_resolves_to_default_output() {
         let host = cpal::default_host();
         if host.default_output_device().is_some() {
-            let result = CpalAudioSource::resolve_device(&host, Some("default_loopback"));
+            let result = CpalAudioSource::resolve_capture_device(&host, Some("default_loopback"));
             assert!(result.is_ok());
-            assert!(result.unwrap().1);
+            assert!(result.unwrap().is_loopback());
         }
     }
 
@@ -665,12 +789,13 @@ mod tests {
     fn every_enumerated_device_id_resolves_without_starting_capture() {
         let host = cpal::default_host();
         for device in crate::enumerate_cpal_devices().expect("enumerate CPAL devices") {
-            let (_, is_loopback) = CpalAudioSource::resolve_device(&host, Some(&device.id))
+            let resolved = CpalAudioSource::resolve_capture_device(&host, Some(&device.id))
                 .unwrap_or_else(|error| {
                     panic!("enumerated ID {} did not resolve: {}", device.id, error)
                 });
             assert_eq!(
-                is_loopback, device.is_loopback,
+                resolved.is_loopback(),
+                device.is_loopback,
                 "device identity changed: {}",
                 device.id
             );

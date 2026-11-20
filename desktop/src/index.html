@@ -140,7 +140,7 @@
                 <label for="select-audio-device" data-i18n="lbl_audio_device">Fuente de audio</label>
                 <select id="select-audio-device" class="form-control">
                   <option value="default_microphone" data-i18n="opt_default_mic">Micrófono predeterminado del sistema</option>
-                  <option value="wasapi_loopback" data-i18n="opt_loopback">Audio del sistema (WASAPI Loopback)</option>
+                  <option value="default_loopback" data-i18n="opt_loopback">Audio del sistema (Loopback)</option>
                 </select>
                 <span class="form-hint" data-i18n="hint_audio_device">Elige el micrófono o el audio del sistema que quieres transcribir.</span>
               </div>
@@ -376,7 +376,7 @@
                   <label for="select-asr-backend" data-i18n="lbl_asr_backend">Motor de transcripción</label>
                   <select id="select-asr-backend" class="form-control">
                     <option value="auto" selected data-i18n="opt_asr_backend_auto">Automático (recomendado)</option>
-                    <option value="ort" data-i18n="opt_asr_backend_ort">Compatible (DirectML / CPU)</option>
+                    <option value="ort" data-i18n="opt_asr_backend_ort">Compatible (GPU / CPU)</option>
                     <option value="ct2_cuda" data-i18n="opt_asr_backend_ct2">NVIDIA CUDA</option>
                   </select>
                   <span class="form-hint" data-i18n="hint_asr_backend">Automático usa NVIDIA CUDA cuando está disponible; si no, el modo compatible.</span>

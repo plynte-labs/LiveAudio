@@ -52,10 +52,9 @@ impl ResilientCapture {
     {
         let (tx, rx) = mpsc::channel(config.ring_buffer_capacity.max(1));
         let (state_tx, state) = watch::channel(AudioSourceStatus::Initializing);
-        let is_loopback = config
-            .device_id
-            .as_deref()
-            .is_some_and(|id| id.starts_with("loopback:") || id == "default_loopback");
+        let is_loopback = config.device_id.as_deref().is_some_and(|id| {
+            id.starts_with("loopback:") || id == "default_loopback" || id == "wasapi_loopback"
+        });
         let mut supervisor = Supervisor {
             source,
             config,

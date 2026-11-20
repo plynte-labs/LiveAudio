@@ -32,4 +32,17 @@ This file tracks major LiveAudio tracks. Each track should have its own detailed
   *Link: [./tracks/in-app-updater/](./tracks/in-app-updater/)*
   *Status: In Progress (`[~]`). Phases 1-5 complete (backend updater, stream safety lock, bilingual UI, CI signing & manifest assembly, documentation). Final VM test matrix verification pending release candidate.*
 
+---
+
+- [x] **Track: Linux Core Support & Packaging (v1.6)**
+  *Link: [./tracks/linux-core-packaging_20261119/](./tracks/linux-core-packaging_20261119/) | ADR: [ADR-017](../../docs/ADR-017-linux-core-support-and-packaging.md)*
+  *Status: completed (`[x]`) on branch `feat/linux-v1.6` — all 4 phases implemented, collective review passed & findings resolved, manual Pop!_OS verification complete, PR ready.*
+
+---
+
+- [ ] **Track: Linux GPU Acceleration (CUDA, AMD ROCm, Intel Arc) & High-Spec Latency Validation**
+  *Link: Roadmap follow-up to `linux-core-packaging_20261119` (see [ADR-017](../../docs/ADR-017-linux-core-support-and-packaging.md#follow-up-roadmap-out-of-scope-for-this-pr)).*
+  *Status: proposed (`[ ]`). Scope: (1) Linux GPU detection (`gpu.rs`) + NVIDIA CUDA execution provider on Linux; (2) non-CUDA GPU acceleration for AMD (ROCm / Vulkan) and Intel Arc (OpenVINO / Vulkan); (3) intensive `--release` latency & long-session benchmarking on higher-spec Linux hardware.*
+
+
 

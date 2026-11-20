@@ -18,11 +18,25 @@ pub const STARTUP_CHECK_DELAY: Duration = Duration::from_secs(10);
 pub const INSTALL_ON_CLOSE_DEADLINE: Duration = Duration::from_secs(120);
 
 const UNSUPPORTED_PLATFORM_MSG: &str =
-    "Automatic updates are only available on Windows. Download the new release manually.";
+    "Automatic updates are only available on Windows and Linux AppImage installs. Download the new release manually from GitHub Releases.";
+const UNSUPPORTED_LINUX_DEB_MSG: &str =
+    "Automatic updates on Linux are only available for AppImage installs. If you installed the .deb package, download the new release from GitHub Releases.";
 
-/// `latest.json` only carries a `windows-x86_64` target (see docs/PACKAGING_AND_UPDATES.md).
-fn updater_supported_on(os: &str) -> bool {
-    os == "windows"
+/// `latest.json` carries `windows-x86_64` and `linux-x86_64` (AppImage) targets.
+fn updater_supported_on(os: &str, is_appimage: bool) -> bool {
+    os == "windows" || (os == "linux" && is_appimage)
+}
+
+fn unsupported_platform_message(os: &str, is_appimage: bool) -> &'static str {
+    if os == "linux" && !is_appimage {
+        UNSUPPORTED_LINUX_DEB_MSG
+    } else {
+        UNSUPPORTED_PLATFORM_MSG
+    }
+}
+
+fn is_running_in_appimage() -> bool {
+    std::env::var_os("APPIMAGE").is_some()
 }
 
 /// Runs an update download+install under `deadline`; returns whether it completed successfully.
@@ -124,8 +138,13 @@ pub async fn check_for_updates_internal<R: tauri::Runtime>(
     state: &AppState,
     force: bool,
 ) -> Result<Option<UpdateMetadataDto>, String> {
-    if !updater_supported_on(std::env::consts::OS) {
-        return if force { Err(UNSUPPORTED_PLATFORM_MSG.to_string()) } else { Ok(None) };
+    let is_appimage = is_running_in_appimage();
+    if !updater_supported_on(std::env::consts::OS, is_appimage) {
+        return if force {
+            Err(unsupported_platform_message(std::env::consts::OS, is_appimage).to_string())
+        } else {
+            Ok(None)
+        };
     }
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -195,8 +214,9 @@ pub async fn install_update_now_internal<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     state: &AppState,
 ) -> Result<(), String> {
-    if !updater_supported_on(std::env::consts::OS) {
-        return Err(UNSUPPORTED_PLATFORM_MSG.to_string());
+    let is_appimage = is_running_in_appimage();
+    if !updater_supported_on(std::env::consts::OS, is_appimage) {
+        return Err(unsupported_platform_message(std::env::consts::OS, is_appimage).to_string());
     }
     if let Err(reason) = state.check_stream_safety().await {
         return Err(format!("Cannot install update: {reason}"));
@@ -254,6 +274,10 @@ pub async fn execute_install_on_close<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     state: &AppState,
 ) {
+    if !updater_supported_on(std::env::consts::OS, is_running_in_appimage()) {
+        return;
+    }
+
     let update = {
         let mut pending = state.updater_pending_update.lock().await;
         pending.take()
@@ -328,10 +352,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn updater_is_supported_only_where_latest_json_has_a_target() {
-        assert!(updater_supported_on("windows"));
-        assert!(!updater_supported_on("linux"));
-        assert!(!updater_supported_on("macos"));
+    fn updater_is_supported_on_windows_and_linux_appimage() {
+        assert!(updater_supported_on("windows", false));
+        assert!(updater_supported_on("linux", true));
+        assert!(!updater_supported_on("linux", false));
+        assert!(!updater_supported_on("macos", false));
+    }
+
+    #[test]
+    fn unsupported_platform_message_distinguishes_linux_non_appimage() {
+        let deb_msg = unsupported_platform_message("linux", false);
+        assert!(deb_msg.contains("AppImage"));
+        assert!(deb_msg.contains(".deb"));
+        assert!(deb_msg.contains("GitHub Releases"));
+
+        let mac_msg = unsupported_platform_message("macos", false);
+        assert!(mac_msg.contains("Windows"));
+        assert!(mac_msg.contains("AppImage"));
+        assert!(!mac_msg.contains(".deb"));
     }
 
     #[tokio::test]

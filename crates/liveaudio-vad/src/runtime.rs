@@ -38,6 +38,7 @@ pub fn initialize_onnx_runtime(path: impl AsRef<Path>) -> Result<(), VadError> {
         ));
     }
 
+    #[cfg(windows)]
     if let Some(parent) = path.parent() {
         let current_path = std::env::var_os("PATH").unwrap_or_default();
         let mut paths: Vec<std::path::PathBuf> = std::env::split_paths(&current_path).collect();

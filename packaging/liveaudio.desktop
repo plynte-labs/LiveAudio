@@ -2,8 +2,8 @@
 Type=Application
 Name=LiveAudio
 Comment=Real-time local transcription with OBS subtitle overlay
-Exec={exec}
-Icon={icon}
+Exec={{exec}}
+Icon={{icon}}
 Terminal=false
 Categories=AudioVideo;Audio;
 StartupNotify=true

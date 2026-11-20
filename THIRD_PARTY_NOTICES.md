@@ -79,7 +79,7 @@ system-wide VC++ Redistributable install.
 ONNX Runtime 1.24.4 (MIT License, Copyright (c) Microsoft Corporation) is
 redistributed with the app: `onnxruntime.dll` and `onnxruntime_providers_shared.dll`
 on Windows (NuGet `Microsoft.ML.OnnxRuntime.DirectML`), `libonnxruntime.so.1.24.4`
-and `libonnxruntime_providers_shared.so` on Linux (official GitHub release).
+and `libonnxruntime_providers_shared.so` on Linux (NuGet `Microsoft.ML.OnnxRuntime`).
 Its license and third-party notices ship per platform under
 `onnxruntime/<platform>/LICENSE` and `onnxruntime/<platform>/ThirdPartyNotices.txt`.
 

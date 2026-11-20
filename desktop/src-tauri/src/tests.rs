@@ -567,7 +567,7 @@ async fn enumerated_audio_device_ids_match_cpal_resolver_ids() {
             device.name
         );
     }
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
     assert!(desktop_devices
         .iter()
         .any(|device| device.id == "default_loopback"));

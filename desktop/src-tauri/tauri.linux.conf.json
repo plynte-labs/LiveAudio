@@ -1,7 +1,13 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "bundle": {
-    "targets": ["appimage"],
+    "targets": ["appimage", "deb"],
+    "linux": {
+      "deb": {
+        "section": "sound",
+        "desktopTemplate": "../../packaging/liveaudio.desktop"
+      }
+    },
     "resources": {
       "../../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
       "../../assets/*": "assets",

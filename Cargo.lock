@@ -2424,6 +2424,7 @@ version = "1.6.0"
 dependencies = [
  "cpal",
  "crossbeam-channel",
+ "libc",
  "liveaudio-ipc",
  "nnnoiseless",
  "ringbuf",
