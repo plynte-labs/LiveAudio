@@ -13,6 +13,10 @@
  *     "windows-x86_64": {
  *       "signature": "<raw-minisign-signature-contents>",
  *       "url": "https://github.com/<repo>/releases/download/<tag>/<installer>.exe"
+ *     },
+ *     "linux-x86_64": {
+ *       "signature": "<raw-minisign-signature-contents>",
+ *       "url": "https://github.com/<repo>/releases/download/<tag>/<installer>.AppImage"
  *     }
  *   }
  * }
@@ -25,12 +29,35 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 /**
- * Locate installer .exe and matching .sig in candidate bundle directories.
- * @param {string[]} bundleDirs
- * @returns {{ installerPath: string, sigPath: string }}
+ * Infer Tauri platform key from an installer filename.
+ * @param {string} installerPath
+ * @returns {"windows-x86_64" | "linux-x86_64"}
  */
-export function find_bundle_artifacts(bundleDirs) {
+function inferPlatformKey(installerPath) {
+  const lower = path.basename(installerPath).toLowerCase();
+  if (lower.endsWith(".appimage")) {
+    return "linux-x86_64";
+  }
+  if (lower.endsWith(".exe")) {
+    return "windows-x86_64";
+  }
+  throw new Error(`Unsupported installer format for updater manifest: ${installerPath}`);
+}
+
+/**
+ * Locate signed platform artifacts across one or more candidate bundle directories.
+ * Discovers:
+ *   - windows-x86_64: *.exe paired with *.exe.sig (or matching *.sig)
+ *   - linux-x86_64: *.AppImage paired with *.AppImage.sig
+ *
+ * @param {string[]} bundleDirs
+ * @returns {Record<string, { installerPath: string, sigPath: string }>}
+ */
+export function find_platform_artifacts(bundleDirs) {
   const searched = [];
+  const platforms = {};
+  const unsignedWindows = [];
+  const unsignedLinux = [];
 
   for (const bDir of bundleDirs) {
     if (!fs.existsSync(bDir)) {
@@ -45,130 +72,255 @@ export function find_bundle_artifacts(bundleDirs) {
       continue;
     }
 
-    const sigFiles = entries
-      .filter((e) => e.isFile() && e.name.endsWith(".sig"))
-      .map((e) => path.join(bDir, e.name));
+    const files = entries.filter((e) => e.isFile()).map((e) => e.name);
+    const sigNames = files.filter((name) => name.endsWith(".sig"));
 
-    for (const sig of sigFiles) {
-      const sigName = path.basename(sig);
+    const exeNames = files.filter(
+      (name) =>
+        name.toLowerCase().endsWith(".exe") &&
+        !name.toLowerCase().startsWith("uninstall")
+    );
+    const appImageNames = files.filter((name) =>
+      name.toLowerCase().endsWith(".appimage")
+    );
 
-      // Pattern 1: <name>.exe.sig -> <name>.exe
-      if (sigName.endsWith(".exe.sig")) {
-        const exeName = sigName.slice(0, -4);
-        const exePath = path.join(bDir, exeName);
-        if (fs.existsSync(exePath)) {
-          return { installerPath: exePath, sigPath: sig };
+    if (!platforms["windows-x86_64"] && exeNames.length > 0) {
+      let matched = null;
+
+      for (const sigName of sigNames) {
+        if (sigName.toLowerCase().endsWith(".exe.sig")) {
+          const exeName = sigName.slice(0, -4);
+          if (files.includes(exeName)) {
+            matched = {
+              installerPath: path.join(bDir, exeName),
+              sigPath: path.join(bDir, sigName),
+            };
+            break;
+          }
         }
       }
 
-      // Pattern 2: <name>.sig where <name>.exe exists
-      const exeName = path.parse(sig).name + ".exe";
-      const exePath = path.join(bDir, exeName);
-      if (fs.existsSync(exePath)) {
-        return { installerPath: exePath, sigPath: sig };
+      if (!matched) {
+        for (const sigName of sigNames) {
+          if (sigName.toLowerCase().endsWith(".appimage.sig")) {
+            continue;
+          }
+          const exeName = path.parse(sigName).name + ".exe";
+          if (files.includes(exeName)) {
+            matched = {
+              installerPath: path.join(bDir, exeName),
+              sigPath: path.join(bDir, sigName),
+            };
+            break;
+          }
+        }
+      }
+
+      if (!matched) {
+        const nonAppImageSigs = sigNames.filter(
+          (name) => !name.toLowerCase().endsWith(".appimage.sig")
+        );
+        if (nonAppImageSigs.length > 0) {
+          matched = {
+            installerPath: path.join(bDir, exeNames[0]),
+            sigPath: path.join(bDir, nonAppImageSigs[0]),
+          };
+        }
+      }
+
+      if (matched) {
+        platforms["windows-x86_64"] = matched;
+      } else {
+        unsignedWindows.push(path.join(bDir, exeNames[0]));
       }
     }
 
-    // Fallback: any .sig and any non-uninstall .exe in the directory
-    const exeFiles = entries
-      .filter(
-        (e) =>
-          e.isFile() &&
-          e.name.toLowerCase().endsWith(".exe") &&
-          !e.name.toLowerCase().startsWith("uninstall")
-      )
-      .map((e) => path.join(bDir, e.name));
+    if (!platforms["linux-x86_64"] && appImageNames.length > 0) {
+      let matched = null;
 
-    if (sigFiles.length > 0 && exeFiles.length > 0) {
-      return { installerPath: exeFiles[0], sigPath: sigFiles[0] };
+      for (const appImageName of appImageNames) {
+        const exactSigName = `${appImageName}.sig`;
+        if (files.includes(exactSigName)) {
+          matched = {
+            installerPath: path.join(bDir, appImageName),
+            sigPath: path.join(bDir, exactSigName),
+          };
+          break;
+        }
+      }
+
+      if (matched) {
+        platforms["linux-x86_64"] = matched;
+      } else {
+        unsignedLinux.push(path.join(bDir, appImageNames[0]));
+      }
     }
   }
 
-  let errMsg =
-    "Could not locate both installer .exe and .sig file in candidate directories:\n" +
-    bundleDirs.map((d) => `  - ${d}`).join("\n");
-  if (searched.length > 0) {
-    errMsg += `\nFound directories: ${searched.join(", ")}, but .sig signature was missing.`;
-    errMsg += "\nPlease ensure TAURI_SIGNING_PRIVATE_KEY is provisioned and valid.";
+  if (!platforms["linux-x86_64"] && unsignedLinux.length > 0) {
+    throw new Error(
+      `Missing .AppImage.sig signature for Linux AppImage: ${unsignedLinux[0]}\n` +
+        "Please ensure TAURI_SIGNING_PRIVATE_KEY is provisioned and valid."
+    );
   }
-  throw new Error(errMsg);
+
+  if (!platforms["windows-x86_64"] && unsignedWindows.length > 0) {
+    throw new Error(
+      `Missing .sig signature for Windows installer: ${unsignedWindows[0]}\n` +
+        "Please ensure TAURI_SIGNING_PRIVATE_KEY is provisioned and valid."
+    );
+  }
+
+  if (Object.keys(platforms).length === 0) {
+    let errMsg =
+      "Could not locate signed installer (.exe + .sig or .AppImage + .AppImage.sig) in candidate directories:\n" +
+      bundleDirs.map((d) => `  - ${d}`).join("\n");
+    if (searched.length > 0) {
+      errMsg += `\nFound directories: ${searched.join(", ")}, but no signed updater artifacts were present.`;
+      errMsg += "\nPlease ensure TAURI_SIGNING_PRIVATE_KEY is provisioned and valid.";
+    }
+    throw new Error(errMsg);
+  }
+
+  return platforms;
 }
 
 /**
- * Build latest.json and stage installer, .sig, and latest.json in outDir.
+ * Locate Windows installer .exe and matching .sig in candidate bundle directories.
+ * @param {string[]} bundleDirs
+ * @returns {{ installerPath: string, sigPath: string }}
+ */
+export function find_bundle_artifacts(bundleDirs) {
+  const platforms = find_platform_artifacts(bundleDirs);
+  if (platforms["windows-x86_64"]) {
+    return platforms["windows-x86_64"];
+  }
+  throw new Error(
+    "Could not locate both installer .exe and .sig file in candidate directories:\n" +
+      bundleDirs.map((d) => `  - ${d}`).join("\n")
+  );
+}
+
+/**
+ * Build latest.json and stage platform installers, .sig files, and latest.json in outDir.
+ * Accepts either a `platforms` map (`{ "windows-x86_64": { installerPath, sigPath }, ... }`)
+ * or legacy single-platform `installerPath` + `sigPath`.
+ *
  * @param {object} params
  * @param {string} params.version
- * @param {string} params.installerPath
- * @param {string} params.sigPath
+ * @param {Record<string, { installerPath: string, sigPath: string }>} [params.platforms]
+ * @param {string} [params.installerPath]
+ * @param {string} [params.sigPath]
  * @param {string} params.outDir
  * @param {string} [params.repo]
  * @param {string} [params.tag]
  * @param {string} [params.notes]
- * @returns {{ manifestPath: string, manifestData: object, destInstaller: string, destSig: string }}
+ * @returns {{
+ *   manifestPath: string,
+ *   manifestData: object,
+ *   stagedFiles: Record<string, { destInstaller: string, destSig: string }>,
+ *   destInstaller: string,
+ *   destSig: string
+ * }}
  */
 export function assemble_manifest({
   version,
-  installerPath,
-  sigPath,
+  platforms = null,
+  installerPath = null,
+  sigPath = null,
   outDir,
   repo = process.env.GITHUB_REPOSITORY || "plynte-labs/LiveAudio",
   tag = "",
   notes = null,
 }) {
-  if (!fs.existsSync(sigPath)) {
-    throw new Error(`Signature file does not exist: ${sigPath}`);
-  }
+  const resolvedPlatforms = platforms
+    ? { ...platforms }
+    : installerPath && sigPath
+      ? { [inferPlatformKey(installerPath)]: { installerPath, sigPath } }
+      : {};
 
-  const rawSignature = fs.readFileSync(sigPath, "utf-8").trim();
-  if (!rawSignature) {
-    throw new Error(`Signature file ${sigPath} is empty`);
+  const platformEntries = Object.entries(resolvedPlatforms);
+  if (platformEntries.length === 0) {
+    throw new Error("At least one signed platform artifact is required to assemble latest.json");
   }
 
   const cleanVersion = version.startsWith("v") ? version.slice(1) : version;
-  const tagName = tag ? tag : (version.startsWith("v") ? version : `v${version}`);
-  const installerFilename = path.basename(installerPath);
-  const downloadUrl = `https://github.com/${repo}/releases/download/${tagName}/${installerFilename}`;
-
+  const tagName = tag ? tag : version.startsWith("v") ? version : `v${version}`;
   const pubDate = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
   const releaseNotes = notes ?? `LiveAudio v${cleanVersion}`;
+
+  const manifestPlatforms = {};
+  const stagedFiles = {};
+
+  fs.mkdirSync(outDir, { recursive: true });
+
+  for (const [platformKey, artifact] of platformEntries) {
+    if (!artifact?.installerPath || !fs.existsSync(artifact.installerPath)) {
+      throw new Error(`Installer file does not exist for ${platformKey}: ${artifact?.installerPath}`);
+    }
+    if (!artifact?.sigPath || !fs.existsSync(artifact.sigPath)) {
+      throw new Error(`Signature file does not exist for ${platformKey}: ${artifact?.sigPath}`);
+    }
+
+    const rawSignature = fs.readFileSync(artifact.sigPath, "utf-8").trim();
+    if (!rawSignature) {
+      throw new Error(`Signature file ${artifact.sigPath} is empty`);
+    }
+
+    const installerFilename = path.basename(artifact.installerPath);
+    const downloadUrl = `https://github.com/${repo}/releases/download/${tagName}/${installerFilename}`;
+    const parsedUrl = new URL(downloadUrl);
+    if (parsedUrl.protocol !== "https:") {
+      throw new Error(`Updater URL must use HTTPS: ${downloadUrl}`);
+    }
+
+    manifestPlatforms[platformKey] = {
+      signature: rawSignature,
+      url: downloadUrl,
+    };
+
+    const destInstaller = path.join(outDir, installerFilename);
+    if (path.resolve(destInstaller) !== path.resolve(artifact.installerPath)) {
+      fs.copyFileSync(artifact.installerPath, destInstaller);
+    }
+
+    const destSig = path.join(outDir, path.basename(artifact.sigPath));
+    if (path.resolve(destSig) !== path.resolve(artifact.sigPath)) {
+      fs.copyFileSync(artifact.sigPath, destSig);
+    }
+
+    stagedFiles[platformKey] = { destInstaller, destSig };
+
+    const installerSize = fs.existsSync(destInstaller)
+      ? fs.statSync(destInstaller).size
+      : 0;
+    console.log(
+      `Staged ${platformKey} installer: ${destInstaller} (${installerSize.toLocaleString()} bytes)`
+    );
+    console.log(`Staged ${platformKey} signature: ${destSig}`);
+  }
 
   const manifestData = {
     version: cleanVersion,
     notes: releaseNotes,
     pub_date: pubDate,
-    platforms: {
-      "windows-x86_64": {
-        signature: rawSignature,
-        url: downloadUrl,
-      },
-    },
+    platforms: manifestPlatforms,
   };
-
-  fs.mkdirSync(outDir, { recursive: true });
-
-  const destInstaller = path.join(outDir, installerFilename);
-  if (path.resolve(destInstaller) !== path.resolve(installerPath)) {
-    fs.copyFileSync(installerPath, destInstaller);
-  }
-
-  const destSig = path.join(outDir, path.basename(sigPath));
-  if (path.resolve(destSig) !== path.resolve(sigPath)) {
-    fs.copyFileSync(sigPath, destSig);
-  }
 
   const manifestPath = path.join(outDir, "latest.json");
   fs.writeFileSync(manifestPath, JSON.stringify(manifestData, null, 2) + "\n", "utf-8");
 
-  const installerSize = fs.existsSync(destInstaller)
-    ? fs.statSync(destInstaller).size
-    : 0;
-
-  console.log(`Staged installer: ${destInstaller} (${installerSize.toLocaleString()} bytes)`);
-  console.log(`Staged signature: ${destSig}`);
   console.log(`Assembled updater manifest: ${manifestPath}`);
   console.log(`Manifest contents:\n${JSON.stringify(manifestData, null, 2)}`);
 
-  return { manifestPath, manifestData, destInstaller, destSig };
+  const firstStaged = Object.values(stagedFiles)[0];
+  return {
+    manifestPath,
+    manifestData,
+    stagedFiles,
+    destInstaller: firstStaged.destInstaller,
+    destSig: firstStaged.destSig,
+  };
 }
 
 /**
@@ -202,29 +354,33 @@ export function main(argv = process.argv.slice(2)) {
   }
 
   const root = process.cwd();
-  const candidateBundleDirs = values["bundle-dir"] ? [...values["bundle-dir"]] : [];
-  candidateBundleDirs.push(
-    path.join(root, "target", "release", "bundle", "nsis"),
-    path.join(root, "desktop", "src-tauri", "target", "release", "bundle", "nsis"),
-    path.join(root, "target", "release", "bundle"),
-    path.join(root, "desktop", "src-tauri", "target", "release", "bundle")
-  );
+  const candidateBundleDirs =
+    values["bundle-dir"] && values["bundle-dir"].length > 0
+      ? [...values["bundle-dir"]]
+      : [
+          path.join(root, "target", "release", "bundle", "nsis"),
+          path.join(root, "desktop", "src-tauri", "target", "release", "bundle", "nsis"),
+          path.join(root, "target", "release", "bundle", "appimage"),
+          path.join(root, "desktop", "src-tauri", "target", "release", "bundle", "appimage"),
+          path.join(root, "target", "release", "bundle"),
+          path.join(root, "desktop", "src-tauri", "target", "release", "bundle"),
+        ];
 
-  let installer = values.installer;
-  let sig = values.sig;
-
-  if (installer && sig) {
-    // Both explicitly provided
+  let platforms;
+  if (values.installer && values.sig) {
+    platforms = {
+      [inferPlatformKey(values.installer)]: {
+        installerPath: values.installer,
+        sigPath: values.sig,
+      },
+    };
   } else {
-    const found = find_bundle_artifacts(candidateBundleDirs);
-    installer = found.installerPath;
-    sig = found.sigPath;
+    platforms = find_platform_artifacts(candidateBundleDirs);
   }
 
   assemble_manifest({
     version: values.version,
-    installerPath: installer,
-    sigPath: sig,
+    platforms,
     outDir: values["out-dir"],
     repo: values.repo,
     tag: values.tag,
