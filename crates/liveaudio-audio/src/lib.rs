@@ -3,6 +3,8 @@
 pub mod cpal_source;
 pub mod device;
 pub mod error;
+#[cfg(any(target_os = "linux", test))]
+pub(crate) mod linux_pulse;
 pub mod mock;
 pub mod resampler;
 pub mod resilient;

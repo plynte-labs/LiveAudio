@@ -82,10 +82,14 @@ fn cli_stream_config(config: &LiveAudioConfig) -> AudioStreamConfig {
 /// `devices` output: the ids `audio_device.id` accepts, as the desktop lists them.
 fn device_list_lines(enumerated: &[AudioDeviceInfo]) -> Vec<String> {
     let mut entries = vec![("default_microphone", "Default system microphone", true)];
-    if cfg!(windows) {
+    if cfg!(any(target_os = "windows", target_os = "linux")) {
         entries.push((
             "default_loopback",
-            "System audio / speakers (WASAPI loopback)",
+            if cfg!(target_os = "windows") {
+                "System audio / speakers (WASAPI loopback)"
+            } else {
+                "System audio / speakers (Loopback)"
+            },
             false,
         ));
     }
@@ -1293,7 +1297,7 @@ mod headless_parity_tests {
         assert!(lines.iter().any(|l| l.contains("[default_microphone]")));
         assert_eq!(
             lines.iter().any(|l| l.contains("[default_loopback]")),
-            cfg!(windows)
+            cfg!(any(target_os = "windows", target_os = "linux"))
         );
         assert!(lines
             .iter()
