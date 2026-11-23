@@ -829,10 +829,23 @@ mod tests {
         assert!(!capture_failed.load(Ordering::SeqCst));
     }
 
+    fn loopback_backend_available(host: &cpal::Host) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            let _ = host;
+            crate::linux_pulse::enumerate_pulse_devices()
+                .is_some_and(|devices| devices.iter().any(|dev| dev.is_loopback))
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            host.default_output_device().is_some()
+        }
+    }
+
     #[test]
     fn explicitly_missing_loopback_device_is_not_replaced_by_default_output() {
         let host = cpal::default_host();
-        if host.default_output_device().is_some() {
+        if loopback_backend_available(&host) {
             let result = CpalAudioSource::resolve_capture_device(
                 &host,
                 Some("loopback:__missing_liveaudio_device__"),
@@ -844,7 +857,7 @@ mod tests {
     #[test]
     fn default_loopback_resolves_to_default_output() {
         let host = cpal::default_host();
-        if host.default_output_device().is_some() {
+        if loopback_backend_available(&host) {
             let result = CpalAudioSource::resolve_capture_device(&host, Some("default_loopback"));
             assert!(result.is_ok());
             assert!(result.unwrap().is_loopback());
