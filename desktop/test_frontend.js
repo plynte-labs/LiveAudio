@@ -2728,6 +2728,42 @@ return { sanitizeThemeTokens, applyTheme };`)(fakeDocument);
       'checkForUpdatesManual keeps err_update_offline for generic network errors');
   }
 
+  // T4: engine section. Model picker is generic and Parakeet locks the CPU-only controls.
+  console.log('\n--- Verifying Engine Section for Parakeet ---');
+  {
+    const modelSelect = htmlContent.match(/<select id="select-model-size"[\s\S]*?<\/select>/)?.[0] ?? '';
+    assert(runtimeSettings.isParakeetModel?.('parakeet (Multilingüe ES/EN, CPU)') === true
+      && runtimeSettings.isParakeetModel?.('small (Balance CPU)') === false
+      && runtimeSettings.isParakeetModel?.(undefined) === false,
+    'isParakeetModel recognizes only the Parakeet model value');
+    assert(/<optgroup label="Whisper">[\s\S]*opt_model_turbo[\s\S]*<\/optgroup>\s*<optgroup label="Parakeet">[\s\S]*opt_model_parakeet[\s\S]*<\/optgroup>/.test(modelSelect),
+      'Model selector groups its options in Whisper and Parakeet optgroups');
+    assert(htmlContent.includes('id="hint-parakeet-engine"') && htmlContent.includes('data-i18n="hint_parakeet_engine"'),
+      'Engine section has a Parakeet hint');
+    for (const [lang, label] of [['es', 'Modelo'], ['en', 'Model']]) {
+      assert(TRANSLATIONS[lang].lbl_model_size === label, `lbl_model_size is the generic "${label}" (${lang})`);
+      assert(TRANSLATIONS[lang].hint_parakeet_engine && TRANSLATIONS[lang].engine_parakeet_cpu,
+        `Parakeet engine copy is localized (${lang})`);
+    }
+    setLanguage('en');
+    const pk = await loadAppHarness(styleBaseConfig);
+    const model = pk.el('select-model-size');
+    model.value = 'parakeet (Multilingüe ES/EN, CPU)';
+    model.dispatch('change');
+    await pk.settle();
+    assert(pk.el('select-compute-device').disabled === true && pk.el('select-asr-backend').disabled === true
+      && pk.el('hint-parakeet-engine').hidden === false
+      && pk.el('engine-status-text').textContent === t('engine_parakeet_cpu'),
+    'Selecting Parakeet disables device and engine selectors and reports CPU in the engine status');
+    model.value = 'small (Balance CPU)';
+    model.dispatch('change');
+    await pk.settle();
+    assert(pk.el('select-compute-device').disabled === false && pk.el('select-asr-backend').disabled === false
+      && pk.el('hint-parakeet-engine').hidden === true
+      && pk.el('engine-status-text').textContent !== t('engine_parakeet_cpu'),
+    'Selecting a Whisper model re-enables the selectors and the usual engine status');
+  }
+
   // Restore Spanish as default
   setLanguage('es');
 

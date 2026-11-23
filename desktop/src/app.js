@@ -4,7 +4,7 @@
  * LiveAudio Tauri Desktop Frontend Application Logic
  */
 
-import { adoptSavedStyle, audioStateKey, bindProfileSelection, bindTabNavigation, externalConfigUpdate, generalFields, hardwareStatusLabel, mergeSavedConfigIntoForm, monitorBannerText, monitorFeedAction, monitorFeedText, persistAndApplyRuntimeConfig, sessionFailureLabel, STYLE_CONFIG_KEYS, styleFields, engineKind, gpuReasonKey, nvidiaOfferVisible, nvidiaCardView, nvidiaInstallConfig, advancedView, TAB_RESETS } from './runtime-settings.js';
+import { adoptSavedStyle, audioStateKey, bindProfileSelection, bindTabNavigation, externalConfigUpdate, generalFields, hardwareStatusLabel, mergeSavedConfigIntoForm, monitorBannerText, monitorFeedAction, monitorFeedText, persistAndApplyRuntimeConfig, sessionFailureLabel, STYLE_CONFIG_KEYS, styleFields, engineKind, isParakeetModel, gpuReasonKey, nvidiaOfferVisible, nvidiaCardView, nvidiaInstallConfig, advancedView, TAB_RESETS } from './runtime-settings.js';
 import { initLanguage, setLanguage, getLanguage, t, applyTranslations, getProfilePresetData, PROFILE_I18N } from './i18n.js';
 import { controlsFromTheme, deletePreset, fontChoices, fontFamiliesForPlatform, loadPresetTheme, presetNameFromOption, presetOptionValue, previewHoldMs, previewProperties, previewWordDelays, savePreset, themeFromControls } from './subtitle-style.js';
 
@@ -334,6 +334,7 @@ const elements = {
   sliderMaxChunk: document.getElementById('slider-max-chunk'),
   valMaxChunk: document.getElementById('val-max-chunk'),
   selectModelSize: document.getElementById('select-model-size'),
+  hintParakeetEngine: document.getElementById('hint-parakeet-engine'),
   selectAsrLang: document.getElementById('select-asr-lang'),
   promptEs: document.getElementById('prompt-es'),
   btnSuggestPromptEs: document.getElementById('btn-suggest-prompt-es'),
@@ -545,9 +546,19 @@ function toggleLoggerCollapse() {
   }
 }
 
+// Parakeet ignores device and engine choices (CPU int8 in the ORT worker): lock them and say so.
+function syncEngineControls() {
+  const parakeet = isParakeetModel(elements.selectModelSize.value);
+  elements.selectComputeDevice.disabled = parakeet;
+  elements.selectAsrBackend.disabled = parakeet;
+  elements.hintParakeetEngine.hidden = !parakeet;
+  updateComputeDeviceReactivity();
+  renderEngineSummary();
+}
+
 function updateComputeDeviceReactivity(device) {
   const currentDevice = device || (elements.selectComputeDevice ? elements.selectComputeDevice.value : 'cpu');
-  const isCuda = currentDevice === 'cuda';
+  const isCuda = currentDevice === 'cuda' && !isParakeetModel(elements.selectModelSize.value);
   const group = elements.groupCpuThreads || elements.sliderCpuThreads?.closest('.form-group');
 
   if (elements.sliderCpuThreads) {
@@ -2038,6 +2049,7 @@ function populateAdvancedControls(config) {
 
   elements.selectBacklogPolicy.value = config.subtitle_backlog_policy || 'auto';
   elements.selectAsrBackend.value = config.asr_backend || 'auto';
+  syncEngineControls();
 
   elements.sliderMaxLiveDelay.value = config.subtitle_max_live_delay_sec || 10.0;
   elements.valMaxLiveDelay.textContent = `${config.subtitle_max_live_delay_sec || 10.0}s`;
@@ -2484,9 +2496,11 @@ async function initApp() {
       updateStatusUI(currentStatus);
       applyTranslations(newLang);
       updateComputeDeviceReactivity();
+      renderEngineSummary();
     });
   }
 
+  elements.selectModelSize.addEventListener('change', syncEngineControls);
   if (elements.selectComputeDevice) {
     elements.selectComputeDevice.addEventListener('change', (e) => {
       updateComputeDeviceReactivity(e.target.value);
@@ -3168,10 +3182,11 @@ function renderEngineSummary() {
   const running = Boolean(live?.is_running);
   const kind = engineKind(gpuStatus, live);
   const reason = running && live.backend_reason ? live.backend_reason : gpuStatus?.reason;
+  const parakeet = isParakeetModel(elements.selectModelSize.value);
   elements.enginePill.className = running ? 'pill state-listening' : 'pill state-stopped';
-  elements.engineStatusText.textContent = kind ? `${t(running ? 'engine_using' : 'engine_will_use')}${t(`engine_name_${kind}`)}` : '';
-  elements.engineStatusReason.textContent = reason ? t(gpuReasonKey(reason)) : '';
-  elements.btnNvidiaAdvanced.hidden = !nvidiaOfferVisible(gpuStatus, false);
+  elements.engineStatusText.textContent = parakeet ? t('engine_parakeet_cpu') : kind ? `${t(running ? 'engine_using' : 'engine_will_use')}${t(`engine_name_${kind}`)}` : '';
+  elements.engineStatusReason.textContent = reason && !parakeet ? t(gpuReasonKey(reason)) : '';
+  elements.btnNvidiaAdvanced.hidden = parakeet || !nvidiaOfferVisible(gpuStatus, false);
 }
 
 function renderEngineDetails() {

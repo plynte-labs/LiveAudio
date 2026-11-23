@@ -264,6 +264,11 @@ export const NVIDIA_MIN_DRIVER = 12080;
  * Engine a status points to, as 'cuda', 'directml' or 'cpu': the live engine while the service runs,
  * otherwise the selected one (ONNX uses DirectML when a GPU is present). Null when nothing is known.
  */
+// Parakeet always runs on the CPU (int8) in the ORT worker, whatever device or engine is selected.
+export function isParakeetModel(modelSize) {
+  return String(modelSize ?? '').trim().toLowerCase().startsWith('parakeet');
+}
+
 export function engineKind(gpu, live) {
   if (live?.is_running && live.active_backend) {
     const device = String(live.effective_device || '').toLowerCase();

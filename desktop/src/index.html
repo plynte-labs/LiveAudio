@@ -345,13 +345,18 @@
                   <div class="form-group">
                     <label for="select-model-size" data-i18n="lbl_model_size">Tamaño del modelo Whisper</label>
                     <select id="select-model-size" class="form-control">
-                      <option value="tiny (Más rápido, baja precisión)" data-i18n="opt_model_tiny">tiny (Más rápido, baja precisión)</option>
-                      <option value="base (Rápido)" data-i18n="opt_model_base">base (Rápido)</option>
-                      <option value="small (Balance CPU)" selected data-i18n="opt_model_small">small (Balance CPU / GPU equilibrado)</option>
-                      <option value="turbo (Máxima precisión GPU)" data-i18n="opt_model_turbo">turbo (Máxima precisión GPU)</option>
-                      <option value="parakeet (Multilingüe ES/EN, CPU)" data-i18n="opt_model_parakeet">parakeet (Multilingüe ES/EN, CPU)</option>
+                      <optgroup label="Whisper">
+                        <option value="tiny (Más rápido, baja precisión)" data-i18n="opt_model_tiny">tiny (Más rápido, baja precisión)</option>
+                        <option value="base (Rápido)" data-i18n="opt_model_base">base (Rápido)</option>
+                        <option value="small (Balance CPU)" selected data-i18n="opt_model_small">small (Balance CPU / GPU equilibrado)</option>
+                        <option value="turbo (Máxima precisión GPU)" data-i18n="opt_model_turbo">turbo (Máxima precisión GPU)</option>
+                      </optgroup>
+                      <optgroup label="Parakeet">
+                        <option value="parakeet (Multilingüe ES/EN, CPU)" data-i18n="opt_model_parakeet">parakeet (Multilingüe ES/EN, CPU)</option>
+                      </optgroup>
                     </select>
                     <span class="form-hint" data-i18n="hint_model_size">Los modelos grandes pueden consumir más memoria de GPU.</span>
+                    <span id="hint-parakeet-engine" class="form-hint" data-i18n="hint_parakeet_engine" hidden>Parakeet se ejecuta en la CPU y detecta el idioma automáticamente.</span>
                   </div>
                   <div class="form-group">
                     <label for="select-compute-device" data-i18n="lbl_compute_device">Dispositivo de cómputo</label>
