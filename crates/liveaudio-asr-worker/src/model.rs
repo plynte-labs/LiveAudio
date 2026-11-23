@@ -748,7 +748,7 @@ impl WhisperOrtEngine {
         Ok((encoder, decoder, decoder_with_past))
     }
 
-    fn make_session_builder(
+    pub(crate) fn make_session_builder(
         device: &str,
         cpu_threads: Option<usize>,
     ) -> Result<SessionBuilder, String> {
