@@ -283,7 +283,7 @@ async function runTests() {
   assert(htmlContent.includes('id="badge-prompt-lang"'), 'Prompt active language indicator badge exists');
   assert(htmlContent.includes('id="btn-open-session-folder"') && htmlContent.includes('id="session-path"'), 'Subtitles & session folder button and path exist in UI');
   assert(htmlContent.includes('id="slider-max-chunk"') && htmlContent.includes('max="30.0"'), 'Max chunk duration slider caps at the 30.0s worker window');
-  assert(htmlContent.includes('v1.6.0'), 'Version 1.6.0 badge rendered in index.html');
+  assert(htmlContent.includes('v1.6.5'), 'Version 1.6.5 badge rendered in index.html');
   const authorLink = htmlContent.match(/<a\b[^>]*id="author-profile-link"[^>]*>([\s\S]*?)<\/a>/i);
   assert(authorLink && authorLink[0].includes('data-i18n-aria-label="author_credit_accessible"') && authorLink[1] === 'FranGuh',
     'Author credit is a localized-aria anchor in the About footer');
@@ -874,11 +874,11 @@ async function runTests() {
   assert(stableEn.label === 'Stable Streaming' && stableEn.samplePrompt.length > 0,
     'English stable streaming profile preset has label and prompt suggestion');
 
-  // 6. Verify version 1.6.0 consistency across workspace and manifests
+  // 6. Verify version 1.6.5 consistency across workspace and manifests
   const rootCargo = fs.readFileSync(path.join(__dirname, '..', 'Cargo.toml'), 'utf8');
-  assert(rootCargo.includes('version = "1.6.0"'), 'Root Cargo.toml has version 1.6.0');
+  assert(rootCargo.includes('version = "1.6.5"'), 'Root Cargo.toml has version 1.6.5');
   const tauriConf = JSON.parse(fs.readFileSync(path.join(__dirname, 'src-tauri', 'tauri.conf.json'), 'utf8'));
-  assert(tauriConf.version === '1.6.0', 'tauri.conf.json has version 1.6.0');
+  assert(tauriConf.version === '1.6.5', 'tauri.conf.json has version 1.6.5');
   // NSIS locates the previous install via HKCU\Software\<publisher>\<productName>;
   // every released build used "franguh", so changing it breaks upgrades and updates.
   assert(tauriConf.bundle.publisher === 'franguh',
@@ -993,7 +993,7 @@ async function runTests() {
   assert(hooksContent.includes('liveaudio-desktop.exe'),
     'hooks.nsh identifies modern Rust desktop client to prevent false-positive uninstallation');
 
-  assert(t('app_version').includes('v1.6.0'), 'i18n app_version includes v1.6.0');
+  assert(t('app_version').includes('v1.6.5'), 'i18n app_version includes v1.6.5');
 
   // 7. Verify Accessible Modal System & 3rd Loading State Button
   assert(htmlContent.includes('id="modal-container"'), 'Accessible modal container element exists in index.html');

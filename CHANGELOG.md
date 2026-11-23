@@ -4,7 +4,26 @@ Todos los cambios notables de LiveAudio se documentan aquí.
 
 ---
 
-## [Unreleased]
+## [1.6.5] - 2026-11-23
+
+### Agregado
+
+- **Modelo local Parakeet-TDT 0.6B v3 (NVIDIA, CC-BY-4.0)** — int8 en CPU (~0.7 GB) y encoder de precisión completa en GPU mediante DirectML/CUDA, descargado bajo demanda (~2.5 GB) con respaldo automático a CPU y detección automática de idioma ES/EN.
+- **Opción "Seguir idioma de OpenCohost"** — Con línea de estado del idioma detectado.
+
+### Cambiado
+
+- **Pestaña Avanzado reorganizada** en secciones con iconos.
+- **Selector "Modelo" agrupado** por Whisper/Parakeet.
+- **El control de hilos de CPU** solo está activo cuando se usa CPU.
+- **Iconos de sección** en la pantalla principal.
+- **Indicadores "Detenido" e "Inactivo" eliminados.**
+
+### Corregido
+
+- **Instalador de Windows** publicado de nuevo como `LiveAudio-Setup-<versión>.exe`.
+- **Resolución de `pactl`** movida fuera del runtime asíncrono.
+- **Advertencias de Rust 1.100** (`try_update`, `homepage` redundante).
 
 ### Agregado (Linux)
 

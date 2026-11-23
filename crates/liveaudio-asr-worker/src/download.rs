@@ -255,7 +255,7 @@ pub async fn prepare_parakeet(
     std::fs::create_dir_all(&cache_dir)
         .map_err(|e| format!("Failed to create cache directory {}: {e}", cache_dir.display()))?;
     let client = Client::builder()
-        .user_agent("LiveAudio/1.6.0")
+        .user_agent(concat!("LiveAudio/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(CONNECT_TIMEOUT)
         .read_timeout(READ_IDLE_TIMEOUT)
         .build()
@@ -315,7 +315,7 @@ pub async fn prepare_model(
         .map_err(|e| format!("Failed to create cache directory {}: {e}", cache_dir.display()))?;
 
     let client = Client::builder()
-        .user_agent("LiveAudio/1.6.0")
+        .user_agent(concat!("LiveAudio/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(CONNECT_TIMEOUT)
         .read_timeout(READ_IDLE_TIMEOUT)
         .build()

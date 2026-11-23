@@ -9,7 +9,7 @@ export const TRANSLATIONS = {
   es: {
     // Header & Brand
     app_title: 'LiveAudio',
-    app_version: 'v1.6.0',
+    app_version: 'v1.6.5',
     update_pill: 'Actualizar a v{version}',
     author_credit_accessible: 'Visitar el perfil de Franguh en GitHub (se abre en el navegador del sistema)',
     btn_about: 'Acerca de LiveAudio',
@@ -445,7 +445,7 @@ export const TRANSLATIONS = {
   en: {
     // Header & Brand
     app_title: 'LiveAudio',
-    app_version: 'v1.6.0',
+    app_version: 'v1.6.5',
     update_pill: 'Update v{version}',
     author_credit_accessible: 'Visit Franguh on GitHub (opens in the system browser)',
     btn_about: 'About LiveAudio',

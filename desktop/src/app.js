@@ -96,7 +96,7 @@ function mockInvoke(cmd, args) {
 
     case 'get_updater_status':
       return Promise.resolve({
-        current_version: '1.6.0',
+        current_version: '1.6.5',
         available_update: null,
         install_on_close: false,
         is_checking: false,

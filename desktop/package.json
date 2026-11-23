@@ -1,6 +1,6 @@
 {
   "name": "liveaudio-desktop",
-  "version": "1.6.0",
+  "version": "1.6.5",
   "description": "LiveAudio Desktop Client (Tauri 2)",
   "type": "module",
   "scripts": {
