@@ -64,6 +64,7 @@ function mockInvoke(cmd, args) {
         whisper_context_prompt_es: '',
         whisper_context_prompt_en: '',
         asr_language: 'es',
+        follow_opencohost_language: false,
         settings_navigation_mode: 'tabs',
         language: 'es',
         diagnostics_enabled: false,
@@ -409,6 +410,7 @@ const elements = {
   checkSaveTranscript: document.getElementById('check-save-transcript'),
   checkSaveVtt: document.getElementById('check-save-vtt'),
   checkRnnoiseEnabled: document.getElementById('check-rnnoise-enabled'),
+  checkFollowOpencohostLanguage: document.getElementById('check-follow-opencohost-language'),
   checkMcpStyleEnabled: document.getElementById('check-mcp-style-enabled'),
   checkMcpSystemEnabled: document.getElementById('check-mcp-system-enabled'),
   checkAcousticEventsEnabled: document.getElementById('check-acoustic-events-enabled'),
@@ -2048,6 +2050,7 @@ function populateAdvancedControls(config) {
   elements.valVadThreshold.textContent = `${config.vad_threshold || 0.5}`;
 
   elements.checkRnnoiseEnabled.checked = Boolean(config.rnnoise_enabled);
+  elements.checkFollowOpencohostLanguage.checked = Boolean(config.follow_opencohost_language);
   if (elements.checkMcpStyleEnabled) elements.checkMcpStyleEnabled.checked = config.mcp_style_enabled === true;
   if (elements.checkMcpSystemEnabled) elements.checkMcpSystemEnabled.checked = config.mcp_system_enabled === true;
   if (elements.checkUpdatesEnabled) elements.checkUpdatesEnabled.checked = config.check_updates_enabled !== false;
@@ -2164,6 +2167,7 @@ function collectFormData() {
 
   cfg.model_size = elements.selectModelSize.value;
   cfg.asr_language = currentAsrLang;
+  cfg.follow_opencohost_language = elements.checkFollowOpencohostLanguage.checked;
   cfg.whisper_context_prompt_es = drafts.prompts.es.trim();
   cfg.whisper_context_prompt_en = drafts.prompts.en.trim();
   cfg.blacklist = drafts.blacklists[currentAsrLang].trim();

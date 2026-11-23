@@ -5,6 +5,7 @@ const RUNTIME_SETTINGS = [
   'audio_device',
   'ws_port',
   'asr_language',
+  'follow_opencohost_language',
   'language',
   'whisper_context_prompt_es',
   'whisper_context_prompt_en',

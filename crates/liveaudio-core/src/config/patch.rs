@@ -45,6 +45,7 @@ pub const MCP_PATCHABLE_KEYS: &[&str] = &[
     "whisper_context_prompt_es",
     "whisper_context_prompt_en",
     "asr_language",
+    "follow_opencohost_language",
     "settings_navigation_mode",
     "language",
     "diagnostics_enabled",
@@ -85,6 +86,7 @@ pub const RESTART_REQUIRED_KEYS: &[&str] = &[
     "model_size",
     "ws_port",
     "asr_language",
+    "follow_opencohost_language",
     "language",
     "whisper_context_prompt_es",
     "whisper_context_prompt_en",
@@ -489,6 +491,12 @@ mod tests {
         assert!(MCP_PATCHABLE_KEYS.contains(&"asr_backend"));
         assert!(RESTART_REQUIRED_KEYS.contains(&"asr_backend"));
         assert_eq!(enum_values("asr_backend"), Some(VALID_ASR_BACKENDS));
+    }
+
+    #[test]
+    fn follow_opencohost_language_is_patchable_and_restart_required() {
+        assert!(MCP_PATCHABLE_KEYS.contains(&"follow_opencohost_language"));
+        assert!(RESTART_REQUIRED_KEYS.contains(&"follow_opencohost_language"));
     }
 
     #[test]

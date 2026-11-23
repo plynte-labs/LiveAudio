@@ -376,6 +376,13 @@ async function runTests() {
     && jsContent.includes('cfg.rnnoise_enabled = elements.checkRnnoiseEnabled.checked')
     && jsContent.includes('cfg.acoustic_events_enabled = elements.checkAcousticEventsEnabled.checked'),
     'optional audio settings round-trip through the desktop draft and saved config');
+  assert(jsContent.includes('checkFollowOpencohostLanguage.checked = Boolean(config.follow_opencohost_language)')
+    && jsContent.includes('cfg.follow_opencohost_language = elements.checkFollowOpencohostLanguage.checked'),
+    'follow OpenCohost language toggle round-trips through the desktop draft and saved config');
+  assert(htmlContent.includes('id="check-follow-opencohost-language"')
+    && htmlContent.includes('data-i18n="hint_follow_opencohost_language"')
+    && /<label class="switch-label">\s*<span class="switch-track"><input type="checkbox" id="check-follow-opencohost-language"/.test(htmlContent),
+    'follow OpenCohost language toggle exposes an accessible switch with a hint');
   assert(jsContent.includes('checkLivePartialSubtitles.checked = Boolean(config.live_partial_subtitles_enabled)')
     && jsContent.includes('cfg.live_partial_subtitles_enabled = elements.checkLivePartialSubtitles.checked'),
     'the live partial subtitles flag round-trips through the desktop draft and saved config');
@@ -524,6 +531,12 @@ async function runTests() {
   assert(dtsContent.includes('rnnoise_enabled: boolean;')
     && dtsContent.includes('acoustic_events_enabled: boolean;'),
     'LiveAudioConfig declares persisted optional audio flags');
+  assert(dtsContent.includes('follow_opencohost_language: boolean;'),
+    'LiveAudioConfig declares follow_opencohost_language');
+  for (const key of ['lbl_follow_opencohost_language', 'hint_follow_opencohost_language']) {
+    assert((i18nContent.match(new RegExp(`${key}:`, 'g')) || []).length === 2,
+      `${key} is localized in Spanish and English`);
+  }
   assert(dtsContent.includes('asr_backend: string;'), 'LiveAudioConfig types declare asr_backend');
   assert(dtsContent.includes('live_partial_subtitles_enabled: boolean;'),
     'LiveAudioConfig declares the live partial subtitles flag');
@@ -1616,7 +1629,7 @@ return { sanitizeThemeTokens, applyTheme };`)(fakeDocument);
   // 15. Style tab through the real app.js (vm harness): save -> adopt, edits during a save, external changes
   // The stub has no <option> elements, so the model select keeps ''; the blacklists and flags are set so the form round-trips.
   const styleBaseConfig = {
-    language: 'es', asr_language: 'es', model_size: '', device: 'cpu', cpu_threads: 4, silence_timeout: 1.5,
+    language: 'es', asr_language: 'es', follow_opencohost_language: false, model_size: '', device: 'cpu', cpu_threads: 4, silence_timeout: 1.5,
     max_chunk_duration: 10, ws_port: 8765, blacklist: 'x', whisper_context_prompt_es: '', whisper_context_prompt_en: '',
     extra: { blacklist_es: 'x', blacklist_en: 'x' }, continuous_session: false, save_transcript_enabled: false,
     save_vtt_enabled: false, rnnoise_enabled: false, mcp_style_enabled: false, mcp_system_enabled: false, acoustic_events_enabled: false, live_partial_subtitles_enabled: false, asr_backend: 'auto',

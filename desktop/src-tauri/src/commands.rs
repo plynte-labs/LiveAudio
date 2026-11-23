@@ -1343,16 +1343,7 @@ async fn start_pipeline_locked(
         .next()
         .unwrap_or("small")
         .to_string();
-    let clean_lang = if !config.asr_language.is_empty() {
-        config.asr_language.clone()
-    } else {
-        config
-            .language
-            .as_deref()
-            .filter(|language| !language.is_empty() && *language != "auto")
-            .unwrap_or("es")
-            .to_string()
-    };
+    let clean_lang = liveaudio_core::opencohost::effective_asr_language(&config);
     let prompt = if clean_lang == "en" {
         &config.whisper_context_prompt_en
     } else {
@@ -2405,15 +2396,7 @@ fn utterance_seq(utterance_id: &str) -> u64 {
 }
 
 fn asr_language_and_prompt(cfg: &LiveAudioConfig) -> (String, Option<String>) {
-    let clean_lang = if !cfg.asr_language.is_empty() {
-        cfg.asr_language.clone()
-    } else {
-        cfg.language
-            .as_deref()
-            .filter(|language| !language.is_empty() && *language != "auto")
-            .unwrap_or("es")
-            .to_string()
-    };
+    let clean_lang = liveaudio_core::opencohost::effective_asr_language(cfg);
     let prompt = if clean_lang == "en" {
         cfg.whisper_context_prompt_en.trim()
     } else {

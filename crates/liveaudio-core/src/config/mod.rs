@@ -251,6 +251,10 @@ pub struct LiveAudioConfig {
     #[serde(default = "default_asr_language")]
     pub asr_language: String,
 
+    /// Use the language OpenCohost's co-host speaks as the speech language (in memory, not persisted).
+    #[serde(default)]
+    pub follow_opencohost_language: bool,
+
     #[serde(default = "default_settings_navigation_mode")]
     pub settings_navigation_mode: String,
 
@@ -427,6 +431,7 @@ impl Default for LiveAudioConfig {
             whisper_context_prompt_es: String::new(),
             whisper_context_prompt_en: String::new(),
             asr_language: default_asr_language(),
+            follow_opencohost_language: false,
             settings_navigation_mode: default_settings_navigation_mode(),
             language: None,
             diagnostics_enabled: false,
@@ -1055,6 +1060,7 @@ mod tests {
     fn optional_audio_flags_default_off_for_legacy_and_round_trip_when_explicit() {
         let legacy: LiveAudioConfig = serde_json::from_str("{}").expect("legacy config");
         assert!(!legacy.rnnoise_enabled);
+        assert!(!legacy.follow_opencohost_language);
         assert!(!legacy.acoustic_events_enabled);
         assert!(!legacy.live_partial_subtitles_enabled);
 

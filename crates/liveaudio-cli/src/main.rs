@@ -841,12 +841,14 @@ async fn run_service(
         .unwrap_or("small")
         .to_string();
 
-    let clean_lang = config
-        .language
-        .as_deref()
-        .filter(|l| !l.is_empty() && *l != "auto")
-        .unwrap_or("es")
-        .to_string();
+    let clean_lang = liveaudio_core::opencohost::language_override(&config).unwrap_or_else(|| {
+        config
+            .language
+            .as_deref()
+            .filter(|l| !l.is_empty() && *l != "auto")
+            .unwrap_or("es")
+            .to_string()
+    });
 
     let prompt = if clean_lang == "en" {
         &config.whisper_context_prompt_en
