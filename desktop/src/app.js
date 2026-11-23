@@ -305,8 +305,6 @@ const elements = {
   aboutSince: document.getElementById('about-since'),
   aboutEmpty: document.getElementById('about-empty'),
   selectUiLang: document.getElementById('select-ui-lang'),
-  pillStatus: document.getElementById('pill-status'),
-  pillStatusText: document.getElementById('pill-status-text'),
   pillVad: document.getElementById('pill-vad'),
   pillVadText: document.getElementById('pill-vad-text'),
   pillWs: document.getElementById('pill-ws'),
@@ -426,7 +424,6 @@ const elements = {
   subtitlesFeedContainer: document.getElementById('subtitles-feed-container'),
   feedEmptyState: document.getElementById('feed-empty-state'),
   feedCountBadge: document.getElementById('feed-count-badge'),
-  feedLiveBadge: document.getElementById('feed-live-badge'),
   btnTestSubtitle: document.getElementById('btn-test-subtitle'),
   btnClearFeed: document.getElementById('btn-clear-feed'),
   feedActionMenu: document.getElementById('feed-action-menu'),
@@ -940,40 +937,6 @@ function updateStatusUI(status) {
     `;
   }
 
-  // ASR State Pill
-  const state = status.monitor_mode ? 'monitor' : (status.asr_state || (status.is_running ? 'listening' : 'stopped'));
-  const isAudioStandbyOrReconnecting = Boolean(
-    status.is_running && (status.audio_state === 'standby' || status.audio_state === 'reconnecting')
-  );
-  const cssState = state === 'monitor'
-    ? 'listening'
-    : state.startsWith('error')
-    ? 'failed'
-    : isAudioStandbyOrReconnecting
-    ? 'degraded'
-    : (state.startsWith('Descargando') || state === 'downloading' || state === 'loading')
-    ? 'starting'
-    : state;
-  elements.pillStatus.className = `pill state-${cssState}`;
-  const stateLabels = {
-    stopped: t('status_stopped'),
-    starting: t('status_starting'),
-    loading: t('status_loading'),
-    downloading: t('status_downloading'),
-    ready: t('status_ready'),
-    listening: t('status_listening'),
-    transcribing: t('status_transcribing'),
-    degraded: t('status_degraded'),
-    failed: t('status_failed'),
-    monitor: t('status_monitor'),
-  };
-  let pillText = stateLabels[state] || state;
-  if (isAudioStandbyOrReconnecting) {
-    const audioLabel = t(`audio_${status.audio_state}`) || status.audio_state;
-    pillText += ` | Audio: ${audioLabel}`;
-  }
-  elements.pillStatusText.textContent = pillText;
-
   // VAD Pill
   if (status.vad_onset) {
     elements.pillVad.classList.add('active');
@@ -1037,11 +1000,6 @@ function updateStatusUI(status) {
   const isFeedLive = Boolean(status.is_running || status.monitor_mode || (monitorFeed && monitorFeed.socket));
   if (elements.cardSubtitlesFeed) {
     elements.cardSubtitlesFeed.classList.toggle('feed-active', isFeedLive);
-  }
-  if (elements.feedLiveBadge) {
-    elements.feedLiveBadge.className = isFeedLive ? 'badge badge-feed-live' : 'badge badge-feed-idle';
-    elements.feedLiveBadge.textContent = isFeedLive ? t('feed_badge_live') : t('feed_badge_idle');
-    elements.feedLiveBadge.setAttribute('data-i18n', isFeedLive ? 'feed_badge_live' : 'feed_badge_idle');
   }
   if (elements.feedEmptyState && elements.subtitlesFeedContainer && !elements.subtitlesFeedContainer.querySelector('.feed-item')) {
     elements.feedEmptyState.textContent = isFeedLive

@@ -440,8 +440,6 @@ export const TRANSLATIONS = {
     hw_active_directml: 'GPU activa (DirectML)',
     hw_active_cuda: 'GPU activa (CUDA)',
     hw_active_cpu: 'CPU activa',
-    feed_badge_live: 'En vivo',
-    feed_badge_idle: 'Inactivo',
     feed_listening_live: 'Escuchando audio en vivo — habla para ver los subtítulos en tiempo real...',
   },
 
@@ -879,8 +877,6 @@ export const TRANSLATIONS = {
     hw_active_directml: 'Active GPU (DirectML)',
     hw_active_cuda: 'Active GPU (CUDA)',
     hw_active_cpu: 'Active CPU',
-    feed_badge_live: 'Live',
-    feed_badge_idle: 'Idle',
     feed_listening_live: 'Listening to live audio — speak to see real-time subtitles...',
   },
 };

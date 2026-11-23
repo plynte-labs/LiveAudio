@@ -244,7 +244,6 @@ async function runTests() {
   const htmlContent = fs.readFileSync(htmlPath, 'utf8');
 
   // Verify status pills
-  assert(htmlContent.includes('id="pill-status"'), 'Status pill element exists');
   assert(htmlContent.includes('id="pill-vad"'), 'VAD pill element exists');
   assert(htmlContent.includes('id="pill-ws"'), 'WebSocket port pill element exists');
   assert(htmlContent.includes('id="pill-hw"'), 'Hardware / model pill element exists');
@@ -462,8 +461,8 @@ async function runTests() {
   assert(filesPane.includes('btn-open-session-folder') && filesPane.includes('check-continuous')
     && filesPane.includes('check-save-transcript') && filesPane.includes('check-save-vtt'),
     'Files groups session folder, continuity and export settings');
-  assert(htmlContent.includes('id="pill-status"') && htmlContent.includes('class="status-details"'),
-    'Header keeps one primary status and tucks diagnostics into details');
+  assert(htmlContent.includes('id="pill-vad"') && htmlContent.includes('class="status-details"'),
+    'Header keeps the VAD indicator and tucks diagnostics into details');
   assert(cssContent.includes(':focus-visible') && cssContent.includes('prefers-reduced-motion: reduce'),
     'Styles provide visible keyboard focus and honor reduced-motion preference');
   assert(cssContent.includes('.obs-help summary:focus-visible'),
@@ -1020,7 +1019,7 @@ async function runTests() {
   assert(cssContent.includes('.tabs-footer'), 'Tabs footer CSS styles exist');
 
   // Verify that master-action-bar no longer contains save or reset buttons
-  const masterActionBarHtml = htmlContent.match(/<div class="master-action-bar">([\s\S]*?)<\/div>/)?.[1] || '';
+  const masterActionBarHtml = htmlContent.match(/<div class="master-action-bar"[^>]*>([\s\S]*?)<\/div>/)?.[1] || '';
   assert(masterActionBarHtml.includes('id="btn-toggle-service"'), 'Master action bar contains toggle service button');
   assert(!masterActionBarHtml.includes('id="btn-save-config"'), 'Master action bar no longer contains save button');
   assert(!masterActionBarHtml.includes('id="btn-reset-config"'), 'Master action bar no longer contains reset button');
@@ -1184,8 +1183,6 @@ async function runTests() {
     'Header badge shows only the app version, without the internal framework label');
   assert(!/app_version: '[^']*Tauri/.test(i18nContent),
     'Localized app_version tables drop the internal framework label');
-  assert(appSource.includes('loading: t(\'status_loading\')'),
-    'Status pill maps the loading state to a translated label');
   setLanguage('es');
   assert(t('status_loading') === 'Cargando...', 'Spanish loading status translation exists');
   assert(t('runtime_setup_worker_starting') === 'Iniciando el motor ASR y esperando a que esté listo…',
@@ -2292,13 +2289,7 @@ return { sanitizeThemeTokens, applyTheme };`)(fakeDocument);
 
   // 18. Auto-Activation of Live Subtitle Visualizer Feed
   console.log('\n--- Verifying Live Subtitle Visualizer Auto-Activation ---');
-  assert(htmlContent.includes('id="feed-live-badge"'), '#feed-live-badge element exists in index.html');
-  assert(htmlContent.includes('class="badge badge-feed-idle"'), '#feed-live-badge starts in idle state');
-  assert(cssContent.includes('.badge-feed-live'), '.badge-feed-live CSS class exists');
-  assert(cssContent.includes('.badge-feed-idle'), '.badge-feed-idle CSS class exists');
   assert(cssContent.includes('#card-subtitles-feed.feed-active'), '#card-subtitles-feed.feed-active CSS rule exists');
-  assert(appSource.includes("elements.feedLiveBadge.className = isFeedLive ? 'badge badge-feed-live' : 'badge badge-feed-idle'"),
-    'app.js updates feedLiveBadge class dynamically based on live feed state');
   assert(appSource.includes("const isFeedLive = Boolean(status.is_running || status.monitor_mode || (monitorFeed && monitorFeed.socket));"),
     'Feed active state auto-activates when service is running or in monitor mode');
 
@@ -2608,8 +2599,8 @@ return { sanitizeThemeTokens, applyTheme };`)(fakeDocument);
     const aboutHtml = htmlContent.match(/<div id="about-modal"[\s\S]*?<!-- \/about-modal -->/)?.[0] || '';
     const headerHtml = htmlContent.match(/<header[\s\S]*?<\/header>/)?.[0] || '';
     assert(/<button[^>]*id="btn-about"[^>]*class="brand-badge"[^>]*data-i18n-aria-label="btn_about"[\s\S]*?data-i18n="app_version"/.test(headerHtml)
-      && !headerHtml.includes('author-profile-link') && !headerHtml.includes('lucide-info'),
-    'Header version badge is the localized About button; no author link or info icon');
+      && !headerHtml.includes('author-profile-link'),
+    'Header version badge is the localized About button; no author link, with an info icon');
     assert((aboutHtml.match(/data-i18n="app_version"/g) || []).length === 1 && aboutHtml.includes('id="author-profile-link"'),
     'About shows the version once and hosts the author profile link');
     assert(/role="dialog"/.test(aboutHtml) && aboutHtml.includes('aria-modal="true"') && aboutHtml.includes('aria-labelledby="about-title"')
@@ -2825,7 +2816,29 @@ return { sanitizeThemeTokens, applyTheme };`)(fakeDocument);
     const keys = [...summaries, ...cards.map(([, id]) => `desc_adv_${id.replace('card-adv-', '')}`)];
     const missing = keys.filter((key) => !TRANSLATIONS.es[key] || !TRANSLATIONS.en[key]);
     assert(missing.length === 0, `Section headings and disclosure copy exist in es and en (missing: ${missing.join(', ') || 'none'})`);
-    assert(/\.adv-more summary:focus-visible/.test(cssContent) && /\.adv-icon/.test(cssContent), 'Disclosures keep a visible focus ring and icons are styled');
+    assert(/\.adv-more summary:focus-visible/.test(cssContent) && /\.title-icon/.test(cssContent), 'Disclosures keep a visible focus ring and icons are styled');
+  }
+
+  // T7: main window icons, larger info button and no redundant status pills.
+  console.log('\n--- Verifying Main Window Icons and Removed Pills ---');
+  {
+    assert(!htmlContent.includes('id="pill-status"') && !htmlContent.includes('feed-live-badge')
+      && !appSource.includes('pillStatus') && !appSource.includes('feedLiveBadge')
+      && !cssContent.includes('badge-feed-') && !TRANSLATIONS.es.feed_badge_idle && !TRANSLATIONS.en.feed_badge_live,
+    'The header status pill and the feed Idle pill are gone from markup, JS, CSS and copy');
+    assert(/<div class="master-action-bar" role="status" aria-live="polite">/.test(htmlContent),
+      'Start/Stop state is announced through the master action bar live region');
+    const about = htmlContent.match(/<button[^>]*id="btn-about"[\s\S]*?<\/button>/)?.[0] ?? '';
+    assert(/^<button[^>]*>\s*<svg class="lucide lucide-info[^"]*"[^>]*aria-hidden="true"/.test(about),
+      'Info & stats button starts with a decorative icon');
+    assert(/button\.brand-badge\s*\{[^}]*font-size:\s*0\.85rem[^}]*padding:\s*5px 12px/s.test(cssContent),
+      'Info & stats button is larger than the generic badge');
+    for (const [card, icon] of [['card-subtitles-feed', 'message-square-text'], ['obs-card', 'monitor-play'], ['card-logger', 'scroll-text']]) {
+      const start = htmlContent.indexOf(card);
+      const title = htmlContent.slice(start, htmlContent.indexOf('</span>', start));
+      assert(new RegExp(`<svg class="lucide lucide-${icon} title-icon"[^>]*aria-hidden="true"`).test(title),
+        `Card title of ${card} starts with a decorative ${icon} icon`);
+    }
   }
 
   // Restore Spanish as default

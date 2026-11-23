@@ -1350,11 +1350,13 @@ textarea.form-control {
 /* About modal */
 button.brand-badge {
   app-region: no-drag;
+  font-size: 0.85rem;
+  padding: 5px 12px;
   font-family: inherit;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   white-space: nowrap;
   color: var(--text-main);
   border-color: rgba(16, 185, 129, 0.45);
@@ -1423,13 +1425,13 @@ button.brand-badge:hover svg {
   flex: 1 1 100%;
 }
 
-.adv-title {
+.title-with-icon {
   display: inline-flex;
   align-items: center;
   gap: 8px;
 }
 
-.adv-icon {
+.title-icon {
   flex: none;
   color: var(--accent-primary);
 }
@@ -1939,57 +1941,10 @@ button.brand-badge:focus-visible,
   background-color: rgba(56, 189, 248, 0.1);
 }
 
-/* Live Subtitle Feed Badges and Active Styling */
+/* Live Subtitle Feed active styling */
 #card-subtitles-feed.feed-active {
   border-color: rgba(72, 213, 165, 0.35);
 }
 
-.badge-feed-idle {
-  background-color: rgba(148, 163, 184, 0.12);
-  color: #94a3b8;
-  border: 1px solid rgba(148, 163, 184, 0.25);
-  font-size: 0.72rem;
-  font-weight: 600;
-  padding: 2px 7px;
-  border-radius: 10px;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-}
-
-.badge-feed-live {
-  background-color: rgba(72, 213, 165, 0.15);
-  color: #48d5a5;
-  border: 1px solid rgba(72, 213, 165, 0.35);
-  font-size: 0.72rem;
-  font-weight: 600;
-  padding: 2px 7px;
-  border-radius: 10px;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-}
-
-.badge-feed-live::before {
-  content: '';
-  display: inline-block;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background-color: #48d5a5;
-  box-shadow: 0 0 6px #48d5a5;
-  animation: pulse-dot 2s infinite ease-in-out;
-}
-
-@keyframes pulse-dot {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.4; transform: scale(0.85); }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .badge-feed-live::before {
-    animation: none;
-  }
-}
 
 
