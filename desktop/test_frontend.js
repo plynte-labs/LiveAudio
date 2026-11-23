@@ -2802,6 +2802,32 @@ return { sanitizeThemeTokens, applyTheme };`)(fakeDocument);
     assert(oc.el('status-opencohost-language').hidden === true, 'Turning the slider off hides the status line');
   }
 
+  // T6: Advanced tab regrouped into icon sections with progressive disclosure.
+  console.log('\n--- Verifying Advanced Tab Regrouping ---');
+  {
+    const advHtml = htmlContent.slice(htmlContent.indexOf('<section id="tab-advanced"'), htmlContent.indexOf('<section id="tab-files"'));
+    const priorIds = ['tab-advanced', 'chip-adv-unsaved', 'card-adv-engine', 'select-model-size', 'hint-parakeet-engine', 'select-compute-device', 'device-cuda', 'device-cpu', 'group-cpu-threads', 'slider-cpu-threads', 'val-cpu-threads', 'engine-status-pill', 'engine-status-text', 'btn-nvidia-advanced', 'engine-status-reason', 'select-asr-backend', 'engine-technical-details', 'gpu-status-text', 'group-runtime-maintenance', 'btn-runtime-repair', 'btn-runtime-cancel', 'card-adv-voice', 'slider-silence-timeout', 'val-silence-timeout', 'slider-max-chunk', 'val-max-chunk', 'slider-vad-pad', 'val-vad-pad', 'slider-vad-threshold', 'val-vad-threshold', 'check-rnnoise-enabled', 'hint-rnnoise-enabled', 'card-adv-subtitles', 'check-live-partial-subtitles-enabled', 'hint-live-partial-subtitles', 'select-backlog-policy', 'slider-max-live-delay', 'val-max-live-delay', 'slider-catchup-interval', 'val-catchup-interval', 'card-adv-vocab', 'group-prompt', 'lbl-prompt-title', 'badge-prompt-lang', 'btn-suggest-prompt-es', 'prompt-es', 'hint-prompt', 'group-blacklist', 'lbl-blacklist', 'badge-blacklist-lang', 'input-blacklist', 'hint-blacklist', 'card-adv-network', 'input-ws-port', 'check-acoustic-events-enabled', 'hint-acoustic-events-enabled', 'check-mcp-style-enabled', 'hint-mcp-style-enabled', 'check-mcp-system-enabled', 'hint-mcp-system-enabled', 'card-adv-allowed-origins', 'allowed-ports-list', 'input-add-allowed-port', 'btn-add-allowed-port', 'error-add-allowed-port', 'recent-blocked-list', 'card-adv-updates', 'group-updates', 'check-updates-enabled', 'btn-check-now', 'updater-status', 'card-release-notes', 'update-available-title', 'release-notes-body', 'btn-install-now', 'btn-install-on-close', 'status-update-busy'];
+    const missingIds = priorIds.filter((id) => !advHtml.includes(`id="${id}"`));
+    assert(missingIds.length === 0, `Every pre-existing Advanced element ID is still present (missing: ${missingIds.join(', ') || 'none'})`);
+    const allIds = [...htmlContent.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]);
+    assert(new Set(allIds).size === allIds.length, 'Element IDs are unique across index.html');
+    const cards = [...advHtml.matchAll(/<div class="card adv-card" id="(card-adv-[a-z-]+)">([\s\S]*?)(?=<div class="card adv-card"|<\/section>)/g)];
+    assert(cards.length === 6, `Advanced has six sections (found ${cards.length})`);
+    for (const [, id, body] of cards) {
+      const key = id.replace('card-adv-', '');
+      assert(/<svg class="lucide [^"]*"[^>]*aria-hidden="true"/.test(body) && body.includes(`data-i18n="desc_adv_${key}"`),
+        `Section #${id} has a decorative icon and a one-line description`);
+    }
+    const summaries = [...advHtml.matchAll(/<details\b[^>]*>\s*<summary[^>]*data-i18n="([^"]+)"/g)].map((m) => m[1]);
+    assert(summaries.length === 4 && advHtml.split('<details').length === advHtml.split('</details>').length,
+      'Four collapsed disclosures, each opened by a localized summary, with balanced tags');
+    assert(!/<details[^>]*\bopen\b/.test(advHtml), 'Disclosures start collapsed');
+    const keys = [...summaries, ...cards.map(([, id]) => `desc_adv_${id.replace('card-adv-', '')}`)];
+    const missing = keys.filter((key) => !TRANSLATIONS.es[key] || !TRANSLATIONS.en[key]);
+    assert(missing.length === 0, `Section headings and disclosure copy exist in es and en (missing: ${missing.join(', ') || 'none'})`);
+    assert(/\.adv-more summary:focus-visible/.test(cssContent) && /\.adv-icon/.test(cssContent), 'Disclosures keep a visible focus ring and icons are styled');
+  }
+
   // Restore Spanish as default
   setLanguage('es');
 

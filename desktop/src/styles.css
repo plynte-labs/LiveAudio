@@ -417,6 +417,7 @@ main {
 .author-profile-link:focus-visible,
 .status-details summary:focus-visible,
 .obs-help summary:focus-visible,
+.adv-more summary:focus-visible,
 .btn-secondary:focus-visible,
 .btn-copy-url:focus-visible,
 .btn-link:focus-visible,
@@ -967,7 +968,8 @@ textarea.form-control {
   border-radius: 6px;
 }
 
-.obs-help summary {
+.obs-help summary,
+.adv-more summary {
   color: var(--text-muted);
   cursor: pointer;
   font-size: 0.8rem;
@@ -1420,6 +1422,31 @@ button.brand-badge:hover svg {
 .adv-actions .form-hint {
   flex: 1 1 100%;
 }
+
+.adv-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.adv-icon {
+  flex: none;
+  color: var(--accent-primary);
+}
+
+.adv-desc {
+  margin: 4px 0 12px;
+  font-size: 0.78rem;
+  color: var(--text-hint);
+}
+
+.adv-more {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-color);
+}
+
+.adv-more[open] summary { margin-bottom: 12px; }
 
 .adv-card + .adv-card,
 .adv-actions + .adv-card {
