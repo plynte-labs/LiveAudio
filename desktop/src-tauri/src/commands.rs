@@ -1350,7 +1350,7 @@ async fn start_pipeline_locked(
         &config.whisper_context_prompt_es
     };
 
-    let mut selected = match prepare_worker(liveaudio_core::backend::effective_backend_pref(&config.asr_backend, &config.device)).await {
+    let mut selected = match prepare_worker(liveaudio_core::backend::effective_backend_pref(&config.asr_backend, &config.device, &config.model_size)).await {
         Ok(selected) => selected,
         Err(error) => {
             *state.asr_state.write().await = "stopped".to_string();
@@ -2189,7 +2189,7 @@ pub(crate) fn build_gpu_backend_status(
 
 /// Backend preference the next start will use, so the pre-start status matches it (device cpu forces ORT).
 pub(crate) fn gpu_status_pref(config: &LiveAudioConfig) -> String {
-    effective_backend_pref(&config.asr_backend, &config.device).to_string()
+    effective_backend_pref(&config.asr_backend, &config.device, &config.model_size).to_string()
 }
 
 #[tauri::command]

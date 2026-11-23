@@ -272,6 +272,8 @@ async function runTests() {
   assert(htmlContent.includes('id="device-cuda"'), 'CUDA compute option exists');
   assert(htmlContent.includes('id="device-cpu"'), 'CPU compute option exists');
   assert(htmlContent.includes('id="select-model-size"'), 'Model size selector exists');
+  assert(htmlContent.includes('<option value="parakeet (Multilingüe ES/EN, CPU)" data-i18n="opt_model_parakeet">'),
+    'Model selector offers Parakeet with the canonical config value');
   assert(htmlContent.includes('id="select-subtitle-style"'), 'Subtitle theme selector exists');
   assert(htmlContent.includes('id="input-obs-url"'), 'OBS Browser Source URL readonly input exists');
   assert(htmlContent.includes('id="btn-copy-obs-url"'), 'Copy OBS URL button exists');
@@ -533,6 +535,8 @@ async function runTests() {
     'LiveAudioConfig declares persisted optional audio flags');
   assert(dtsContent.includes('follow_opencohost_language: boolean;'),
     'LiveAudioConfig declares follow_opencohost_language');
+  assert((i18nContent.match(/opt_model_parakeet:/g) || []).length === 2,
+    'opt_model_parakeet is localized in Spanish and English');
   for (const key of ['lbl_follow_opencohost_language', 'hint_follow_opencohost_language']) {
     assert((i18nContent.match(new RegExp(`${key}:`, 'g')) || []).length === 2,
       `${key} is localized in Spanish and English`);

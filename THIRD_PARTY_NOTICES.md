@@ -113,6 +113,19 @@ metadata (`https://huggingface.co/api/models/<repo>`), checked on 2026-11-08.
 The ONNX worker maps `large`, `large-v2` and `large-v3` to the turbo repository. Other sizes the CUDA worker accepts
 (`large-v1`, `large-v2`, `.en` variants) were not checked.
 
+## NVIDIA Parakeet-TDT 0.6B v3 — CC-BY-4.0, downloaded at runtime, not redistributed
+
+LiveAudio does not ship Parakeet weights. When the `parakeet` model is selected, the ONNX Runtime worker downloads
+five files (the int8 encoder and decoder-joint, the `nemo128` preprocessor, `vocab.txt` and `config.json`) from
+`huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx`, pinned to a fixed commit and verified by size and SHA-256
+(`crates/liveaudio-asr-worker/src/download.rs`).
+
+- Model: "Parakeet-TDT 0.6B v3" by NVIDIA (`nvidia/parakeet-tdt-0.6b-v3`), licensed under
+  [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/).
+- ONNX export and quantization: `istupakov/parakeet-tdt-0.6b-v3-onnx` by istupakov, licensed under CC-BY-4.0.
+- Changes: the original model was converted to ONNX and quantized to int8 by the export above. LiveAudio runs it
+  unmodified through ONNX Runtime and does not alter the weights.
+
 ## Optional NVIDIA CUDA worker — ct2rs and CTranslate2 (MIT)
 
 The optional CUDA ASR worker (`liveaudio-asr-worker-cuda.exe`, built locally and attached to

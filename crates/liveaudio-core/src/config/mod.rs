@@ -26,6 +26,7 @@ pub static VALID_MODELS: &[&str] = &[
     "base (Rápido)",
     "small (Balance CPU)",
     "turbo (Máxima precisión GPU)",
+    "parakeet (Multilingüe ES/EN, CPU)",
 ];
 pub static VALID_SUBTITLE_STYLES: &[&str] = &[
     "default",
@@ -1334,6 +1335,14 @@ mod tests {
         )
         .expect("tolerant load");
         assert_eq!(explicit.max_chunk_duration, 5.0);
+    }
+
+    #[test]
+    fn parakeet_model_survives_normalization() {
+        let mut cfg = LiveAudioConfig { model_size: "parakeet (Multilingüe ES/EN, CPU)".into(), ..LiveAudioConfig::default() };
+        cfg.normalize();
+        assert_eq!(cfg.model_size, "parakeet (Multilingüe ES/EN, CPU)");
+        assert_eq!(normalize_model_size("parakeet"), "parakeet (Multilingüe ES/EN, CPU)");
     }
 
     #[test]

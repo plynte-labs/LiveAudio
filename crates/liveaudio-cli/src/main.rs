@@ -767,7 +767,7 @@ async fn run_service(
     let effective_base_port = port_override.unwrap_or(config.ws_port);
 
     // Validate native worker binary and ONNX Runtime library before opening listeners or audio resources.
-    let mut selected = prepare_worker(liveaudio_core::backend::effective_backend_pref(&config.asr_backend, &config.device)).await?;
+    let mut selected = prepare_worker(liveaudio_core::backend::effective_backend_pref(&config.asr_backend, &config.device, &config.model_size)).await?;
     eprintln!(
         "ASR backend: {} ({})",
         backend_name(selected.kind),

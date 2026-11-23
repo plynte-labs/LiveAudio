@@ -22,8 +22,13 @@ pub fn pref_from_config(value: &str) -> AsrBackendPref {
 }
 
 /// The CUDA worker cannot run on CPU, so an explicit `device: cpu` always selects the ORT worker.
-pub fn effective_backend_pref<'a>(asr_backend: &'a str, device: &str) -> &'a str {
-    if device == "cpu" { "ort" } else { asr_backend }
+/// Parakeet only exists in the ORT worker, so it selects that worker on any device.
+pub fn effective_backend_pref<'a>(asr_backend: &'a str, device: &str, model_size: &str) -> &'a str {
+    if device == "cpu" || model_size.trim_start().to_lowercase().starts_with("parakeet") {
+        "ort"
+    } else {
+        asr_backend
+    }
 }
 
 pub fn backend_name(kind: AsrBackendKind) -> &'static str {
@@ -182,10 +187,18 @@ mod tests {
 
     #[test]
     fn cpu_device_forces_the_ort_worker() {
-        assert_eq!(effective_backend_pref("auto", "cpu"), "ort");
-        assert_eq!(effective_backend_pref("ct2_cuda", "cpu"), "ort");
-        assert_eq!(effective_backend_pref("auto", "cuda"), "auto");
-        assert_eq!(effective_backend_pref("ct2_cuda", "cuda"), "ct2_cuda");
+        let small = "small (Balance CPU)";
+        assert_eq!(effective_backend_pref("auto", "cpu", small), "ort");
+        assert_eq!(effective_backend_pref("ct2_cuda", "cpu", small), "ort");
+        assert_eq!(effective_backend_pref("auto", "cuda", small), "auto");
+        assert_eq!(effective_backend_pref("ct2_cuda", "cuda", small), "ct2_cuda");
+    }
+
+    #[test]
+    fn parakeet_forces_the_ort_worker_even_on_cuda() {
+        let parakeet = "parakeet (Multilingüe ES/EN, CPU)";
+        assert_eq!(effective_backend_pref("auto", "cuda", parakeet), "ort");
+        assert_eq!(effective_backend_pref("ct2_cuda", "cuda", parakeet), "ort");
     }
 
     #[test]

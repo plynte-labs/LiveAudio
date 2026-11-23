@@ -19,8 +19,8 @@ Branch: `feat/parakeet-cohost-language` (from `develop` at c5f50f4). Worktree: `
 
 ## Scope / tasks
 - [x] T1 OpenCohost language sync. Add config bool `follow_opencohost_language` (default false, patchable). Add a pure resolver for the locale path (env, then LOCALAPPDATA) and its value (primary subtag; only `es`/`en` accepted, otherwise ignored with a log). Apply it as an in-memory override of `asr_language`, not persisted, at CLI `serve` startup and desktop session start. Add the desktop toggle (slider) with EN/ES copy. Route: delegated writer (2+ non-trivial files).
-- [ ] T2 Parakeet engine. Add `parakeet.rs` in the ORT worker: preprocessor, encoder, TDT greedy loop, vocab/detokenize. Add an `AnyEngine` dispatch on `model_name` in `main.rs`, and a download resolver with a pinned revision, reusing the existing SHA-256 verification. Route: delegated writer.
-- [ ] T3 Parakeet selection wiring. Add `parakeet` to `VALID_MODELS`/normalization, the desktop model picker with EN/ES labels, and the model_name mapping. Language is ignored for Parakeet (it auto-detects). Add a CC-BY-4.0 attribution in THIRD_PARTY_NOTICES. Route: delegated writer (with T2).
+- [x] T2 Parakeet engine (8d072cc). Add `parakeet.rs` in the ORT worker: preprocessor, encoder, TDT greedy loop, vocab/detokenize. Add an `AnyEngine` dispatch on `model_name` in `main.rs`, and a download resolver with a pinned revision, reusing the existing SHA-256 verification. Route: delegated writer.
+- [x] T3 Parakeet selection wiring (see the T3 commit). Add `parakeet` to `VALID_MODELS`/normalization, the desktop model picker with EN/ES labels, and the model_name mapping. Language is ignored for Parakeet (it auto-detects). Add a CC-BY-4.0 attribution in THIRD_PARTY_NOTICES. Route: delegated writer (with T2).
 
 ## Constraints
 - Windows behavior unchanged when the toggle is off and Whisper is selected.
@@ -35,5 +35,8 @@ Branch: `feat/parakeet-cohost-language` (from `develop` at c5f50f4). Worktree: `
 - Branch and worktree created. Exploration done.
 - T1 done (delegated writer). `opencohost::effective_asr_language`/`language_override` in liveaudio-core; used by the CLI (`serve`, via `language_override`) and the desktop (`effective_asr_language` in session start and `asr_language_and_prompt`). Toggle `follow_opencohost_language` added (config, patch, restart-required, UI EN/ES). RED observed (4 resolver tests, 5 frontend asserts), then GREEN: cargo test --workspace, clippy (no new warnings), node tests-js 170 pass, test_frontend 883 pass.
 
+- T2 done (delegated writer, commit 8d072cc). `parakeet.rs` (preprocessor, encoder, pure `tdt_greedy` loop, vocab), `AnyEngine`-style `OrtEngine` enum dispatch on `model_name`, `prepare_parakeet` in `download.rs` pinned to `8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce` with the shared verified fetch loop. Parakeet always runs on CPU (int8). RED: compile errors for the missing functions; GREEN: worker 43 unit tests. Real ORT names: preprocessor `waveforms`/`waveforms_lens` -> `features`/`features_lens`; encoder `audio_signal`/`length` -> `outputs` [1,1024,T']/`encoded_lengths`; decoder `encoder_outputs` [1,1024,1], `targets` i32 [1,1], `target_length` i32, `input_states_1/2` f32 [2,1,640] -> `outputs` (8198 = 8193 tokens + 5 durations), `prednet_lengths`, `output_states_1/2`. Smoke test `tests/parakeet_smoke.rs` (ignored): the 11 s JFK sample transcribes correctly on Windows CPU (debug build) in 0.54 s.
+- T3 done (delegated writer). `parakeet (Multilingüe ES/EN, CPU)` in `VALID_MODELS`, survives normalization; `effective_backend_pref` now also takes `model_size` so Parakeet always uses the ORT worker (never ct2); picker option + EN/ES labels; CC-BY-4.0 notice. RED: backend/config tests failed to compile, frontend assert failed; GREEN: cargo test --workspace 551 pass, tests-js 170, test_frontend 885.
+
 ## Next step
-T2 and T3 (Parakeet engine and selection).
+User tests Parakeet in the real app (select it in Advanced > Engine). Push and PR remain the user's decision.
