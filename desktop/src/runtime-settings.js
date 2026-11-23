@@ -5,6 +5,7 @@ const RUNTIME_SETTINGS = [
   'audio_device',
   'ws_port',
   'asr_language',
+  'follow_opencohost_language',
   'language',
   'whisper_context_prompt_es',
   'whisper_context_prompt_en',
@@ -214,6 +215,14 @@ export function monitorBannerText(status, translate) {
   return translate('monitor_banner').replace('{pid}', owner);
 }
 
+// Status line under the OpenCohost slider, from the backend's { state, language?, path? } (path is the file checked).
+export function opencohostStatusText(status, translate) {
+  if (!status) return '';
+  if (status.state === 'detected') return `${translate('opencohost_detected')}${translate(`opt_asr_${status.language}`)} — ${status.path}`;
+  if (status.state === 'unsupported') return `${translate('opencohost_unsupported')} ${status.path}`;
+  return status.path ? `${translate('opencohost_not_found')} — ${status.path}` : translate('opencohost_not_found');
+}
+
 export function sessionFailureLabel(status) {
   return status.session_error || '';
 }
@@ -263,6 +272,11 @@ export const NVIDIA_MIN_DRIVER = 12080;
  * Engine a status points to, as 'cuda', 'directml' or 'cpu': the live engine while the service runs,
  * otherwise the selected one (ONNX uses DirectML when a GPU is present). Null when nothing is known.
  */
+// Parakeet always runs in the ORT worker (never ct2); its encoder follows the selected device.
+export function isParakeetModel(modelSize) {
+  return String(modelSize ?? '').trim().toLowerCase().startsWith('parakeet');
+}
+
 export function engineKind(gpu, live) {
   if (live?.is_running && live.active_backend) {
     const device = String(live.effective_device || '').toLowerCase();

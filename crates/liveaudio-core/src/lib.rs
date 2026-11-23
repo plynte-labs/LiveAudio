@@ -9,6 +9,7 @@ pub mod event;
 pub mod gpu;
 pub mod job_object;
 pub mod nvidia_runtime;
+pub mod opencohost;
 pub mod pipeline;
 pub mod runtime;
 pub mod service_lock;

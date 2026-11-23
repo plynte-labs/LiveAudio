@@ -1343,23 +1343,14 @@ async fn start_pipeline_locked(
         .next()
         .unwrap_or("small")
         .to_string();
-    let clean_lang = if !config.asr_language.is_empty() {
-        config.asr_language.clone()
-    } else {
-        config
-            .language
-            .as_deref()
-            .filter(|language| !language.is_empty() && *language != "auto")
-            .unwrap_or("es")
-            .to_string()
-    };
+    let clean_lang = liveaudio_core::opencohost::effective_asr_language(&config);
     let prompt = if clean_lang == "en" {
         &config.whisper_context_prompt_en
     } else {
         &config.whisper_context_prompt_es
     };
 
-    let mut selected = match prepare_worker(liveaudio_core::backend::effective_backend_pref(&config.asr_backend, &config.device)).await {
+    let mut selected = match prepare_worker(liveaudio_core::backend::effective_backend_pref(&config.asr_backend, &config.device, &config.model_size)).await {
         Ok(selected) => selected,
         Err(error) => {
             *state.asr_state.write().await = "stopped".to_string();
@@ -2198,7 +2189,7 @@ pub(crate) fn build_gpu_backend_status(
 
 /// Backend preference the next start will use, so the pre-start status matches it (device cpu forces ORT).
 pub(crate) fn gpu_status_pref(config: &LiveAudioConfig) -> String {
-    effective_backend_pref(&config.asr_backend, &config.device).to_string()
+    effective_backend_pref(&config.asr_backend, &config.device, &config.model_size).to_string()
 }
 
 #[tauri::command]
@@ -2217,6 +2208,12 @@ pub async fn get_gpu_backend_status(
     })
     .await
     .map_err(|e| e.to_string())
+}
+
+/// What OpenCohost's locale file says and which file was checked, for the Advanced tab status line.
+#[tauri::command]
+pub fn opencohost_language_status() -> liveaudio_core::opencohost::LocaleStatus {
+    liveaudio_core::opencohost::locale_status_from_env()
 }
 
 /// Installed font families for the Style tab picker; empty off Windows or when DirectWrite fails.
@@ -2405,15 +2402,7 @@ fn utterance_seq(utterance_id: &str) -> u64 {
 }
 
 fn asr_language_and_prompt(cfg: &LiveAudioConfig) -> (String, Option<String>) {
-    let clean_lang = if !cfg.asr_language.is_empty() {
-        cfg.asr_language.clone()
-    } else {
-        cfg.language
-            .as_deref()
-            .filter(|language| !language.is_empty() && *language != "auto")
-            .unwrap_or("es")
-            .to_string()
-    };
+    let clean_lang = liveaudio_core::opencohost::effective_asr_language(cfg);
     let prompt = if clean_lang == "en" {
         cfg.whisper_context_prompt_en.trim()
     } else {

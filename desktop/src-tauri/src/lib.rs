@@ -90,6 +90,7 @@ pub fn run() {
             commands::prepare_asr_runtime,
             commands::cancel_runtime_setup,
             commands::get_gpu_backend_status,
+            commands::opencohost_language_status,
             commands::list_system_fonts,
             commands::install_nvidia_runtime,
             commands::cancel_nvidia_runtime_install,

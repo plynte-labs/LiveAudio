@@ -176,6 +176,7 @@ async function loadAppHarness(initialConfig, options = {}) {
       case 'list_system_fonts': return backend.systemFonts ?? null;
       case 'get_profile_presets': return [];
       case 'get_recent_logs': return [];
+      case 'opencohost_language_status': return structuredClone(backend.opencohost ?? null);
       default: return null;
     }
   };
@@ -243,7 +244,6 @@ async function runTests() {
   const htmlContent = fs.readFileSync(htmlPath, 'utf8');
 
   // Verify status pills
-  assert(htmlContent.includes('id="pill-status"'), 'Status pill element exists');
   assert(htmlContent.includes('id="pill-vad"'), 'VAD pill element exists');
   assert(htmlContent.includes('id="pill-ws"'), 'WebSocket port pill element exists');
   assert(htmlContent.includes('id="pill-hw"'), 'Hardware / model pill element exists');
@@ -272,6 +272,8 @@ async function runTests() {
   assert(htmlContent.includes('id="device-cuda"'), 'CUDA compute option exists');
   assert(htmlContent.includes('id="device-cpu"'), 'CPU compute option exists');
   assert(htmlContent.includes('id="select-model-size"'), 'Model size selector exists');
+  assert(htmlContent.includes('<option value="parakeet (Multilingüe ES/EN, CPU)" data-i18n="opt_model_parakeet">'),
+    'Model selector offers Parakeet with the canonical config value');
   assert(htmlContent.includes('id="select-subtitle-style"'), 'Subtitle theme selector exists');
   assert(htmlContent.includes('id="input-obs-url"'), 'OBS Browser Source URL readonly input exists');
   assert(htmlContent.includes('id="btn-copy-obs-url"'), 'Copy OBS URL button exists');
@@ -281,7 +283,7 @@ async function runTests() {
   assert(htmlContent.includes('id="badge-prompt-lang"'), 'Prompt active language indicator badge exists');
   assert(htmlContent.includes('id="btn-open-session-folder"') && htmlContent.includes('id="session-path"'), 'Subtitles & session folder button and path exist in UI');
   assert(htmlContent.includes('id="slider-max-chunk"') && htmlContent.includes('max="30.0"'), 'Max chunk duration slider caps at the 30.0s worker window');
-  assert(htmlContent.includes('v1.6.0'), 'Version 1.6.0 badge rendered in index.html');
+  assert(htmlContent.includes('v1.6.5'), 'Version 1.6.5 badge rendered in index.html');
   const authorLink = htmlContent.match(/<a\b[^>]*id="author-profile-link"[^>]*>([\s\S]*?)<\/a>/i);
   assert(authorLink && authorLink[0].includes('data-i18n-aria-label="author_credit_accessible"') && authorLink[1] === 'FranGuh',
     'Author credit is a localized-aria anchor in the About footer');
@@ -376,6 +378,13 @@ async function runTests() {
     && jsContent.includes('cfg.rnnoise_enabled = elements.checkRnnoiseEnabled.checked')
     && jsContent.includes('cfg.acoustic_events_enabled = elements.checkAcousticEventsEnabled.checked'),
     'optional audio settings round-trip through the desktop draft and saved config');
+  assert(jsContent.includes('checkFollowOpencohostLanguage.checked = Boolean(config.follow_opencohost_language)')
+    && jsContent.includes('cfg.follow_opencohost_language = elements.checkFollowOpencohostLanguage.checked'),
+    'follow OpenCohost language toggle round-trips through the desktop draft and saved config');
+  assert(htmlContent.includes('id="check-follow-opencohost-language"')
+    && htmlContent.includes('data-i18n="hint_follow_opencohost_language"')
+    && /<label class="switch-label">\s*<span class="switch-track"><input type="checkbox" id="check-follow-opencohost-language"/.test(htmlContent),
+    'follow OpenCohost language toggle exposes an accessible switch with a hint');
   assert(jsContent.includes('checkLivePartialSubtitles.checked = Boolean(config.live_partial_subtitles_enabled)')
     && jsContent.includes('cfg.live_partial_subtitles_enabled = elements.checkLivePartialSubtitles.checked'),
     'the live partial subtitles flag round-trips through the desktop draft and saved config');
@@ -452,8 +461,8 @@ async function runTests() {
   assert(filesPane.includes('btn-open-session-folder') && filesPane.includes('check-continuous')
     && filesPane.includes('check-save-transcript') && filesPane.includes('check-save-vtt'),
     'Files groups session folder, continuity and export settings');
-  assert(htmlContent.includes('id="pill-status"') && htmlContent.includes('class="status-details"'),
-    'Header keeps one primary status and tucks diagnostics into details');
+  assert(htmlContent.includes('id="pill-vad"') && htmlContent.includes('class="status-details"'),
+    'Header keeps the VAD indicator and tucks diagnostics into details');
   assert(cssContent.includes(':focus-visible') && cssContent.includes('prefers-reduced-motion: reduce'),
     'Styles provide visible keyboard focus and honor reduced-motion preference');
   assert(cssContent.includes('.obs-help summary:focus-visible'),
@@ -524,6 +533,14 @@ async function runTests() {
   assert(dtsContent.includes('rnnoise_enabled: boolean;')
     && dtsContent.includes('acoustic_events_enabled: boolean;'),
     'LiveAudioConfig declares persisted optional audio flags');
+  assert(dtsContent.includes('follow_opencohost_language: boolean;'),
+    'LiveAudioConfig declares follow_opencohost_language');
+  assert((i18nContent.match(/opt_model_parakeet:/g) || []).length === 2,
+    'opt_model_parakeet is localized in Spanish and English');
+  for (const key of ['lbl_follow_opencohost_language', 'hint_follow_opencohost_language']) {
+    assert((i18nContent.match(new RegExp(`${key}:`, 'g')) || []).length === 2,
+      `${key} is localized in Spanish and English`);
+  }
   assert(dtsContent.includes('asr_backend: string;'), 'LiveAudioConfig types declare asr_backend');
   assert(dtsContent.includes('live_partial_subtitles_enabled: boolean;'),
     'LiveAudioConfig declares the live partial subtitles flag');
@@ -857,11 +874,11 @@ async function runTests() {
   assert(stableEn.label === 'Stable Streaming' && stableEn.samplePrompt.length > 0,
     'English stable streaming profile preset has label and prompt suggestion');
 
-  // 6. Verify version 1.6.0 consistency across workspace and manifests
+  // 6. Verify version 1.6.5 consistency across workspace and manifests
   const rootCargo = fs.readFileSync(path.join(__dirname, '..', 'Cargo.toml'), 'utf8');
-  assert(rootCargo.includes('version = "1.6.0"'), 'Root Cargo.toml has version 1.6.0');
+  assert(rootCargo.includes('version = "1.6.5"'), 'Root Cargo.toml has version 1.6.5');
   const tauriConf = JSON.parse(fs.readFileSync(path.join(__dirname, 'src-tauri', 'tauri.conf.json'), 'utf8'));
-  assert(tauriConf.version === '1.6.0', 'tauri.conf.json has version 1.6.0');
+  assert(tauriConf.version === '1.6.5', 'tauri.conf.json has version 1.6.5');
   // NSIS locates the previous install via HKCU\Software\<publisher>\<productName>;
   // every released build used "franguh", so changing it breaks upgrades and updates.
   assert(tauriConf.bundle.publisher === 'franguh',
@@ -976,7 +993,7 @@ async function runTests() {
   assert(hooksContent.includes('liveaudio-desktop.exe'),
     'hooks.nsh identifies modern Rust desktop client to prevent false-positive uninstallation');
 
-  assert(t('app_version').includes('v1.6.0'), 'i18n app_version includes v1.6.0');
+  assert(t('app_version').includes('v1.6.5'), 'i18n app_version includes v1.6.5');
 
   // 7. Verify Accessible Modal System & 3rd Loading State Button
   assert(htmlContent.includes('id="modal-container"'), 'Accessible modal container element exists in index.html');
@@ -1002,7 +1019,7 @@ async function runTests() {
   assert(cssContent.includes('.tabs-footer'), 'Tabs footer CSS styles exist');
 
   // Verify that master-action-bar no longer contains save or reset buttons
-  const masterActionBarHtml = htmlContent.match(/<div class="master-action-bar">([\s\S]*?)<\/div>/)?.[1] || '';
+  const masterActionBarHtml = htmlContent.match(/<div class="master-action-bar"[^>]*>([\s\S]*?)<\/div>/)?.[1] || '';
   assert(masterActionBarHtml.includes('id="btn-toggle-service"'), 'Master action bar contains toggle service button');
   assert(!masterActionBarHtml.includes('id="btn-save-config"'), 'Master action bar no longer contains save button');
   assert(!masterActionBarHtml.includes('id="btn-reset-config"'), 'Master action bar no longer contains reset button');
@@ -1166,8 +1183,6 @@ async function runTests() {
     'Header badge shows only the app version, without the internal framework label');
   assert(!/app_version: '[^']*Tauri/.test(i18nContent),
     'Localized app_version tables drop the internal framework label');
-  assert(appSource.includes('loading: t(\'status_loading\')'),
-    'Status pill maps the loading state to a translated label');
   setLanguage('es');
   assert(t('status_loading') === 'Cargando...', 'Spanish loading status translation exists');
   assert(t('runtime_setup_worker_starting') === 'Iniciando el motor ASR y esperando a que esté listo…',
@@ -1616,7 +1631,7 @@ return { sanitizeThemeTokens, applyTheme };`)(fakeDocument);
   // 15. Style tab through the real app.js (vm harness): save -> adopt, edits during a save, external changes
   // The stub has no <option> elements, so the model select keeps ''; the blacklists and flags are set so the form round-trips.
   const styleBaseConfig = {
-    language: 'es', asr_language: 'es', model_size: '', device: 'cpu', cpu_threads: 4, silence_timeout: 1.5,
+    language: 'es', asr_language: 'es', follow_opencohost_language: false, model_size: '', device: 'cpu', cpu_threads: 4, silence_timeout: 1.5,
     max_chunk_duration: 10, ws_port: 8765, blacklist: 'x', whisper_context_prompt_es: '', whisper_context_prompt_en: '',
     extra: { blacklist_es: 'x', blacklist_en: 'x' }, continuous_session: false, save_transcript_enabled: false,
     save_vtt_enabled: false, rnnoise_enabled: false, mcp_style_enabled: false, mcp_system_enabled: false, acoustic_events_enabled: false, live_partial_subtitles_enabled: false, asr_backend: 'auto',
@@ -2274,13 +2289,7 @@ return { sanitizeThemeTokens, applyTheme };`)(fakeDocument);
 
   // 18. Auto-Activation of Live Subtitle Visualizer Feed
   console.log('\n--- Verifying Live Subtitle Visualizer Auto-Activation ---');
-  assert(htmlContent.includes('id="feed-live-badge"'), '#feed-live-badge element exists in index.html');
-  assert(htmlContent.includes('class="badge badge-feed-idle"'), '#feed-live-badge starts in idle state');
-  assert(cssContent.includes('.badge-feed-live'), '.badge-feed-live CSS class exists');
-  assert(cssContent.includes('.badge-feed-idle'), '.badge-feed-idle CSS class exists');
   assert(cssContent.includes('#card-subtitles-feed.feed-active'), '#card-subtitles-feed.feed-active CSS rule exists');
-  assert(appSource.includes("elements.feedLiveBadge.className = isFeedLive ? 'badge badge-feed-live' : 'badge badge-feed-idle'"),
-    'app.js updates feedLiveBadge class dynamically based on live feed state');
   assert(appSource.includes("const isFeedLive = Boolean(status.is_running || status.monitor_mode || (monitorFeed && monitorFeed.socket));"),
     'Feed active state auto-activates when service is running or in monitor mode');
 
@@ -2590,8 +2599,8 @@ return { sanitizeThemeTokens, applyTheme };`)(fakeDocument);
     const aboutHtml = htmlContent.match(/<div id="about-modal"[\s\S]*?<!-- \/about-modal -->/)?.[0] || '';
     const headerHtml = htmlContent.match(/<header[\s\S]*?<\/header>/)?.[0] || '';
     assert(/<button[^>]*id="btn-about"[^>]*class="brand-badge"[^>]*data-i18n-aria-label="btn_about"[\s\S]*?data-i18n="app_version"/.test(headerHtml)
-      && !headerHtml.includes('author-profile-link') && !headerHtml.includes('lucide-info'),
-    'Header version badge is the localized About button; no author link or info icon');
+      && !headerHtml.includes('author-profile-link'),
+    'Header version badge is the localized About button; no author link, with an info icon');
     assert((aboutHtml.match(/data-i18n="app_version"/g) || []).length === 1 && aboutHtml.includes('id="author-profile-link"'),
     'About shows the version once and hosts the author profile link');
     assert(/role="dialog"/.test(aboutHtml) && aboutHtml.includes('aria-modal="true"') && aboutHtml.includes('aria-labelledby="about-title"')
@@ -2709,6 +2718,138 @@ return { sanitizeThemeTokens, applyTheme };`)(fakeDocument);
     await offlineHarness.settle();
     assert(offlineHarness.el('updater-status').textContent === t('err_update_offline'),
       'checkForUpdatesManual keeps err_update_offline for generic network errors');
+  }
+
+  // T4: engine section. Model picker is generic and Parakeet locks the CPU-only controls.
+  console.log('\n--- Verifying Engine Section for Parakeet ---');
+  {
+    const modelSelect = htmlContent.match(/<select id="select-model-size"[\s\S]*?<\/select>/)?.[0] ?? '';
+    assert(runtimeSettings.isParakeetModel?.('parakeet (Multilingüe ES/EN, CPU)') === true
+      && runtimeSettings.isParakeetModel?.('small (Balance CPU)') === false
+      && runtimeSettings.isParakeetModel?.(undefined) === false,
+    'isParakeetModel recognizes only the Parakeet model value');
+    assert(/<optgroup label="Whisper">[\s\S]*opt_model_turbo[\s\S]*<\/optgroup>\s*<optgroup label="Parakeet">[\s\S]*opt_model_parakeet[\s\S]*<\/optgroup>/.test(modelSelect),
+      'Model selector groups its options in Whisper and Parakeet optgroups');
+    assert(htmlContent.includes('id="hint-parakeet-engine"') && htmlContent.includes('data-i18n="hint_parakeet_engine"'),
+      'Engine section has a Parakeet hint');
+    for (const [lang, label] of [['es', 'Modelo'], ['en', 'Model']]) {
+      assert(TRANSLATIONS[lang].lbl_model_size === label, `lbl_model_size is the generic "${label}" (${lang})`);
+      assert(TRANSLATIONS[lang].hint_parakeet_engine && !('engine_parakeet_cpu' in TRANSLATIONS[lang]),
+        `Parakeet engine copy is localized (${lang}) and no longer claims CPU only`);
+      assert(/GPU/.test(TRANSLATIONS[lang].hint_parakeet_engine) && /2[.,]5/.test(TRANSLATIONS[lang].hint_parakeet_engine)
+        && /int8/.test(TRANSLATIONS[lang].hint_parakeet_engine) && /0[.,]7/.test(TRANSLATIONS[lang].hint_parakeet_engine),
+      `Parakeet hint explains GPU (about 2.5 GB) and int8 CPU (about 0.7 GB) (${lang})`);
+    }
+    setLanguage('en');
+    const pk = await loadAppHarness(styleBaseConfig);
+    const model = pk.el('select-model-size');
+    model.value = 'parakeet (Multilingüe ES/EN, CPU)';
+    model.dispatch('change');
+    await pk.settle();
+    assert(pk.el('select-compute-device').disabled === false && pk.el('select-asr-backend').disabled === true
+      && pk.el('hint-parakeet-engine').hidden === false,
+    'Selecting Parakeet keeps Compute device enabled and the Transcription engine disabled');
+    pk.el('select-compute-device').value = 'cuda';
+    pk.el('select-compute-device').dispatch('change');
+    await pk.settle();
+    assert(pk.el('slider-cpu-threads').disabled === true,
+      'Parakeet on a GPU disables the CPU threads slider');
+    pk.el('select-compute-device').value = 'cpu';
+    pk.el('select-compute-device').dispatch('change');
+    await pk.settle();
+    assert(pk.el('engine-status-text').textContent === `${t('engine_will_use')}${t('engine_name_cpu')}`,
+      'Parakeet engine pill follows the selected device (CPU)');
+    model.value = 'small (Balance CPU)';
+    model.dispatch('change');
+    await pk.settle();
+    assert(pk.el('select-compute-device').disabled === false && pk.el('select-asr-backend').disabled === false
+      && pk.el('hint-parakeet-engine').hidden === true,
+    'Selecting a Whisper model re-enables the selectors and the usual engine status');
+  }
+
+  // T5: OpenCohost slider copy and detected-language status line.
+  console.log('\n--- Verifying OpenCohost Language Status ---');
+  {
+    for (const lang of ['es', 'en']) {
+      const copy = TRANSLATIONS[lang];
+      assert(copy.hint_follow_opencohost_language && !/inicia una sesión|when a session starts/.test(copy.hint_follow_opencohost_language)
+        && copy.opencohost_detected && copy.opencohost_not_found && copy.opencohost_unsupported,
+      `OpenCohost slider hint and status copy are localized and accurate (${lang})`);
+    }
+    setLanguage('en');
+    const statusText = runtimeSettings.opencohostStatusText;
+    assert(statusText?.({ state: 'detected', language: 'en', path: 'C:\oc\locale.json' }, t) === 'Detected: English (en) — C:\oc\locale.json'
+      && statusText({ state: 'not_found', path: 'C:\oc\locale.json' }, t) === 'OpenCohost settings not found — C:\oc\locale.json'
+      && statusText({ state: 'not_found', path: null }, t) === 'OpenCohost settings not found'
+      && statusText({ state: 'unsupported', path: 'C:\oc\locale.json' }, t) === 'Unsupported language in C:\oc\locale.json'
+      && statusText(null, t) === '',
+    'opencohostStatusText formats detected, not found and unsupported states with the checked path');
+    assert(/id="status-opencohost-language"[^>]*role="status"[^>]*hidden/.test(htmlContent)
+      && htmlContent.includes('aria-describedby="hint-follow-opencohost-language status-opencohost-language"'),
+    'Home tab has a hidden live status line for the OpenCohost language, described by the slider');
+    assert(appSource.includes("invoke('opencohost_language_status')"), 'app.js asks the backend for the OpenCohost language status');
+
+    const oc = await loadAppHarness(styleBaseConfig, { opencohost: { state: 'detected', language: 'es', path: '/data/locale.json' } });
+    const toggle = oc.el('check-follow-opencohost-language');
+    toggle.checked = true;
+    toggle.dispatch('change');
+    await oc.settle();
+    assert(oc.backend.calls.some((call) => call.cmd === 'opencohost_language_status')
+      && oc.el('status-opencohost-language').hidden === false
+      && oc.el('status-opencohost-language').textContent === statusText(oc.backend.opencohost, t),
+    'Turning the slider on shows the detected language and file path');
+    toggle.checked = false;
+    toggle.dispatch('change');
+    await oc.settle();
+    assert(oc.el('status-opencohost-language').hidden === true, 'Turning the slider off hides the status line');
+  }
+
+  // T6: Advanced tab regrouped into icon sections with progressive disclosure.
+  console.log('\n--- Verifying Advanced Tab Regrouping ---');
+  {
+    const advHtml = htmlContent.slice(htmlContent.indexOf('<section id="tab-advanced"'), htmlContent.indexOf('<section id="tab-files"'));
+    const priorIds = ['tab-advanced', 'chip-adv-unsaved', 'card-adv-engine', 'select-model-size', 'hint-parakeet-engine', 'select-compute-device', 'device-cuda', 'device-cpu', 'group-cpu-threads', 'slider-cpu-threads', 'val-cpu-threads', 'engine-status-pill', 'engine-status-text', 'btn-nvidia-advanced', 'engine-status-reason', 'select-asr-backend', 'engine-technical-details', 'gpu-status-text', 'group-runtime-maintenance', 'btn-runtime-repair', 'btn-runtime-cancel', 'card-adv-voice', 'slider-silence-timeout', 'val-silence-timeout', 'slider-max-chunk', 'val-max-chunk', 'slider-vad-pad', 'val-vad-pad', 'slider-vad-threshold', 'val-vad-threshold', 'check-rnnoise-enabled', 'hint-rnnoise-enabled', 'card-adv-subtitles', 'check-live-partial-subtitles-enabled', 'hint-live-partial-subtitles', 'select-backlog-policy', 'slider-max-live-delay', 'val-max-live-delay', 'slider-catchup-interval', 'val-catchup-interval', 'card-adv-vocab', 'group-prompt', 'lbl-prompt-title', 'badge-prompt-lang', 'btn-suggest-prompt-es', 'prompt-es', 'hint-prompt', 'group-blacklist', 'lbl-blacklist', 'badge-blacklist-lang', 'input-blacklist', 'hint-blacklist', 'card-adv-network', 'input-ws-port', 'check-acoustic-events-enabled', 'hint-acoustic-events-enabled', 'check-mcp-style-enabled', 'hint-mcp-style-enabled', 'check-mcp-system-enabled', 'hint-mcp-system-enabled', 'card-adv-allowed-origins', 'allowed-ports-list', 'input-add-allowed-port', 'btn-add-allowed-port', 'error-add-allowed-port', 'recent-blocked-list', 'card-adv-updates', 'group-updates', 'check-updates-enabled', 'btn-check-now', 'updater-status', 'card-release-notes', 'update-available-title', 'release-notes-body', 'btn-install-now', 'btn-install-on-close', 'status-update-busy'];
+    const missingIds = priorIds.filter((id) => !advHtml.includes(`id="${id}"`));
+    assert(missingIds.length === 0, `Every pre-existing Advanced element ID is still present (missing: ${missingIds.join(', ') || 'none'})`);
+    const allIds = [...htmlContent.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]);
+    assert(new Set(allIds).size === allIds.length, 'Element IDs are unique across index.html');
+    const cards = [...advHtml.matchAll(/<div class="card adv-card" id="(card-adv-[a-z-]+)">([\s\S]*?)(?=<div class="card adv-card"|<\/section>)/g)];
+    assert(cards.length === 6, `Advanced has six sections (found ${cards.length})`);
+    for (const [, id, body] of cards) {
+      const key = id.replace('card-adv-', '');
+      assert(/<svg class="lucide [^"]*"[^>]*aria-hidden="true"/.test(body) && body.includes(`data-i18n="desc_adv_${key}"`),
+        `Section #${id} has a decorative icon and a one-line description`);
+    }
+    const summaries = [...advHtml.matchAll(/<details\b[^>]*>\s*<summary[^>]*data-i18n="([^"]+)"/g)].map((m) => m[1]);
+    assert(summaries.length === 4 && advHtml.split('<details').length === advHtml.split('</details>').length,
+      'Four collapsed disclosures, each opened by a localized summary, with balanced tags');
+    assert(!/<details[^>]*\bopen\b/.test(advHtml), 'Disclosures start collapsed');
+    const keys = [...summaries, ...cards.map(([, id]) => `desc_adv_${id.replace('card-adv-', '')}`)];
+    const missing = keys.filter((key) => !TRANSLATIONS.es[key] || !TRANSLATIONS.en[key]);
+    assert(missing.length === 0, `Section headings and disclosure copy exist in es and en (missing: ${missing.join(', ') || 'none'})`);
+    assert(/\.adv-more summary:focus-visible/.test(cssContent) && /\.title-icon/.test(cssContent), 'Disclosures keep a visible focus ring and icons are styled');
+  }
+
+  // T7: main window icons, larger info button and no redundant status pills.
+  console.log('\n--- Verifying Main Window Icons and Removed Pills ---');
+  {
+    assert(!htmlContent.includes('id="pill-status"') && !htmlContent.includes('feed-live-badge')
+      && !appSource.includes('pillStatus') && !appSource.includes('feedLiveBadge')
+      && !cssContent.includes('badge-feed-') && !TRANSLATIONS.es.feed_badge_idle && !TRANSLATIONS.en.feed_badge_live,
+    'The header status pill and the feed Idle pill are gone from markup, JS, CSS and copy');
+    assert(/<div class="master-action-bar" role="status" aria-live="polite">/.test(htmlContent),
+      'Start/Stop state is announced through the master action bar live region');
+    const about = htmlContent.match(/<button[^>]*id="btn-about"[\s\S]*?<\/button>/)?.[0] ?? '';
+    assert(/^<button[^>]*>\s*<svg class="lucide lucide-info[^"]*"[^>]*aria-hidden="true"/.test(about),
+      'Info & stats button starts with a decorative icon');
+    assert(/button\.brand-badge\s*\{[^}]*font-size:\s*0\.85rem[^}]*padding:\s*5px 12px/s.test(cssContent),
+      'Info & stats button is larger than the generic badge');
+    for (const [card, icon] of [['card-subtitles-feed', 'message-square-text'], ['obs-card', 'monitor-play'], ['card-logger', 'scroll-text']]) {
+      const start = htmlContent.indexOf(card);
+      const title = htmlContent.slice(start, htmlContent.indexOf('</span>', start));
+      assert(new RegExp(`<svg class="lucide lucide-${icon} title-icon"[^>]*aria-hidden="true"`).test(title),
+        `Card title of ${card} starts with a decorative ${icon} icon`);
+    }
   }
 
   // Restore Spanish as default

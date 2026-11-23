@@ -44,7 +44,7 @@ Measured on: Windows 11, RTX 3060, AMD Ryzen 7 3700G, 32 GB RAM.
 ## Quick Start (Streamers & End Users)
 
 ### 1. Download & Launch
-1. Download **`LiveAudio-Setup-1.6.0.exe`** (Windows) or the **`.AppImage` / `.deb`** bundle (Linux) from [GitHub Releases](https://github.com/plynte-labs/LiveAudio/releases/latest). The portable archives (`liveaudio-cli-*-windows-x64.zip` / `liveaudio-cli-*-linux-x64.tar.gz`) contain only the CLI and ASR worker, not the desktop app.
+1. Download **`LiveAudio-Setup-1.6.5.exe`** (Windows) or the **`.AppImage` / `.deb`** bundle (Linux) from [GitHub Releases](https://github.com/plynte-labs/LiveAudio/releases/latest). The portable archives (`liveaudio-cli-*-windows-x64.zip` / `liveaudio-cli-*-linux-x64.tar.gz`) contain only the CLI and ASR worker, not the desktop app.
 2. Launch the application. LiveAudio runs out of the box with its embedded ONNX Runtime engine (DirectML on Windows, CPU on Linux) and Silero VAD. No external Python or CUDA drivers are required.
 
 > **Updating from v1.5.1 or older:** Users on v1.5.1 or older must install v1.6.0 manually once. Versions 1.5.1 and earlier do not include the in-app updater engine or public signing keys. Subsequent updates from 1.6.0 onward update seamlessly in-app on Windows (NSIS) and Linux (`.AppImage`); Linux `.deb` users update via GitHub Releases.

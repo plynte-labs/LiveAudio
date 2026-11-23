@@ -86,6 +86,7 @@ export interface LiveAudioConfig {
   ws_port: number;
   obs_enabled: boolean;
   rnnoise_enabled: boolean;
+  follow_opencohost_language: boolean;
   mcp_style_enabled: boolean;
   mcp_system_enabled: boolean;
   check_updates_enabled: boolean;

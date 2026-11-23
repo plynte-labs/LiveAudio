@@ -4,7 +4,7 @@
  * LiveAudio Tauri Desktop Frontend Application Logic
  */
 
-import { adoptSavedStyle, audioStateKey, bindProfileSelection, bindTabNavigation, externalConfigUpdate, generalFields, hardwareStatusLabel, mergeSavedConfigIntoForm, monitorBannerText, monitorFeedAction, monitorFeedText, persistAndApplyRuntimeConfig, sessionFailureLabel, STYLE_CONFIG_KEYS, styleFields, engineKind, gpuReasonKey, nvidiaOfferVisible, nvidiaCardView, nvidiaInstallConfig, advancedView, TAB_RESETS } from './runtime-settings.js';
+import { adoptSavedStyle, audioStateKey, bindProfileSelection, bindTabNavigation, externalConfigUpdate, generalFields, hardwareStatusLabel, mergeSavedConfigIntoForm, monitorBannerText, opencohostStatusText, monitorFeedAction, monitorFeedText, persistAndApplyRuntimeConfig, sessionFailureLabel, STYLE_CONFIG_KEYS, styleFields, engineKind, isParakeetModel, gpuReasonKey, nvidiaOfferVisible, nvidiaCardView, nvidiaInstallConfig, advancedView, TAB_RESETS } from './runtime-settings.js';
 import { initLanguage, setLanguage, getLanguage, t, applyTranslations, getProfilePresetData, PROFILE_I18N } from './i18n.js';
 import { controlsFromTheme, deletePreset, fontChoices, fontFamiliesForPlatform, loadPresetTheme, presetNameFromOption, presetOptionValue, previewHoldMs, previewProperties, previewWordDelays, savePreset, themeFromControls } from './subtitle-style.js';
 
@@ -64,6 +64,7 @@ function mockInvoke(cmd, args) {
         whisper_context_prompt_es: '',
         whisper_context_prompt_en: '',
         asr_language: 'es',
+        follow_opencohost_language: false,
         settings_navigation_mode: 'tabs',
         language: 'es',
         diagnostics_enabled: false,
@@ -95,7 +96,7 @@ function mockInvoke(cmd, args) {
 
     case 'get_updater_status':
       return Promise.resolve({
-        current_version: '1.6.0',
+        current_version: '1.6.5',
         available_update: null,
         install_on_close: false,
         is_checking: false,
@@ -304,8 +305,6 @@ const elements = {
   aboutSince: document.getElementById('about-since'),
   aboutEmpty: document.getElementById('about-empty'),
   selectUiLang: document.getElementById('select-ui-lang'),
-  pillStatus: document.getElementById('pill-status'),
-  pillStatusText: document.getElementById('pill-status-text'),
   pillVad: document.getElementById('pill-vad'),
   pillVadText: document.getElementById('pill-vad-text'),
   pillWs: document.getElementById('pill-ws'),
@@ -333,6 +332,7 @@ const elements = {
   sliderMaxChunk: document.getElementById('slider-max-chunk'),
   valMaxChunk: document.getElementById('val-max-chunk'),
   selectModelSize: document.getElementById('select-model-size'),
+  hintParakeetEngine: document.getElementById('hint-parakeet-engine'),
   selectAsrLang: document.getElementById('select-asr-lang'),
   promptEs: document.getElementById('prompt-es'),
   btnSuggestPromptEs: document.getElementById('btn-suggest-prompt-es'),
@@ -409,6 +409,8 @@ const elements = {
   checkSaveTranscript: document.getElementById('check-save-transcript'),
   checkSaveVtt: document.getElementById('check-save-vtt'),
   checkRnnoiseEnabled: document.getElementById('check-rnnoise-enabled'),
+  checkFollowOpencohostLanguage: document.getElementById('check-follow-opencohost-language'),
+  statusOpencohostLanguage: document.getElementById('status-opencohost-language'),
   checkMcpStyleEnabled: document.getElementById('check-mcp-style-enabled'),
   checkMcpSystemEnabled: document.getElementById('check-mcp-system-enabled'),
   checkAcousticEventsEnabled: document.getElementById('check-acoustic-events-enabled'),
@@ -422,7 +424,6 @@ const elements = {
   subtitlesFeedContainer: document.getElementById('subtitles-feed-container'),
   feedEmptyState: document.getElementById('feed-empty-state'),
   feedCountBadge: document.getElementById('feed-count-badge'),
-  feedLiveBadge: document.getElementById('feed-live-badge'),
   btnTestSubtitle: document.getElementById('btn-test-subtitle'),
   btnClearFeed: document.getElementById('btn-clear-feed'),
   feedActionMenu: document.getElementById('feed-action-menu'),
@@ -541,6 +542,15 @@ function toggleLoggerCollapse() {
     elements.btnToggleLogger.setAttribute('data-i18n', key);
     elements.btnToggleLogger.setAttribute('aria-expanded', String(!isLoggerCollapsed));
   }
+}
+
+// Parakeet honors the compute device but always uses the ORT worker: lock the engine choice and say so.
+function syncEngineControls() {
+  const parakeet = isParakeetModel(elements.selectModelSize.value);
+  elements.selectAsrBackend.disabled = parakeet;
+  elements.hintParakeetEngine.hidden = !parakeet;
+  updateComputeDeviceReactivity();
+  renderEngineSummary();
 }
 
 function updateComputeDeviceReactivity(device) {
@@ -926,40 +936,6 @@ function updateStatusUI(status) {
     `;
   }
 
-  // ASR State Pill
-  const state = status.monitor_mode ? 'monitor' : (status.asr_state || (status.is_running ? 'listening' : 'stopped'));
-  const isAudioStandbyOrReconnecting = Boolean(
-    status.is_running && (status.audio_state === 'standby' || status.audio_state === 'reconnecting')
-  );
-  const cssState = state === 'monitor'
-    ? 'listening'
-    : state.startsWith('error')
-    ? 'failed'
-    : isAudioStandbyOrReconnecting
-    ? 'degraded'
-    : (state.startsWith('Descargando') || state === 'downloading' || state === 'loading')
-    ? 'starting'
-    : state;
-  elements.pillStatus.className = `pill state-${cssState}`;
-  const stateLabels = {
-    stopped: t('status_stopped'),
-    starting: t('status_starting'),
-    loading: t('status_loading'),
-    downloading: t('status_downloading'),
-    ready: t('status_ready'),
-    listening: t('status_listening'),
-    transcribing: t('status_transcribing'),
-    degraded: t('status_degraded'),
-    failed: t('status_failed'),
-    monitor: t('status_monitor'),
-  };
-  let pillText = stateLabels[state] || state;
-  if (isAudioStandbyOrReconnecting) {
-    const audioLabel = t(`audio_${status.audio_state}`) || status.audio_state;
-    pillText += ` | Audio: ${audioLabel}`;
-  }
-  elements.pillStatusText.textContent = pillText;
-
   // VAD Pill
   if (status.vad_onset) {
     elements.pillVad.classList.add('active');
@@ -1023,11 +999,6 @@ function updateStatusUI(status) {
   const isFeedLive = Boolean(status.is_running || status.monitor_mode || (monitorFeed && monitorFeed.socket));
   if (elements.cardSubtitlesFeed) {
     elements.cardSubtitlesFeed.classList.toggle('feed-active', isFeedLive);
-  }
-  if (elements.feedLiveBadge) {
-    elements.feedLiveBadge.className = isFeedLive ? 'badge badge-feed-live' : 'badge badge-feed-idle';
-    elements.feedLiveBadge.textContent = isFeedLive ? t('feed_badge_live') : t('feed_badge_idle');
-    elements.feedLiveBadge.setAttribute('data-i18n', isFeedLive ? 'feed_badge_live' : 'feed_badge_idle');
   }
   if (elements.feedEmptyState && elements.subtitlesFeedContainer && !elements.subtitlesFeedContainer.querySelector('.feed-item')) {
     elements.feedEmptyState.textContent = isFeedLive
@@ -2036,6 +2007,7 @@ function populateAdvancedControls(config) {
 
   elements.selectBacklogPolicy.value = config.subtitle_backlog_policy || 'auto';
   elements.selectAsrBackend.value = config.asr_backend || 'auto';
+  syncEngineControls();
 
   elements.sliderMaxLiveDelay.value = config.subtitle_max_live_delay_sec || 10.0;
   elements.valMaxLiveDelay.textContent = `${config.subtitle_max_live_delay_sec || 10.0}s`;
@@ -2048,6 +2020,8 @@ function populateAdvancedControls(config) {
   elements.valVadThreshold.textContent = `${config.vad_threshold || 0.5}`;
 
   elements.checkRnnoiseEnabled.checked = Boolean(config.rnnoise_enabled);
+  elements.checkFollowOpencohostLanguage.checked = Boolean(config.follow_opencohost_language);
+  refreshOpencohostStatus();
   if (elements.checkMcpStyleEnabled) elements.checkMcpStyleEnabled.checked = config.mcp_style_enabled === true;
   if (elements.checkMcpSystemEnabled) elements.checkMcpSystemEnabled.checked = config.mcp_system_enabled === true;
   if (elements.checkUpdatesEnabled) elements.checkUpdatesEnabled.checked = config.check_updates_enabled !== false;
@@ -2164,6 +2138,7 @@ function collectFormData() {
 
   cfg.model_size = elements.selectModelSize.value;
   cfg.asr_language = currentAsrLang;
+  cfg.follow_opencohost_language = elements.checkFollowOpencohostLanguage.checked;
   cfg.whisper_context_prompt_es = drafts.prompts.es.trim();
   cfg.whisper_context_prompt_en = drafts.prompts.en.trim();
   cfg.blacklist = drafts.blacklists[currentAsrLang].trim();
@@ -2396,6 +2371,19 @@ function renderAllowedConnections(data) {
   }
 }
 
+// Status line under the OpenCohost slider: visible only while it is on; any failure just hides it.
+async function refreshOpencohostStatus() {
+  const el = elements.statusOpencohostLanguage;
+  el.hidden = true;
+  if (!elements.checkFollowOpencohostLanguage.checked) return;
+  try {
+    el.textContent = opencohostStatusText(await invoke('opencohost_language_status'), t);
+    el.hidden = !el.textContent;
+  } catch (err) {
+    console.error('Error reading the OpenCohost language status:', err);
+  }
+}
+
 async function refreshAllowedConnections() {
   try {
     const data = await invoke('get_allowed_connections');
@@ -2480,9 +2468,13 @@ async function initApp() {
       updateStatusUI(currentStatus);
       applyTranslations(newLang);
       updateComputeDeviceReactivity();
+      renderEngineSummary();
+      refreshOpencohostStatus();
     });
   }
 
+  elements.selectModelSize.addEventListener('change', syncEngineControls);
+  elements.checkFollowOpencohostLanguage.addEventListener('change', refreshOpencohostStatus);
   if (elements.selectComputeDevice) {
     elements.selectComputeDevice.addEventListener('change', (e) => {
       updateComputeDeviceReactivity(e.target.value);
@@ -2497,6 +2489,7 @@ async function initApp() {
     : from?.id === 'tab-advanced-tab' ? confirmLeaveAdvancedTab() : true), onActivate: (tab) => {
     setActiveTab(tab.dataset.tab);
     if (tab.dataset.tab === 'tab-advanced') refreshAllowedConnections();
+    if (tab.dataset.tab === 'tab-setup') refreshOpencohostStatus();
   } });
   // Installed fonts for the Style tab; any failure keeps the curated list.
   invoke('list_system_fonts').then((names) => {
@@ -3162,12 +3155,14 @@ function renderGpuStatus() {
 function renderEngineSummary() {
   const live = currentStatus;
   const running = Boolean(live?.is_running);
-  const kind = engineKind(gpuStatus, live);
+  const parakeet = isParakeetModel(elements.selectModelSize.value);
+  // Parakeet is never ct2: an idle pill follows the selected device, a running one the live engine.
+  const kind = parakeet && !running && elements.selectComputeDevice.value === 'cpu' ? 'cpu' : engineKind(gpuStatus, live);
   const reason = running && live.backend_reason ? live.backend_reason : gpuStatus?.reason;
   elements.enginePill.className = running ? 'pill state-listening' : 'pill state-stopped';
   elements.engineStatusText.textContent = kind ? `${t(running ? 'engine_using' : 'engine_will_use')}${t(`engine_name_${kind}`)}` : '';
-  elements.engineStatusReason.textContent = reason ? t(gpuReasonKey(reason)) : '';
-  elements.btnNvidiaAdvanced.hidden = !nvidiaOfferVisible(gpuStatus, false);
+  elements.engineStatusReason.textContent = reason && !parakeet ? t(gpuReasonKey(reason)) : '';
+  elements.btnNvidiaAdvanced.hidden = parakeet || !nvidiaOfferVisible(gpuStatus, false);
 }
 
 function renderEngineDetails() {

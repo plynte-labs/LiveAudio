@@ -767,7 +767,7 @@ async fn run_service(
     let effective_base_port = port_override.unwrap_or(config.ws_port);
 
     // Validate native worker binary and ONNX Runtime library before opening listeners or audio resources.
-    let mut selected = prepare_worker(liveaudio_core::backend::effective_backend_pref(&config.asr_backend, &config.device)).await?;
+    let mut selected = prepare_worker(liveaudio_core::backend::effective_backend_pref(&config.asr_backend, &config.device, &config.model_size)).await?;
     eprintln!(
         "ASR backend: {} ({})",
         backend_name(selected.kind),
@@ -841,12 +841,14 @@ async fn run_service(
         .unwrap_or("small")
         .to_string();
 
-    let clean_lang = config
-        .language
-        .as_deref()
-        .filter(|l| !l.is_empty() && *l != "auto")
-        .unwrap_or("es")
-        .to_string();
+    let clean_lang = liveaudio_core::opencohost::language_override(&config).unwrap_or_else(|| {
+        config
+            .language
+            .as_deref()
+            .filter(|l| !l.is_empty() && *l != "auto")
+            .unwrap_or("es")
+            .to_string()
+    });
 
     let prompt = if clean_lang == "en" {
         &config.whisper_context_prompt_en

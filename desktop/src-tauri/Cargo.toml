@@ -7,7 +7,6 @@ publish = false
 license.workspace = true
 description = "Real-time local transcription with OBS subtitle overlay"
 repository.workspace = true
-homepage.workspace = true
 
 [dependencies]
 liveaudio-core = { path = "../../crates/liveaudio-core" }
