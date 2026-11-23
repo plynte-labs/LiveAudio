@@ -225,25 +225,54 @@ impl CpalAudioSource {
             }
         }
     }
-    /// Locate a capture device by ID, routing PulseAudio/PipeWire sources on Linux
-    /// and CPAL devices on all platforms.
-    pub(crate) fn resolve_capture_device(
+    /// Locate a capture device by ID. On Linux `pulse` carries the already-resolved
+    /// PulseAudio/PipeWire source (`None` falls through to CPAL devices).
+    pub(crate) fn resolve_capture_device_with(
         host: &cpal::Host,
         device_id: Option<&str>,
+        pulse: Option<(String, bool)>,
     ) -> Result<ResolvedCaptureDevice, AudioError> {
         #[cfg(target_os = "linux")]
-        if let Some((source_name, is_loopback)) =
-            crate::linux_pulse::resolve_linux_pulse_source(device_id)?
-        {
+        if let Some((source_name, is_loopback)) = pulse {
             return Ok(ResolvedCaptureDevice::LinuxPulse {
                 source_name,
                 is_loopback,
             });
         }
+        #[cfg(not(target_os = "linux"))]
+        let _ = pulse;
 
         let (device, is_loopback) = Self::resolve_device(host, device_id)?;
         Ok(ResolvedCaptureDevice::Cpal(device, is_loopback))
     }
+
+    /// Blocking variant (runs `pactl` on Linux); tests only, `start` resolves off-thread.
+    #[cfg(test)]
+    pub(crate) fn resolve_capture_device(
+        host: &cpal::Host,
+        device_id: Option<&str>,
+    ) -> Result<ResolvedCaptureDevice, AudioError> {
+        #[cfg(target_os = "linux")]
+        let pulse = crate::linux_pulse::resolve_linux_pulse_source(device_id)?;
+        #[cfg(not(target_os = "linux"))]
+        let pulse = None;
+        Self::resolve_capture_device_with(host, device_id, pulse)
+    }
+}
+
+/// Resolve the PulseAudio/PipeWire source on the blocking pool: `pactl` can take
+/// seconds and must not stall an async worker. `None` means "not a Pulse source".
+#[cfg(any(target_os = "linux", test))]
+async fn resolve_pulse_off_runtime<F>(
+    device_id: Option<String>,
+    resolve: F,
+) -> Result<Option<(String, bool)>, AudioError>
+where
+    F: FnOnce(Option<&str>) -> Result<Option<(String, bool)>, AudioError> + Send + 'static,
+{
+    tokio::task::spawn_blocking(move || resolve(device_id.as_deref()))
+        .await
+        .map_err(|e| AudioError::StreamError(format!("Audio device resolution task failed: {e}")))?
 }
 
 type StreamBundle = (
@@ -369,10 +398,12 @@ fn spawn_dsp_consumer_worker(
 fn build_and_start_stream(
     config: &AudioStreamConfig,
     rnnoise_enabled: bool,
+    pulse: Option<(String, bool)>,
 ) -> Result<StreamBundle, AudioError> {
     let host = cpal::default_host();
 
-    let resolved = CpalAudioSource::resolve_capture_device(&host, config.device_id.as_deref())?;
+    let resolved =
+        CpalAudioSource::resolve_capture_device_with(&host, config.device_id.as_deref(), pulse)?;
 
     let (device, is_loopback) = match resolved {
         ResolvedCaptureDevice::Cpal(device, is_loopback) => (device, is_loopback),
@@ -558,7 +589,23 @@ impl AudioSource for CpalAudioSource {
 
             self.status = AudioSourceStatus::Initializing;
 
-            let bundle = match build_and_start_stream(config, self.rnnoise_enabled) {
+            #[cfg(target_os = "linux")]
+            let pulse = match resolve_pulse_off_runtime(
+                config.device_id.clone(),
+                crate::linux_pulse::resolve_linux_pulse_source,
+            )
+            .await
+            {
+                Ok(pulse) => pulse,
+                Err(err) => {
+                    self.status = AudioSourceStatus::Standby;
+                    return Err(err);
+                }
+            };
+            #[cfg(not(target_os = "linux"))]
+            let pulse = None;
+
+            let bundle = match build_and_start_stream(config, self.rnnoise_enabled, pulse) {
                 Ok(bundle) => bundle,
                 Err(direct_err) => {
                     #[cfg(windows)]
@@ -570,7 +617,7 @@ impl AudioSource for CpalAudioSource {
                         let cfg = config.clone();
                         let rnnoise = self.rnnoise_enabled;
                         match crate::device::with_clean_audio_thread(move || {
-                            build_and_start_stream(&cfg, rnnoise)
+                            build_and_start_stream(&cfg, rnnoise, None)
                         }) {
                             Some(Ok(bundle)) => bundle,
                             Some(Err(err)) => {
@@ -753,6 +800,25 @@ mod tests {
         let capture_failed = AtomicBool::new(false);
         handle_stream_error(true, &capture_failed);
         assert!(!capture_failed.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn pulse_resolution_runs_off_the_async_thread() {
+        let caller = std::thread::current().id();
+        let resolved = resolve_pulse_off_runtime(Some("pulse:mic".into()), move |id| {
+            assert_eq!(id, Some("pulse:mic"));
+            assert_ne!(std::thread::current().id(), caller);
+            Ok(Some(("mic".to_string(), false)))
+        })
+        .await;
+        assert_eq!(resolved.unwrap(), Some(("mic".to_string(), false)));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn pulse_resolution_propagates_errors() {
+        let resolved =
+            resolve_pulse_off_runtime(None, |_| Err(AudioError::DeviceNotFound("x".into()))).await;
+        assert!(matches!(resolved, Err(AudioError::DeviceNotFound(_))));
     }
 
     #[test]
