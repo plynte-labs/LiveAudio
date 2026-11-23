@@ -555,7 +555,7 @@ function syncEngineControls() {
 
 function updateComputeDeviceReactivity(device) {
   const currentDevice = device || (elements.selectComputeDevice ? elements.selectComputeDevice.value : 'cpu');
-  const isCuda = currentDevice === 'cuda' && !isParakeetModel(elements.selectModelSize.value);
+  const isCuda = currentDevice === 'cuda';
   const group = elements.groupCpuThreads || elements.sliderCpuThreads?.closest('.form-group');
 
   if (elements.sliderCpuThreads) {

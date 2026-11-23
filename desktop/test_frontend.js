@@ -2749,6 +2749,11 @@ return { sanitizeThemeTokens, applyTheme };`)(fakeDocument);
     assert(pk.el('select-compute-device').disabled === false && pk.el('select-asr-backend').disabled === true
       && pk.el('hint-parakeet-engine').hidden === false,
     'Selecting Parakeet keeps Compute device enabled and the Transcription engine disabled');
+    pk.el('select-compute-device').value = 'cuda';
+    pk.el('select-compute-device').dispatch('change');
+    await pk.settle();
+    assert(pk.el('slider-cpu-threads').disabled === true,
+      'Parakeet on a GPU disables the CPU threads slider');
     pk.el('select-compute-device').value = 'cpu';
     pk.el('select-compute-device').dispatch('change');
     await pk.settle();
