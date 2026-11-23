@@ -39,22 +39,6 @@ fn now_millis() -> u64 {
         .unwrap_or(0)
 }
 
-#[cfg(target_os = "linux")]
-fn configure_linux_parent_death_signal(cmd: &mut Command) {
-    let parent_pid = unsafe { libc::getpid() };
-    unsafe {
-        cmd.pre_exec(move || {
-            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            if libc::getppid() != parent_pid {
-                libc::_exit(1);
-            }
-            Ok(())
-        });
-    }
-}
-
 async fn handle_job_assignment(
     name: &str,
     child: &mut Child,
@@ -891,7 +875,7 @@ impl ProcessSupervisor {
         #[cfg(windows)]
         crate::runtime::apply_no_console_to_tokio(&mut cmd);
         #[cfg(target_os = "linux")]
-        configure_linux_parent_death_signal(&mut cmd);
+        liveaudio_audio::configure_linux_parent_death_signal(cmd.as_std_mut());
 
         if let Some(ref dir) = config.working_dir {
             cmd.current_dir(dir);
@@ -1575,7 +1559,7 @@ mod native_worker_discovery_tests {
 
 #[cfg(all(test, target_os = "linux"))]
 mod linux_pdeathsig_tests {
-    use super::configure_linux_parent_death_signal;
+    use liveaudio_audio::configure_linux_parent_death_signal;
     use crate::supervisor::is_parent_alive;
     use std::process::Stdio;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -1613,7 +1597,7 @@ mod linux_pdeathsig_tests {
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null());
-            configure_linux_parent_death_signal(&mut cmd);
+            configure_linux_parent_death_signal(cmd.as_std_mut());
             let _child = cmd.spawn().expect("spawn grandchild");
             for _ in 0..200 {
                 if std::fs::read_to_string(&pid_file)

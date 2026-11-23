@@ -476,8 +476,9 @@ pub(crate) fn resolve_linux_pulse_source(
     resolve_pulse_device_id(Some(id), info.as_ref(), &sources)
 }
 
+/// Make the child receive SIGKILL when this process dies (`PR_SET_PDEATHSIG`).
 #[cfg(target_os = "linux")]
-fn configure_linux_parent_death_signal(cmd: &mut Command) {
+pub fn configure_linux_parent_death_signal(cmd: &mut Command) {
     let parent_pid = unsafe { libc::getpid() };
     unsafe {
         cmd.pre_exec(move || {
