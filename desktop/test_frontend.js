@@ -2327,7 +2327,7 @@ return { sanitizeThemeTokens, applyTheme };`)(fakeDocument);
   'GPU reason codes map to localized keys with an unknown fallback');
   const offerBase = {
     adapters: [{ vendor: 'nvidia', name: 'RTX', dedicated_vram_mb: 12000 }], cuda_driver_version: 12080,
-    nvidia_runtime: { installed: false, missing: ['x'] }, license_urls: [], selected_backend: 'ort', reason: 'nvidia_runtime_not_installed',
+    nvidia_runtime: { installed: false, missing: ['x'] }, worker_published: true, license_urls: [], selected_backend: 'ort', reason: 'nvidia_runtime_not_installed',
   };
   assert(typeof runtimeSettings.nvidiaOfferVisible === 'function'
     && runtimeSettings.nvidiaOfferVisible(offerBase, false) === true
@@ -2336,6 +2336,7 @@ return { sanitizeThemeTokens, applyTheme };`)(fakeDocument);
     && runtimeSettings.nvidiaOfferVisible({ ...offerBase, cuda_driver_version: null }, false) === false
     && runtimeSettings.nvidiaOfferVisible({ ...offerBase, adapters: [{ vendor: 'amd', name: 'RX', dedicated_vram_mb: 8000 }] }, false) === false
     && runtimeSettings.nvidiaOfferVisible({ ...offerBase, nvidia_runtime: { installed: true, missing: [] } }, false) === false
+    && runtimeSettings.nvidiaOfferVisible({ ...offerBase, worker_published: false }, false) === false
     && runtimeSettings.nvidiaOfferVisible(null, false) === false,
   'NVIDIA offer shows only with an NVIDIA GPU, driver >= 12080, runtime missing and not dismissed');
   assert(htmlContent.includes('id="card-nvidia-runtime"') && htmlContent.includes('id="btn-nvidia-enable"')
@@ -2459,7 +2460,7 @@ return { sanitizeThemeTokens, applyTheme };`)(fakeDocument);
 
   // Home card and Advanced summary through the real app.js (vm harness)
   const rtxStatus = { adapters: [{ vendor: 'nvidia', name: 'NVIDIA GeForce RTX 3060', dedicated_vram_mb: 12115 }], cuda_driver_version: 13040,
-    nvidia_runtime: { installed: false, missing: ['cublas64_12.dll'] }, license_urls: [], selected_backend: 'ort', reason: 'nvidia_runtime_not_installed' };
+    nvidia_runtime: { installed: false, missing: ['cublas64_12.dll'] }, worker_published: true, license_urls: [], selected_backend: 'ort', reason: 'nvidia_runtime_not_installed' };
   const loadNvidiaHarness = (options) => { setLanguage('es'); return loadAppHarness(styleBaseConfig, options); };
   {
     const h = await loadNvidiaHarness({ gpuStatus: rtxStatus, deriveSelected: true });
@@ -2514,6 +2515,19 @@ return { sanitizeThemeTokens, applyTheme };`)(fakeDocument);
     await notYet.settle();
     assert(notYet.el('nvidia-result-text').textContent === t('nvidia_card_unavailable') && notYet.el('nvidia-error-text').textContent.includes('404'),
     'A 404 from the download shows that acceleration is not available for this version yet');
+  }
+  {
+    const unpublished = await loadNvidiaHarness({ gpuStatus: rtxStatus, installError: 'worker_not_published: the CUDA worker is not published for this release' });
+    unpublished.el('btn-nvidia-enable').click();
+    await unpublished.settle();
+    unpublished.el('modal-btn-confirm').click();
+    await unpublished.settle();
+    assert(unpublished.el('nvidia-result-text').textContent === t('nvidia_card_unavailable'),
+    'The unpublished-worker refusal shows that acceleration is not available for this version yet');
+  }
+  {
+    const hidden = await loadNvidiaHarness({ gpuStatus: { ...rtxStatus, worker_published: false }, deriveSelected: true });
+    assert(hidden.el('nvidia-offer').hidden === true, 'The offer stays hidden while the CUDA worker is not published');
   }
   {
     const cuda = await loadNvidiaHarness({ gpuStatus: { ...rtxStatus, nvidia_runtime: { installed: true, missing: [] }, selected_backend: 'ct2_cuda', reason: 'nvidia_cuda_ready' },

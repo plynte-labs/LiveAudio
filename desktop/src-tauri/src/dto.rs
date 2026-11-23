@@ -148,6 +148,8 @@ pub struct GpuBackendStatusDto {
     pub adapters: Vec<GpuAdapterDto>,
     pub cuda_driver_version: Option<i32>,
     pub nvidia_runtime: liveaudio_core::NvidiaRuntimeStatus,
+    /// False while the pin file holds the placeholder: the CUDA worker cannot be installed.
+    pub worker_published: bool,
     /// NVIDIA license pages to show before the user starts the download.
     pub license_urls: Vec<String>,
     /// "ort" or "ct2_cuda".

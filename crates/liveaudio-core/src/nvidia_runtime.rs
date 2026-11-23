@@ -118,6 +118,10 @@ pub fn license_urls() -> Vec<String> {
     MANIFEST.archives.iter().map(|a| a.license.url.to_string()).collect()
 }
 
+/// Prefix of the `WorkerUnpublished` error text; the UI matches on it.
+#[cfg(test)]
+const WORKER_UNPUBLISHED_CODE: &str = "worker_not_published";
+
 const STAMP: &str = "installed.json";
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -162,7 +166,7 @@ pub fn runtime_status(dir: &Path, m: &Manifest) -> NvidiaRuntimeStatus {
 }
 
 pub fn nvidia_runtime_status(dir: &Path) -> NvidiaRuntimeStatus {
-    nvidia_runtime_status_with(dir, &current_manifest(), worker_pin().is_published())
+    nvidia_runtime_status_with(dir, &current_manifest(), worker_published())
 }
 
 /// Unpublished worker (placeholder pin): never installed, with the reason spelled out.
@@ -249,11 +253,30 @@ pub async fn install_runtime(
     Ok(())
 }
 
+/// Whether the pin file names a published CUDA worker (not the all-zero placeholder).
+pub fn worker_published() -> bool {
+    worker_pin().is_published()
+}
+
 pub async fn install_nvidia_runtime(
     dir: &Path,
     progress: impl FnMut(u64, u64),
     cancel: &AtomicBool,
 ) -> Result<(), DownloadError> {
+    install_nvidia_runtime_with(dir, worker_published(), progress, cancel).await
+}
+
+/// Refuses before any network or disk work when the worker is unpublished: the archives alone
+/// (~1.2 GB) would install "successfully" yet never enable acceleration.
+async fn install_nvidia_runtime_with(
+    dir: &Path,
+    worker_published: bool,
+    progress: impl FnMut(u64, u64),
+    cancel: &AtomicBool,
+) -> Result<(), DownloadError> {
+    if !worker_published {
+        return Err(DownloadError::WorkerUnpublished);
+    }
     #[cfg(not(target_os = "windows"))]
     {
         let _ = (dir, progress, cancel);
@@ -506,6 +529,17 @@ mod tests {
             assert!(p.sha256.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()));
             assert!(p.size > 0);
         }
+    }
+
+    #[tokio::test]
+    async fn install_refuses_unpublished_worker_before_any_download() {
+        let dir = tempdir("unpub-install").join("never-created");
+        let err = install_nvidia_runtime_with(&dir, false, |_, _| panic!("no download may start"), &AtomicBool::new(false))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DownloadError::WorkerUnpublished), "{err:?}");
+        assert!(err.to_string().contains(WORKER_UNPUBLISHED_CODE), "{err}");
+        assert!(!dir.exists(), "nothing may be created on disk");
     }
 
     #[test]

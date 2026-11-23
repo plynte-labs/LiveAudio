@@ -34,6 +34,7 @@ pub use gpu::{
 };
 pub use nvidia_runtime::{
     install_nvidia_runtime, license_urls, nvidia_runtime_status, runtime_dir as nvidia_runtime_dir,
+    worker_published as nvidia_worker_published,
     NvidiaRuntimeStatus,
 };
 pub use event::{EventBus, HealthState, HealthStateMachine};

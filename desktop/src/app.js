@@ -151,6 +151,7 @@ function mockInvoke(cmd, args) {
         adapters: [{ vendor: 'nvidia', name: 'NVIDIA GeForce RTX 3060', dedicated_vram_mb: 12115 }],
         cuda_driver_version: 12080,
         nvidia_runtime: { installed: false, missing: ['cublas64_12.dll'] },
+        worker_published: true,
         license_urls: ['https://developer.download.nvidia.com/compute/cudnn/redist/cudnn/LICENSE.txt'],
         selected_backend: 'ort',
         reason: 'nvidia_runtime_not_installed',
@@ -3206,7 +3207,7 @@ function renderNvidiaCard() {
 function nvidiaResultText(state, running) {
   if (state === 'success') return t(running ? 'nvidia_card_success_restart' : 'nvidia_card_success_next');
   if (state !== 'error') return '';
-  return t(/HTTP status 404/.test(nvidiaErrorMessage) ? 'nvidia_card_unavailable' : 'nvidia_card_error_hint');
+  return t(/HTTP status 404|worker_not_published/.test(nvidiaErrorMessage) ? 'nvidia_card_unavailable' : 'nvidia_card_error_hint');
 }
 
 function nvidiaProgressText(p) {

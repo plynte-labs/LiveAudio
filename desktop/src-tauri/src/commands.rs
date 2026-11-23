@@ -2161,6 +2161,7 @@ pub(crate) fn build_gpu_backend_status(
     cuda_driver_version: Option<i32>,
     nvidia_runtime: NvidiaRuntimeStatus,
     ct2_worker: Option<&std::path::Path>,
+    worker_published: bool,
 ) -> GpuBackendStatusDto {
     let (backend, reason) =
         select_backend(pref, adapters, cuda_driver_version, &nvidia_runtime, ct2_worker);
@@ -2181,6 +2182,7 @@ pub(crate) fn build_gpu_backend_status(
             .collect(),
         cuda_driver_version,
         nvidia_runtime,
+        worker_published,
         license_urls: license_urls(),
         selected_backend: backend_name(backend).to_string(),
         reason: reason.to_string(),
@@ -2204,6 +2206,7 @@ pub async fn get_gpu_backend_status(
             cuda_driver_version(),
             nvidia_runtime_status(&nvidia_runtime_dir()),
             discover_ct2_worker().as_deref(),
+            liveaudio_core::nvidia_worker_published(),
         )
     })
     .await

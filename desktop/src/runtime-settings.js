@@ -310,7 +310,7 @@ export function nvidiaInstallConfig(config) {
 
 /** True when the opt-in NVIDIA runtime offer should be shown. */
 export function nvidiaOfferVisible(status, dismissed) {
-  return Boolean(status && !dismissed
+  return Boolean(status && !dismissed && status.worker_published
     && status.adapters?.some((adapter) => adapter.vendor === 'nvidia')
     && status.cuda_driver_version >= NVIDIA_MIN_DRIVER
     && status.nvidia_runtime && !status.nvidia_runtime.installed);

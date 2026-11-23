@@ -14,6 +14,7 @@ Todos los cambios notables de LiveAudio se documentan aquí.
 ### Cambiado
 
 - **Worker CUDA con ciclo de release propio** — El pin de `ct2-worker.pin.json` sigue la versión del crate del worker y apunta al release `ct2-worker-vX.Y.Z`, por lo que una versión nueva de la app ya no obliga a recompilar y subir el worker. Si un worker habla otra versión del protocolo, se detiene al iniciar y la app vuelve a ONNX Runtime.
+- **Oferta de aceleración NVIDIA** — Se oculta, y la instalación se rechaza antes de descargar, cuando el worker CUDA aún no está publicado.
 - **Pestaña Avanzado reorganizada** en secciones con iconos.
 - **Selector "Modelo" agrupado** por Whisper/Parakeet.
 - **El control de hilos de CPU** solo está activo cuando se usa CPU.
