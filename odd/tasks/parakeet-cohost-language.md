@@ -59,3 +59,4 @@ Branch: `feat/parakeet-cohost-language` (from `develop` at c5f50f4). Worktree: `
 
 ## Next step
 User tests Parakeet in the real app (select it in Advanced > Engine). Push and PR remain the user's decision.
+- Release prep: version bumped to 1.6.5 (4b4e3d7). The CT2 worker pin is set to the documented all-zero placeholder for 1.6.5, so the app reports the CUDA worker as not published until it is re-pinned. At release, run `packaging/build_ct2_worker.ps1 -CudaRoot <root> -Pin` before tagging (docs/PACKAGING_AND_UPDATES.md).
