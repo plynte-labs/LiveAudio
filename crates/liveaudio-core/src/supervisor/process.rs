@@ -62,6 +62,13 @@ async fn handle_job_assignment(
     Ok(())
 }
 
+/// True when a worker event declares a protocol version other than the one this app speaks.
+/// A missing version means the base protocol. Workers ship on their own cycle, so a stale
+/// or newer binary must fail the start (and fall back) instead of misbehaving mid-session.
+fn protocol_mismatch(event: &serde_json::Value) -> bool {
+    event.get("version").and_then(|v| v.as_u64()).is_some_and(|v| v != 1)
+}
+
 /// Tracks the decode the worker reports in its pong and returns true once that same
 /// decode has been running longer than `limit`. A new utterance restarts the clock.
 fn decode_deadline_exceeded(
@@ -978,6 +985,14 @@ impl ProcessSupervisor {
                     let _ = worker_event_tx_stdout.send(val.clone());
                     if let Some(event_type) = val.get("event").and_then(|v| v.as_str()) {
                         match event_type {
+                            "ready" if protocol_mismatch(&val) => {
+                                tracing::error!(
+                                    "Worker PID {} speaks protocol version {}, this app speaks 1; stopping it",
+                                    pid,
+                                    val["version"]
+                                );
+                                decode_kill.notify_one();
+                            }
                             "ready" => {
                                 is_ready_clone.store(true, Ordering::SeqCst);
                                 last_pong_clone.store(now_millis(), Ordering::SeqCst);
@@ -1468,6 +1483,16 @@ impl ServiceSupervisor for ProcessSupervisor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ready_with_foreign_protocol_version_is_rejected() {
+        let ok = serde_json::json!({"event": "ready", "version": 1});
+        let legacy = serde_json::json!({"event": "ready"});
+        let newer = serde_json::json!({"event": "ready", "version": 2});
+        assert!(!protocol_mismatch(&ok));
+        assert!(!protocol_mismatch(&legacy), "a missing version means the base protocol");
+        assert!(protocol_mismatch(&newer));
+    }
 
     #[cfg(windows)]
     #[test]

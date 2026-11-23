@@ -490,15 +490,21 @@ mod tests {
     #[test]
     fn tracked_pin_is_placeholder_or_valid_release_pin() {
         let p = parse_pin(include_str!("../../../packaging/ct2-worker.pin.json")).unwrap();
-        assert_eq!(p.version, env!("CARGO_PKG_VERSION"));
+        // The worker ships on its own cycle: the pin tracks the worker crate, not the app version.
+        let manifest = include_str!("../../liveaudio-asr-worker-ct2/Cargo.toml");
+        let worker_version = manifest
+            .lines()
+            .find_map(|l| l.strip_prefix("version = \"")?.strip_suffix('"'))
+            .expect("worker crate version");
+        assert_eq!(p.version, worker_version);
+        assert_eq!(
+            p.url,
+            format!("https://github.com/plynte-labs/LiveAudio/releases/download/ct2-worker-v{}/liveaudio-asr-worker-cuda.exe", p.version)
+        );
         if p.is_published() {
             assert_eq!(p.sha256.len(), 64);
             assert!(p.sha256.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()));
             assert!(p.size > 0);
-            assert_eq!(
-                p.url,
-                format!("https://github.com/plynte-labs/LiveAudio/releases/download/v{}/liveaudio-asr-worker-cuda.exe", p.version)
-            );
         }
     }
 
