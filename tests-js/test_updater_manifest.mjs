@@ -162,6 +162,40 @@ describe("Tauri 2 Updater Manifest Assembler", () => {
       assert.equal(path.resolve(platforms["linux-x86_64"].installerPath), path.resolve(appImagePath));
     });
 
+    it("pairs the stable-named Windows installer published in release_assets", () => {
+      const releaseDir = path.join(tmpDir, "release_assets");
+      const outDir = path.join(tmpDir, "out");
+      fs.mkdirSync(releaseDir, { recursive: true });
+
+      fs.writeFileSync(path.join(releaseDir, "LiveAudio-Setup-1.6.0.exe"), "exe-payload");
+      fs.writeFileSync(path.join(releaseDir, "LiveAudio-Setup-1.6.0.exe.sig"), "win-sig");
+      fs.writeFileSync(path.join(releaseDir, "LiveAudio_1.6.0_amd64.AppImage"), "appimage-payload");
+      fs.writeFileSync(path.join(releaseDir, "LiveAudio_1.6.0_amd64.AppImage.sig"), "linux-sig");
+      fs.writeFileSync(path.join(releaseDir, "liveaudio-cli-1.6.0-windows-x64.zip"), "zip");
+
+      const platforms = find_platform_artifacts([releaseDir]);
+      assert.equal(
+        path.basename(platforms["windows-x86_64"].installerPath),
+        "LiveAudio-Setup-1.6.0.exe"
+      );
+      assert.equal(
+        path.basename(platforms["windows-x86_64"].sigPath),
+        "LiveAudio-Setup-1.6.0.exe.sig"
+      );
+
+      const { manifestData } = assemble_manifest({
+        version: "1.6.0",
+        platforms,
+        outDir,
+        repo: "plynte-labs/LiveAudio",
+        tag: "v1.6.0",
+      });
+      assert.equal(
+        manifestData.platforms["windows-x86_64"].url,
+        "https://github.com/plynte-labs/LiveAudio/releases/download/v1.6.0/LiveAudio-Setup-1.6.0.exe"
+      );
+    });
+
     it("rejects Linux AppImage when .AppImage.sig is missing", () => {
       const linuxDir = path.join(tmpDir, "unsigned-linux");
       fs.mkdirSync(linuxDir, { recursive: true });
