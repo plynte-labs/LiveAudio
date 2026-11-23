@@ -2513,11 +2513,11 @@ return { sanitizeThemeTokens, applyTheme };`)(fakeDocument);
     await notYet.settle();
     notYet.el('modal-btn-confirm').click();
     await notYet.settle();
-    assert(notYet.el('nvidia-result-text').textContent === t('nvidia_card_unavailable') && notYet.el('nvidia-error-text').textContent.includes('404'),
-    'A 404 from the download shows that acceleration is not available for this version yet');
+    assert(notYet.el('nvidia-result-text').textContent === t('nvidia_card_error_hint') && notYet.el('nvidia-error-text').textContent.includes('404'),
+    'A 404 from an NVIDIA download is a plain error, not the unavailable-for-this-version message');
   }
   {
-    const unpublished = await loadNvidiaHarness({ gpuStatus: rtxStatus, installError: 'worker_not_published: the CUDA worker is not published for this release' });
+    const unpublished = await loadNvidiaHarness({ gpuStatus: rtxStatus, installError: 'worker_not_published' });
     unpublished.el('btn-nvidia-enable').click();
     await unpublished.settle();
     unpublished.el('modal-btn-confirm').click();

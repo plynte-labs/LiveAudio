@@ -118,10 +118,6 @@ pub fn license_urls() -> Vec<String> {
     MANIFEST.archives.iter().map(|a| a.license.url.to_string()).collect()
 }
 
-/// Prefix of the `WorkerUnpublished` error text; the UI matches on it.
-#[cfg(test)]
-const WORKER_UNPUBLISHED_CODE: &str = "worker_not_published";
-
 const STAMP: &str = "installed.json";
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -214,7 +210,10 @@ pub async fn install_runtime(
         let path = dir.join(w.name);
         let matches = tokio::task::spawn_blocking(move || file_sha256(&path)).await.ok().flatten().is_some_and(|h| h == w.sha256);
         if !matches {
-            download_verified(w.url, &dir.join(w.name), w.sha256, Some(w.size), |d, _| progress(d, total), cancel).await?;
+            // A 404 on the worker asset means the release was never published; NVIDIA 404s stay plain errors.
+            download_verified(w.url, &dir.join(w.name), w.sha256, Some(w.size), |d, _| progress(d, total), cancel)
+                .await
+                .map_err(|e| if matches!(e, DownloadError::Status(404)) { DownloadError::WorkerUnpublished } else { e })?;
         }
         base += w.size;
         progress(base, total);
@@ -274,15 +273,17 @@ async fn install_nvidia_runtime_with(
     progress: impl FnMut(u64, u64),
     cancel: &AtomicBool,
 ) -> Result<(), DownloadError> {
-    if !worker_published {
-        return Err(DownloadError::WorkerUnpublished);
-    }
+    // The platform check comes first so non-Windows always reports the platform error.
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = (dir, progress, cancel);
+        let _ = (dir, worker_published, progress, cancel);
         return Err(DownloadError::Http(
             "NVIDIA CUDA runtime auto-install is currently only supported on Windows".to_string(),
         ));
+    }
+    #[cfg(target_os = "windows")]
+    if !worker_published {
+        return Err(DownloadError::WorkerUnpublished);
     }
     #[cfg(target_os = "windows")]
     install_runtime(dir, &current_manifest(), progress, cancel).await
@@ -495,7 +496,8 @@ mod tests {
         let f = fixture().await; // archives reachable, /w.exe is 404
         let m = with_worker(manifest_for(&f, &sha(&f.zip), &sha(&f.lic)), &f, b"MZ-worker");
         let dir = tempdir("workerfirst");
-        install_runtime(&dir, &m, |_, _| {}, &AtomicBool::new(false)).await.unwrap_err();
+        let err = install_runtime(&dir, &m, |_, _| {}, &AtomicBool::new(false)).await.unwrap_err();
+        assert!(matches!(err, DownloadError::WorkerUnpublished), "a 404 on the worker asset means it is not published: {err:?}");
         assert!(!dir.join("a64.dll").exists(), "archives must not be fetched before the worker is verified");
     }
 
@@ -531,6 +533,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "windows")]
     #[tokio::test]
     async fn install_refuses_unpublished_worker_before_any_download() {
         let dir = tempdir("unpub-install").join("never-created");
@@ -538,7 +541,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, DownloadError::WorkerUnpublished), "{err:?}");
-        assert!(err.to_string().contains(WORKER_UNPUBLISHED_CODE), "{err}");
+        assert!(err.to_string().starts_with("worker_not_published"), "{err}");
         assert!(!dir.exists(), "nothing may be created on disk");
     }
 
@@ -581,7 +584,7 @@ mod tests {
         std::fs::write(dir.join("worker.exe"), b"corrupt").unwrap();
         let m = with_worker(m, &dead, b"MZ-worker");
         let err = install_runtime(&dir, &m, |_, _| {}, &AtomicBool::new(false)).await.unwrap_err();
-        assert!(matches!(err, DownloadError::Status(404)), "{err:?}");
+        assert!(matches!(err, DownloadError::WorkerUnpublished), "{err:?}");
         assert_eq!(std::fs::read_to_string(dir.join("installed.json")).unwrap(), format!(r#"["{}"]"#, sha(&f.zip)));
     }
 

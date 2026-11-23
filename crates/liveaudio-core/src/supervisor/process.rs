@@ -10,6 +10,7 @@
 //! - Cooperative cancellation via `CancellationToken`
 //! - Idempotent double-shutdown guarantees
 
+use liveaudio_worker_protocol::protocol::PROTOCOL_VERSION;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -66,7 +67,10 @@ async fn handle_job_assignment(
 /// A missing version means the base protocol. Workers ship on their own cycle, so a stale
 /// or newer binary must fail the start (and fall back) instead of misbehaving mid-session.
 fn protocol_mismatch(event: &serde_json::Value) -> bool {
-    event.get("version").and_then(|v| v.as_u64()).is_some_and(|v| v != 1)
+    match event.get("version") {
+        None => false,
+        Some(v) => v.as_u64() != Some(u64::from(PROTOCOL_VERSION)),
+    }
 }
 
 /// Tracks the decode the worker reports in its pong and returns true once that same
@@ -975,6 +979,8 @@ impl ProcessSupervisor {
         let worker_event_tx_stdout = worker_event_tx.clone();
         let decode_timeout = config.decode_timeout;
         let decode_kill = kill_notify.clone();
+        let protocol_mismatch_reason = Arc::new(std::sync::Mutex::new(None::<String>));
+        let mismatch_stdout = protocol_mismatch_reason.clone();
 
         tokio::spawn(async move {
             let mut decoding: Option<(String, Instant)> = None;
@@ -982,17 +988,17 @@ impl ProcessSupervisor {
             while let Ok(Some(line)) = read_worker_line(&mut reader).await {
                 last_event_clone.store(now_millis(), Ordering::SeqCst);
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) {
+                    let is_rejected_ready = val.get("event").and_then(|v| v.as_str()) == Some("ready") && protocol_mismatch(&val);
+                    if is_rejected_ready {
+                        let reason = format!("worker protocol version mismatch: expected {PROTOCOL_VERSION}, got {}", val["version"]);
+                        tracing::error!("Worker PID {pid}: {reason}; stopping it");
+                        *mismatch_stdout.lock().unwrap() = Some(reason);
+                        decode_kill.notify_one();
+                        continue;
+                    }
                     let _ = worker_event_tx_stdout.send(val.clone());
                     if let Some(event_type) = val.get("event").and_then(|v| v.as_str()) {
                         match event_type {
-                            "ready" if protocol_mismatch(&val) => {
-                                tracing::error!(
-                                    "Worker PID {} speaks protocol version {}, this app speaks 1; stopping it",
-                                    pid,
-                                    val["version"]
-                                );
-                                decode_kill.notify_one();
-                            }
                             "ready" => {
                                 is_ready_clone.store(true, Ordering::SeqCst);
                                 last_pong_clone.store(now_millis(), Ordering::SeqCst);
@@ -1074,7 +1080,7 @@ impl ProcessSupervisor {
             })
         });
         let init_cmd = serde_json::json!({
-            "version": 1,
+            "version": PROTOCOL_VERSION,
             "cmd": "init",
             "attempt_id": attempt_id,
             "timestamp_ms": now_millis(),
@@ -1092,7 +1098,8 @@ impl ProcessSupervisor {
                 _ = ready_notify.notified() => Ok(()),
                 _ = exit_notify.notified() => Err(SupervisorError::ProcessSpawnFailed {
                     name: config.name.clone(),
-                    reason: "Child exited prematurely before sending ready event".to_string(),
+                    reason: protocol_mismatch_reason.lock().unwrap().take()
+                        .unwrap_or_else(|| "Child exited prematurely before sending ready event".to_string()),
                 }),
                 _ = async { if let Some(token) = cancellation { token.cancelled().await } } => Err(SupervisorError::Cancelled),
                 _ = wait_for_startup_stall(&last_event_ms, stall_window) => Err(SupervisorError::ProcessSpawnFailed {
@@ -1151,7 +1158,7 @@ impl ProcessSupervisor {
                 }
 
                 let ping = serde_json::json!({
-                    "version": 1,
+                    "version": PROTOCOL_VERSION,
                     "cmd": "ping",
                     "timestamp_ms": now_millis(),
                 });
@@ -1341,7 +1348,7 @@ impl ProcessSupervisor {
             }
 
             let shutdown_cmd = serde_json::json!({
-                "version": 1,
+                "version": PROTOCOL_VERSION,
                 "cmd": "shutdown",
                 "payload": {
                     "grace_timeout_ms": timeout.as_millis() as u64
@@ -1486,12 +1493,16 @@ mod tests {
 
     #[test]
     fn ready_with_foreign_protocol_version_is_rejected() {
-        let ok = serde_json::json!({"event": "ready", "version": 1});
+        let ok = serde_json::json!({"event": "ready", "version": PROTOCOL_VERSION});
         let legacy = serde_json::json!({"event": "ready"});
         let newer = serde_json::json!({"event": "ready", "version": 2});
         assert!(!protocol_mismatch(&ok));
         assert!(!protocol_mismatch(&legacy), "a missing version means the base protocol");
         assert!(protocol_mismatch(&newer));
+        for bad in [r#""2""#, "2.0", "null", "-1", "true"] {
+            let event: serde_json::Value = serde_json::from_str(&format!(r#"{{"event":"ready","version":{bad}}}"#)).unwrap();
+            assert!(protocol_mismatch(&event), "version {bad} must be a mismatch");
+        }
     }
 
     #[cfg(windows)]

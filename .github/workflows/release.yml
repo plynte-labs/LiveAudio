@@ -53,6 +53,9 @@ jobs:
       - name: Fetch pinned ONNX Runtime binaries
         run: node packaging/fetch_onnxruntime.mjs
 
+      - name: Verify the pinned CUDA worker
+        run: node packaging/verify_ct2_pin.mjs
+
       - name: Verify tag matches Cargo workspace version
         id: version
         run: |

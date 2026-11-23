@@ -3207,7 +3207,7 @@ function renderNvidiaCard() {
 function nvidiaResultText(state, running) {
   if (state === 'success') return t(running ? 'nvidia_card_success_restart' : 'nvidia_card_success_next');
   if (state !== 'error') return '';
-  return t(/HTTP status 404|worker_not_published/.test(nvidiaErrorMessage) ? 'nvidia_card_unavailable' : 'nvidia_card_error_hint');
+  return t(nvidiaErrorMessage.includes('worker_not_published') ? 'nvidia_card_unavailable' : 'nvidia_card_error_hint');
 }
 
 function nvidiaProgressText(p) {

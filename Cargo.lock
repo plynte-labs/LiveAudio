@@ -2461,6 +2461,7 @@ dependencies = [
  "liveaudio-audio",
  "liveaudio-ipc",
  "liveaudio-vad",
+ "liveaudio-worker-protocol",
  "reqwest",
  "serde",
  "serde_json",

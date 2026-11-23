@@ -119,15 +119,20 @@ replaces the AppImage in-place on Linux.
    re-pin it only when that crate changes (needs the CUDA toolchain, about 18 minutes; see
    `crates/liveaudio-asr-worker-ct2/README.md`):
    ```powershell
-   .\packaginguild_ct2_worker.ps1 -CudaRoot <toolkit root> -Pin
+   .\packaging\build_ct2_worker.ps1 -CudaRoot <toolkit root> -Pin
    ```
    `-Pin` copies the exe to `dist-ct2/` (gitignored) and rewrites
    `packaging/ct2-worker.pin.json` with the crate version, the
    `ct2-worker-vX.Y.Z` release URL, SHA-256 and size. Create that release once and upload
    the exe (it must match the pin URL):
    ```bash
-   gh release create ct2-worker-vX.Y.Z dist-ct2/liveaudio-asr-worker-cuda.exe --title "CUDA worker X.Y.Z" --notes "CTranslate2 CUDA worker for LiveAudio."
+   gh release create ct2-worker-vX.Y.Z --latest=false dist-ct2/liveaudio-asr-worker-cuda.exe --title "CUDA worker X.Y.Z" --notes "CTranslate2 CUDA worker for LiveAudio."
    ```
+   The "Latest" GitHub release must always be an app release: the updater reads
+   `releases/latest/download/latest.json`, so never mark a worker release as latest.
+   Published `ct2-worker-v*` releases are immutable. Any change to the worker or to its path
+   dependency `liveaudio-worker-protocol` requires bumping the ct2 crate version and a new
+   tag; never re-upload an asset under an existing tag.
    A normal app release needs none of this: leave the pin untouched.
 3. Commit `packaging/ct2-worker.pin.json` when it changed. The app embeds it at compile
    time, so it must be in the tagged commit. While it holds the all-zero SHA-256

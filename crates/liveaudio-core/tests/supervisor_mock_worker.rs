@@ -109,6 +109,11 @@ elif mode in ("decode_hang", "decode_progress"):
         elif msg.get("cmd") == "shutdown":
             sys.exit(0)
 
+elif mode == "bad_protocol":
+    for line in sys.stdin:
+        sys.stdout.write(json.dumps({"version": 2, "event": "ready", "payload": {"device": "cpu"}}) + "\n")
+        sys.stdout.flush()
+
 elif mode == "normal":
     for line in sys.stdin:
         line = line.strip()
@@ -719,4 +724,29 @@ async fn silent_startup_is_killed_after_the_stall_window() {
         "a silent startup must fail after the stall window"
     );
     assert!(started.elapsed() < Duration::from_secs(10));
+}
+
+#[tokio::test]
+async fn test_worker_with_foreign_protocol_version_fails_start_and_is_not_forwarded() {
+    let (_tmp_dir, script_path) = create_mock_worker_script();
+
+    let config = WorkerProcessConfig {
+        name: "test-bad-protocol-worker".to_string(),
+        command: "python".to_string(),
+        args: vec!["-u".to_string(), script_path.to_str().unwrap().to_string(), "bad_protocol".to_string()],
+        ready_timeout: Duration::from_secs(5),
+        ..WorkerProcessConfig::default()
+    };
+
+    let mut supervisor = ProcessSupervisor::new(config, std::process::id(), 0, None)
+        .expect("supervisor creation should succeed");
+    let mut events = supervisor.subscribe_worker_events();
+
+    let err = supervisor.start().await.expect_err("a worker speaking protocol 2 must not start");
+    let text = err.to_string();
+    assert!(text.contains("protocol version mismatch") && text.contains("expected 1, got 2"), "{text}");
+    assert!(!supervisor.is_running().await);
+    while let Ok(event) = events.try_recv() {
+        assert_ne!(event.get("event").and_then(|v| v.as_str()), Some("ready"), "rejected ready was forwarded");
+    }
 }
