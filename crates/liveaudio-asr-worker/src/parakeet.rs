@@ -105,6 +105,24 @@ pub fn tdt_greedy<S>(
     Ok(tokens)
 }
 
+/// The fp32 encoder (with GPU weights) is used for any non-CPU device.
+pub fn uses_gpu_encoder(device: &str) -> bool {
+    !matches!(device, "" | "cpu")
+}
+
+pub fn encoder_compute_type(device: &str) -> &'static str {
+    if uses_gpu_encoder(device) {
+        "fp32"
+    } else {
+        "int8"
+    }
+}
+
+/// Device to retry on when the encoder cannot load on `device`; `None` when there is nowhere to go.
+pub fn gpu_failure_fallback(device: &str, auto_cpu_fallback: bool) -> Option<&'static str> {
+    (uses_gpu_encoder(device) && auto_cpu_fallback).then_some("cpu")
+}
+
 type State = (Vec<f32>, Vec<f32>);
 
 pub struct ParakeetEngine {
@@ -137,17 +155,19 @@ fn len_tensor(n: usize) -> Result<Tensor<i64>, String> {
 }
 
 impl ParakeetEngine {
-    /// Parakeet int8 runs on the CPU, so the requested device is not used.
-    pub fn load(paths: &ParakeetPaths, cpu_threads: Option<usize>) -> Result<Self, String> {
+    /// Loads the encoder on `device` (`cpu`, `cuda` or `directml`; the fp32 encoder for a GPU, int8
+    /// for the CPU). The preprocessor and the decoder run once per frame on tiny tensors, so they
+    /// stay on the CPU.
+    pub fn load(paths: &ParakeetPaths, device: &str, cpu_threads: Option<usize>) -> Result<Self, String> {
         init_ort_runtime()?;
-        let build = |path: &std::path::Path| -> Result<Session, String> {
-            WhisperOrtEngine::make_session_builder("cpu", cpu_threads)?
+        let build = |path: &std::path::Path, device: &str| -> Result<Session, String> {
+            WhisperOrtEngine::make_session_builder(device, cpu_threads)?
                 .commit_from_file(path)
                 .map_err(|e| format!("Failed to load {}: {e}", path.display()))
         };
-        let preprocessor = build(&paths.preprocessor)?;
-        let encoder = build(&paths.encoder)?;
-        let decoder = build(&paths.decoder_joint)?;
+        let preprocessor = build(&paths.preprocessor, "cpu")?;
+        let encoder = build(&paths.encoder, device)?;
+        let decoder = build(&paths.decoder_joint, "cpu")?;
         let vocab = parse_vocab(&std::fs::read_to_string(&paths.vocab).map_err(|e| e.to_string())?)?;
 
         let mut state_dims = Vec::new();
@@ -355,6 +375,25 @@ mod tests {
         assert_eq!(v.detokenize(&[]), "");
         assert_eq!(v.detokenize(&[3]), "", "blank and out-of-range ids are skipped");
         assert_eq!(v.detokenize(&[99]), "");
+    }
+
+    #[test]
+    fn only_a_gpu_device_selects_the_fp32_encoder() {
+        assert!(!uses_gpu_encoder("cpu"));
+        assert!(!uses_gpu_encoder(""));
+        assert!(uses_gpu_encoder("cuda"));
+        assert!(uses_gpu_encoder("directml"));
+        assert_eq!(encoder_compute_type("cpu"), "int8");
+        assert_eq!(encoder_compute_type("cuda"), "fp32");
+        assert_eq!(encoder_compute_type("directml"), "fp32");
+    }
+
+    #[test]
+    fn gpu_failure_falls_back_to_cpu_only_when_allowed() {
+        assert_eq!(gpu_failure_fallback("cuda", true), Some("cpu"));
+        assert_eq!(gpu_failure_fallback("directml", true), Some("cpu"));
+        assert_eq!(gpu_failure_fallback("cuda", false), None);
+        assert_eq!(gpu_failure_fallback("cpu", true), None, "a CPU failure has nowhere to fall back to");
     }
 
     #[test]

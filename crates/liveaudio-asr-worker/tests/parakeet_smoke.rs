@@ -26,13 +26,13 @@ fn read_wav(path: &str) -> (Vec<f32>, u32) {
 fn parakeet_loads_and_transcribes() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let paths = rt
-        .block_on(prepare_parakeet(None, false, |_, name, pct, _, _, _, _| {
+        .block_on(prepare_parakeet(None, false, false, |_, name, pct, _, _, _, _| {
             if pct == Some(100.0) {
                 eprintln!("downloaded {name}");
             }
         }))
         .expect("prepare model");
-    let mut engine = ParakeetEngine::load(&paths, None).expect("load engine");
+    let mut engine = ParakeetEngine::load(&paths, "cpu", None).expect("load engine");
 
     let silence = engine.transcribe(&vec![0.0f32; 32_000], 16_000).expect("silence");
     assert_eq!(silence.text, "");

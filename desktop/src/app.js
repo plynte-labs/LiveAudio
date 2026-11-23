@@ -544,10 +544,9 @@ function toggleLoggerCollapse() {
   }
 }
 
-// Parakeet ignores device and engine choices (CPU int8 in the ORT worker): lock them and say so.
+// Parakeet honors the compute device but always uses the ORT worker: lock the engine choice and say so.
 function syncEngineControls() {
   const parakeet = isParakeetModel(elements.selectModelSize.value);
-  elements.selectComputeDevice.disabled = parakeet;
   elements.selectAsrBackend.disabled = parakeet;
   elements.hintParakeetEngine.hidden = !parakeet;
   updateComputeDeviceReactivity();
@@ -3156,11 +3155,12 @@ function renderGpuStatus() {
 function renderEngineSummary() {
   const live = currentStatus;
   const running = Boolean(live?.is_running);
-  const kind = engineKind(gpuStatus, live);
-  const reason = running && live.backend_reason ? live.backend_reason : gpuStatus?.reason;
   const parakeet = isParakeetModel(elements.selectModelSize.value);
+  // Parakeet is never ct2: an idle pill follows the selected device, a running one the live engine.
+  const kind = parakeet && !running && elements.selectComputeDevice.value === 'cpu' ? 'cpu' : engineKind(gpuStatus, live);
+  const reason = running && live.backend_reason ? live.backend_reason : gpuStatus?.reason;
   elements.enginePill.className = running ? 'pill state-listening' : 'pill state-stopped';
-  elements.engineStatusText.textContent = parakeet ? t('engine_parakeet_cpu') : kind ? `${t(running ? 'engine_using' : 'engine_will_use')}${t(`engine_name_${kind}`)}` : '';
+  elements.engineStatusText.textContent = kind ? `${t(running ? 'engine_using' : 'engine_will_use')}${t(`engine_name_${kind}`)}` : '';
   elements.engineStatusReason.textContent = reason && !parakeet ? t(gpuReasonKey(reason)) : '';
   elements.btnNvidiaAdvanced.hidden = parakeet || !nvidiaOfferVisible(gpuStatus, false);
 }

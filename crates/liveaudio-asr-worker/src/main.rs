@@ -4,7 +4,7 @@ use std::sync::OnceLock;
 
 use liveaudio_asr_worker::download::{is_parakeet_model, prepare_model, prepare_parakeet};
 use liveaudio_asr_worker::model::{self, WhisperOrtEngine};
-use liveaudio_asr_worker::parakeet::ParakeetEngine;
+use liveaudio_asr_worker::parakeet::{encoder_compute_type, gpu_failure_fallback, uses_gpu_encoder, ParakeetEngine};
 use liveaudio_asr_worker::protocol::InitPayload;
 use liveaudio_worker_protocol::{
     run_self_test_cli, run_worker, Engine, LoadError, ProgressFn, ReadyInfo, Transcript,
@@ -18,22 +18,44 @@ enum OrtEngine {
 }
 
 fn load_parakeet(init: &InitPayload, progress: &mut ProgressFn) -> Result<(OrtEngine, ReadyInfo), LoadError> {
-    model::init_ort_runtime()
-        .map_err(|message| LoadError { code: "DEVICE_UNAVAILABLE", message, recoverable: false })?;
+    let auto_fallback = init.auto_cpu_fallback.unwrap_or(true);
+    let (mut device, mut fallback_occurred, mut fallback_reason) =
+        model::resolve_effective_device(&init.device, auto_fallback)
+            .map_err(|message| LoadError { code: "DEVICE_UNAVAILABLE", message, recoverable: false })?;
     let rt = RUNTIME.get().expect("runtime initialized in main");
-    let paths = rt
-        .block_on(prepare_parakeet(init.cache_dir.as_deref(), init.local_files_only.unwrap_or(false), progress))
-        .map_err(|message| LoadError { code: "MODEL_PREPARATION_FAILED", message, recoverable: true })?;
-    let engine = ParakeetEngine::load(&paths, init.cpu_threads)
-        .map_err(|message| LoadError { code: "ENGINE_LOAD_FAILED", message, recoverable: true })?;
-    // The int8 export runs on the CPU whatever device was requested.
-    let info = ReadyInfo {
-        device: "cpu".to_string(),
-        compute_type: "int8".to_string(),
-        fallback_occurred: false,
-        fallback_reason: None,
-    };
-    Ok((OrtEngine::Parakeet(Box::new(engine)), info))
+    loop {
+        let prepared = rt
+            .block_on(prepare_parakeet(
+                init.cache_dir.as_deref(),
+                init.local_files_only.unwrap_or(false),
+                uses_gpu_encoder(&device),
+                &mut *progress,
+            ))
+            .map_err(|message| LoadError { code: "MODEL_PREPARATION_FAILED", message, recoverable: true })
+            .and_then(|paths| {
+                ParakeetEngine::load(&paths, &device, init.cpu_threads)
+                    .map_err(|message| LoadError { code: "ENGINE_LOAD_FAILED", message, recoverable: true })
+            });
+        match prepared {
+            Ok(engine) => {
+                let info = ReadyInfo {
+                    compute_type: encoder_compute_type(&device).to_string(),
+                    device,
+                    fallback_occurred,
+                    fallback_reason,
+                };
+                return Ok((OrtEngine::Parakeet(Box::new(engine)), info));
+            }
+            Err(err) => match gpu_failure_fallback(&device, auto_fallback) {
+                Some(next) => {
+                    tracing::warn!("Parakeet GPU encoder on {device} failed ({}); falling back to CPU int8", err.message);
+                    fallback_reason = Some(format!("Parakeet encoder on {device} failed: {}", err.message));
+                    (device, fallback_occurred) = (next.to_string(), true);
+                }
+                None => return Err(err),
+            },
+        }
+    }
 }
 
 impl Engine for OrtEngine {

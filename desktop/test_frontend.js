@@ -2734,8 +2734,11 @@ return { sanitizeThemeTokens, applyTheme };`)(fakeDocument);
       'Engine section has a Parakeet hint');
     for (const [lang, label] of [['es', 'Modelo'], ['en', 'Model']]) {
       assert(TRANSLATIONS[lang].lbl_model_size === label, `lbl_model_size is the generic "${label}" (${lang})`);
-      assert(TRANSLATIONS[lang].hint_parakeet_engine && TRANSLATIONS[lang].engine_parakeet_cpu,
-        `Parakeet engine copy is localized (${lang})`);
+      assert(TRANSLATIONS[lang].hint_parakeet_engine && !('engine_parakeet_cpu' in TRANSLATIONS[lang]),
+        `Parakeet engine copy is localized (${lang}) and no longer claims CPU only`);
+      assert(/GPU/.test(TRANSLATIONS[lang].hint_parakeet_engine) && /2[.,]5/.test(TRANSLATIONS[lang].hint_parakeet_engine)
+        && /int8/.test(TRANSLATIONS[lang].hint_parakeet_engine) && /0[.,]7/.test(TRANSLATIONS[lang].hint_parakeet_engine),
+      `Parakeet hint explains GPU (about 2.5 GB) and int8 CPU (about 0.7 GB) (${lang})`);
     }
     setLanguage('en');
     const pk = await loadAppHarness(styleBaseConfig);
@@ -2743,16 +2746,19 @@ return { sanitizeThemeTokens, applyTheme };`)(fakeDocument);
     model.value = 'parakeet (Multilingüe ES/EN, CPU)';
     model.dispatch('change');
     await pk.settle();
-    assert(pk.el('select-compute-device').disabled === true && pk.el('select-asr-backend').disabled === true
-      && pk.el('hint-parakeet-engine').hidden === false
-      && pk.el('engine-status-text').textContent === t('engine_parakeet_cpu'),
-    'Selecting Parakeet disables device and engine selectors and reports CPU in the engine status');
+    assert(pk.el('select-compute-device').disabled === false && pk.el('select-asr-backend').disabled === true
+      && pk.el('hint-parakeet-engine').hidden === false,
+    'Selecting Parakeet keeps Compute device enabled and the Transcription engine disabled');
+    pk.el('select-compute-device').value = 'cpu';
+    pk.el('select-compute-device').dispatch('change');
+    await pk.settle();
+    assert(pk.el('engine-status-text').textContent === `${t('engine_will_use')}${t('engine_name_cpu')}`,
+      'Parakeet engine pill follows the selected device (CPU)');
     model.value = 'small (Balance CPU)';
     model.dispatch('change');
     await pk.settle();
     assert(pk.el('select-compute-device').disabled === false && pk.el('select-asr-backend').disabled === false
-      && pk.el('hint-parakeet-engine').hidden === true
-      && pk.el('engine-status-text').textContent !== t('engine_parakeet_cpu'),
+      && pk.el('hint-parakeet-engine').hidden === true,
     'Selecting a Whisper model re-enables the selectors and the usual engine status');
   }
 
