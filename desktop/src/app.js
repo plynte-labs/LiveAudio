@@ -4,7 +4,7 @@
  * LiveAudio Tauri Desktop Frontend Application Logic
  */
 
-import { adoptSavedStyle, audioStateKey, bindProfileSelection, bindTabNavigation, externalConfigUpdate, generalFields, hardwareStatusLabel, mergeSavedConfigIntoForm, monitorBannerText, monitorFeedAction, monitorFeedText, persistAndApplyRuntimeConfig, sessionFailureLabel, STYLE_CONFIG_KEYS, styleFields, engineKind, isParakeetModel, gpuReasonKey, nvidiaOfferVisible, nvidiaCardView, nvidiaInstallConfig, advancedView, TAB_RESETS } from './runtime-settings.js';
+import { adoptSavedStyle, audioStateKey, bindProfileSelection, bindTabNavigation, externalConfigUpdate, generalFields, hardwareStatusLabel, mergeSavedConfigIntoForm, monitorBannerText, opencohostStatusText, monitorFeedAction, monitorFeedText, persistAndApplyRuntimeConfig, sessionFailureLabel, STYLE_CONFIG_KEYS, styleFields, engineKind, isParakeetModel, gpuReasonKey, nvidiaOfferVisible, nvidiaCardView, nvidiaInstallConfig, advancedView, TAB_RESETS } from './runtime-settings.js';
 import { initLanguage, setLanguage, getLanguage, t, applyTranslations, getProfilePresetData, PROFILE_I18N } from './i18n.js';
 import { controlsFromTheme, deletePreset, fontChoices, fontFamiliesForPlatform, loadPresetTheme, presetNameFromOption, presetOptionValue, previewHoldMs, previewProperties, previewWordDelays, savePreset, themeFromControls } from './subtitle-style.js';
 
@@ -412,6 +412,7 @@ const elements = {
   checkSaveVtt: document.getElementById('check-save-vtt'),
   checkRnnoiseEnabled: document.getElementById('check-rnnoise-enabled'),
   checkFollowOpencohostLanguage: document.getElementById('check-follow-opencohost-language'),
+  statusOpencohostLanguage: document.getElementById('status-opencohost-language'),
   checkMcpStyleEnabled: document.getElementById('check-mcp-style-enabled'),
   checkMcpSystemEnabled: document.getElementById('check-mcp-system-enabled'),
   checkAcousticEventsEnabled: document.getElementById('check-acoustic-events-enabled'),
@@ -2063,6 +2064,7 @@ function populateAdvancedControls(config) {
 
   elements.checkRnnoiseEnabled.checked = Boolean(config.rnnoise_enabled);
   elements.checkFollowOpencohostLanguage.checked = Boolean(config.follow_opencohost_language);
+  refreshOpencohostStatus();
   if (elements.checkMcpStyleEnabled) elements.checkMcpStyleEnabled.checked = config.mcp_style_enabled === true;
   if (elements.checkMcpSystemEnabled) elements.checkMcpSystemEnabled.checked = config.mcp_system_enabled === true;
   if (elements.checkUpdatesEnabled) elements.checkUpdatesEnabled.checked = config.check_updates_enabled !== false;
@@ -2412,6 +2414,19 @@ function renderAllowedConnections(data) {
   }
 }
 
+// Status line under the OpenCohost slider: visible only while it is on; any failure just hides it.
+async function refreshOpencohostStatus() {
+  const el = elements.statusOpencohostLanguage;
+  el.hidden = true;
+  if (!elements.checkFollowOpencohostLanguage.checked) return;
+  try {
+    el.textContent = opencohostStatusText(await invoke('opencohost_language_status'), t);
+    el.hidden = !el.textContent;
+  } catch (err) {
+    console.error('Error reading the OpenCohost language status:', err);
+  }
+}
+
 async function refreshAllowedConnections() {
   try {
     const data = await invoke('get_allowed_connections');
@@ -2497,10 +2512,12 @@ async function initApp() {
       applyTranslations(newLang);
       updateComputeDeviceReactivity();
       renderEngineSummary();
+      refreshOpencohostStatus();
     });
   }
 
   elements.selectModelSize.addEventListener('change', syncEngineControls);
+  elements.checkFollowOpencohostLanguage.addEventListener('change', refreshOpencohostStatus);
   if (elements.selectComputeDevice) {
     elements.selectComputeDevice.addEventListener('change', (e) => {
       updateComputeDeviceReactivity(e.target.value);
@@ -2515,6 +2532,7 @@ async function initApp() {
     : from?.id === 'tab-advanced-tab' ? confirmLeaveAdvancedTab() : true), onActivate: (tab) => {
     setActiveTab(tab.dataset.tab);
     if (tab.dataset.tab === 'tab-advanced') refreshAllowedConnections();
+    if (tab.dataset.tab === 'tab-setup') refreshOpencohostStatus();
   } });
   // Installed fonts for the Style tab; any failure keeps the curated list.
   invoke('list_system_fonts').then((names) => {

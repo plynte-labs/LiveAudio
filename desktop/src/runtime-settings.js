@@ -215,6 +215,14 @@ export function monitorBannerText(status, translate) {
   return translate('monitor_banner').replace('{pid}', owner);
 }
 
+// Status line under the OpenCohost slider, from the backend's { state, language?, path? } (path is the file checked).
+export function opencohostStatusText(status, translate) {
+  if (!status) return '';
+  if (status.state === 'detected') return `${translate('opencohost_detected')}${translate(`opt_asr_${status.language}`)} — ${status.path}`;
+  if (status.state === 'unsupported') return `${translate('opencohost_unsupported')} ${status.path}`;
+  return status.path ? `${translate('opencohost_not_found')} — ${status.path}` : translate('opencohost_not_found');
+}
+
 export function sessionFailureLabel(status) {
   return status.session_error || '';
 }

@@ -2210,6 +2210,12 @@ pub async fn get_gpu_backend_status(
     .map_err(|e| e.to_string())
 }
 
+/// What OpenCohost's locale file says and which file was checked, for the Advanced tab status line.
+#[tauri::command]
+pub fn opencohost_language_status() -> liveaudio_core::opencohost::LocaleStatus {
+    liveaudio_core::opencohost::locale_status_from_env()
+}
+
 /// Installed font families for the Style tab picker; empty off Windows or when DirectWrite fails.
 #[tauri::command]
 pub async fn list_system_fonts() -> Result<Vec<String>, String> {

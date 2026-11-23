@@ -176,6 +176,7 @@ async function loadAppHarness(initialConfig, options = {}) {
       case 'list_system_fonts': return backend.systemFonts ?? null;
       case 'get_profile_presets': return [];
       case 'get_recent_logs': return [];
+      case 'opencohost_language_status': return structuredClone(backend.opencohost ?? null);
       default: return null;
     }
   };
@@ -2762,6 +2763,43 @@ return { sanitizeThemeTokens, applyTheme };`)(fakeDocument);
       && pk.el('hint-parakeet-engine').hidden === true
       && pk.el('engine-status-text').textContent !== t('engine_parakeet_cpu'),
     'Selecting a Whisper model re-enables the selectors and the usual engine status');
+  }
+
+  // T5: OpenCohost slider copy and detected-language status line.
+  console.log('\n--- Verifying OpenCohost Language Status ---');
+  {
+    for (const lang of ['es', 'en']) {
+      const copy = TRANSLATIONS[lang];
+      assert(copy.hint_follow_opencohost_language && !/inicia una sesión|when a session starts/.test(copy.hint_follow_opencohost_language)
+        && copy.opencohost_detected && copy.opencohost_not_found && copy.opencohost_unsupported,
+      `OpenCohost slider hint and status copy are localized and accurate (${lang})`);
+    }
+    setLanguage('en');
+    const statusText = runtimeSettings.opencohostStatusText;
+    assert(statusText?.({ state: 'detected', language: 'en', path: 'C:\oc\locale.json' }, t) === 'Detected: English (en) — C:\oc\locale.json'
+      && statusText({ state: 'not_found', path: 'C:\oc\locale.json' }, t) === 'OpenCohost settings not found — C:\oc\locale.json'
+      && statusText({ state: 'not_found', path: null }, t) === 'OpenCohost settings not found'
+      && statusText({ state: 'unsupported', path: 'C:\oc\locale.json' }, t) === 'Unsupported language in C:\oc\locale.json'
+      && statusText(null, t) === '',
+    'opencohostStatusText formats detected, not found and unsupported states with the checked path');
+    assert(/id="status-opencohost-language"[^>]*role="status"[^>]*hidden/.test(htmlContent)
+      && htmlContent.includes('aria-describedby="hint-follow-opencohost-language status-opencohost-language"'),
+    'Home tab has a hidden live status line for the OpenCohost language, described by the slider');
+    assert(appSource.includes("invoke('opencohost_language_status')"), 'app.js asks the backend for the OpenCohost language status');
+
+    const oc = await loadAppHarness(styleBaseConfig, { opencohost: { state: 'detected', language: 'es', path: '/data/locale.json' } });
+    const toggle = oc.el('check-follow-opencohost-language');
+    toggle.checked = true;
+    toggle.dispatch('change');
+    await oc.settle();
+    assert(oc.backend.calls.some((call) => call.cmd === 'opencohost_language_status')
+      && oc.el('status-opencohost-language').hidden === false
+      && oc.el('status-opencohost-language').textContent === statusText(oc.backend.opencohost, t),
+    'Turning the slider on shows the detected language and file path');
+    toggle.checked = false;
+    toggle.dispatch('change');
+    await oc.settle();
+    assert(oc.el('status-opencohost-language').hidden === true, 'Turning the slider off hides the status line');
   }
 
   // Restore Spanish as default
