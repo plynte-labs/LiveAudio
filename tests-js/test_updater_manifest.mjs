@@ -7,6 +7,7 @@ import os from "node:os";
 
 import {
   find_bundle_artifacts,
+  find_platform_artifacts,
   assemble_manifest,
   main,
 } from "../packaging/assemble_latest_manifest.mjs";
@@ -96,7 +97,128 @@ describe("Tauri 2 Updater Manifest Assembler", () => {
 
       assert.throws(
         () => find_bundle_artifacts([emptyDir]),
-        /Could not locate both installer \.exe and \.sig file/
+        /Could not locate signed installer/
+      );
+    });
+  });
+
+  describe("find_platform_artifacts", () => {
+    it("discovers Linux AppImage-only artifacts", () => {
+      const appImageDir = path.join(tmpDir, "bundle-appimage");
+      fs.mkdirSync(appImageDir, { recursive: true });
+
+      const appImagePath = path.join(appImageDir, "LiveAudio_1.6.0_amd64.AppImage");
+      const sigPath = path.join(appImageDir, "LiveAudio_1.6.0_amd64.AppImage.sig");
+      fs.writeFileSync(appImagePath, "ELF-appimage-payload");
+      fs.writeFileSync(sigPath, "RWFakeLinuxSignature==");
+
+      const platforms = find_platform_artifacts([appImageDir]);
+      assert.deepEqual(Object.keys(platforms), ["linux-x86_64"]);
+      assert.equal(path.resolve(platforms["linux-x86_64"].installerPath), path.resolve(appImagePath));
+      assert.equal(path.resolve(platforms["linux-x86_64"].sigPath), path.resolve(sigPath));
+    });
+
+    it("discovers both Windows and Linux artifacts across multiple directories", () => {
+      const winDir = path.join(tmpDir, "win");
+      const linuxDir = path.join(tmpDir, "linux");
+      fs.mkdirSync(winDir, { recursive: true });
+      fs.mkdirSync(linuxDir, { recursive: true });
+
+      const exePath = path.join(winDir, "LiveAudio_1.6.0_x64-setup.exe");
+      const exeSigPath = path.join(winDir, "LiveAudio_1.6.0_x64-setup.exe.sig");
+      const appImagePath = path.join(linuxDir, "LiveAudio_1.6.0_amd64.AppImage");
+      const appImageSigPath = path.join(linuxDir, "LiveAudio_1.6.0_amd64.AppImage.sig");
+
+      fs.writeFileSync(exePath, "exe-payload");
+      fs.writeFileSync(exeSigPath, "win-sig");
+      fs.writeFileSync(appImagePath, "appimage-payload");
+      fs.writeFileSync(appImageSigPath, "linux-sig");
+
+      const platforms = find_platform_artifacts([winDir, linuxDir]);
+      assert.deepEqual(Object.keys(platforms).sort(), ["linux-x86_64", "windows-x86_64"]);
+      assert.equal(path.resolve(platforms["windows-x86_64"].installerPath), path.resolve(exePath));
+      assert.equal(path.resolve(platforms["linux-x86_64"].installerPath), path.resolve(appImagePath));
+    });
+
+    it("discovers both Windows and Linux artifacts in a single combined directory", () => {
+      const combinedDir = path.join(tmpDir, "combined");
+      fs.mkdirSync(combinedDir, { recursive: true });
+
+      const exePath = path.join(combinedDir, "LiveAudio_1.6.0_x64-setup.exe");
+      const exeSigPath = path.join(combinedDir, "LiveAudio_1.6.0_x64-setup.exe.sig");
+      const appImagePath = path.join(combinedDir, "LiveAudio_1.6.0_amd64.AppImage");
+      const appImageSigPath = path.join(combinedDir, "LiveAudio_1.6.0_amd64.AppImage.sig");
+      const debPath = path.join(combinedDir, "LiveAudio_1.6.0_amd64.deb");
+
+      fs.writeFileSync(exePath, "exe-payload");
+      fs.writeFileSync(exeSigPath, "win-sig");
+      fs.writeFileSync(appImagePath, "appimage-payload");
+      fs.writeFileSync(appImageSigPath, "linux-sig");
+      fs.writeFileSync(debPath, "deb-payload");
+
+      const platforms = find_platform_artifacts([combinedDir]);
+      assert.deepEqual(Object.keys(platforms).sort(), ["linux-x86_64", "windows-x86_64"]);
+      assert.equal(path.resolve(platforms["windows-x86_64"].installerPath), path.resolve(exePath));
+      assert.equal(path.resolve(platforms["linux-x86_64"].installerPath), path.resolve(appImagePath));
+    });
+
+    it("pairs the stable-named Windows installer published in release_assets", () => {
+      const releaseDir = path.join(tmpDir, "release_assets");
+      const outDir = path.join(tmpDir, "out");
+      fs.mkdirSync(releaseDir, { recursive: true });
+
+      fs.writeFileSync(path.join(releaseDir, "LiveAudio-Setup-1.6.0.exe"), "exe-payload");
+      fs.writeFileSync(path.join(releaseDir, "LiveAudio-Setup-1.6.0.exe.sig"), "win-sig");
+      fs.writeFileSync(path.join(releaseDir, "LiveAudio_1.6.0_amd64.AppImage"), "appimage-payload");
+      fs.writeFileSync(path.join(releaseDir, "LiveAudio_1.6.0_amd64.AppImage.sig"), "linux-sig");
+      fs.writeFileSync(path.join(releaseDir, "liveaudio-cli-1.6.0-windows-x64.zip"), "zip");
+
+      const platforms = find_platform_artifacts([releaseDir]);
+      assert.equal(
+        path.basename(platforms["windows-x86_64"].installerPath),
+        "LiveAudio-Setup-1.6.0.exe"
+      );
+      assert.equal(
+        path.basename(platforms["windows-x86_64"].sigPath),
+        "LiveAudio-Setup-1.6.0.exe.sig"
+      );
+
+      const { manifestData } = assemble_manifest({
+        version: "1.6.0",
+        platforms,
+        outDir,
+        repo: "plynte-labs/LiveAudio",
+        tag: "v1.6.0",
+      });
+      assert.equal(
+        manifestData.platforms["windows-x86_64"].url,
+        "https://github.com/plynte-labs/LiveAudio/releases/download/v1.6.0/LiveAudio-Setup-1.6.0.exe"
+      );
+    });
+
+    it("rejects Linux AppImage when .AppImage.sig is missing", () => {
+      const linuxDir = path.join(tmpDir, "unsigned-linux");
+      fs.mkdirSync(linuxDir, { recursive: true });
+
+      fs.writeFileSync(path.join(linuxDir, "LiveAudio_1.6.0_amd64.AppImage"), "appimage-payload");
+
+      assert.throws(
+        () => find_platform_artifacts([linuxDir]),
+        /Missing \.AppImage\.sig signature/
+      );
+    });
+
+    it("rejects missing .AppImage.sig even when Windows artifact is signed in same directory", () => {
+      const combinedDir = path.join(tmpDir, "partial-signed");
+      fs.mkdirSync(combinedDir, { recursive: true });
+
+      fs.writeFileSync(path.join(combinedDir, "LiveAudio_1.6.0_x64-setup.exe"), "exe");
+      fs.writeFileSync(path.join(combinedDir, "LiveAudio_1.6.0_x64-setup.exe.sig"), "win-sig");
+      fs.writeFileSync(path.join(combinedDir, "LiveAudio_1.6.0_amd64.AppImage"), "appimage");
+
+      assert.throws(
+        () => find_platform_artifacts([combinedDir]),
+        /Missing \.AppImage\.sig signature/
       );
     });
   });
@@ -188,6 +310,87 @@ describe("Tauri 2 Updater Manifest Assembler", () => {
             outDir,
           }),
         /is empty/
+      );
+    });
+
+    it("rejects assembly when zero platforms are provided", () => {
+      const outDir = path.join(tmpDir, "dist-empty");
+      assert.throws(
+        () =>
+          assemble_manifest({
+            version: "1.6.0",
+            platforms: {},
+            outDir,
+          }),
+        /At least one signed platform artifact is required/
+      );
+    });
+
+    it("assembles Linux AppImage-only manifest", () => {
+      const srcDir = path.join(tmpDir, "src-linux");
+      const outDir = path.join(tmpDir, "dist-linux");
+      fs.mkdirSync(srcDir, { recursive: true });
+
+      const appImagePath = path.join(srcDir, "LiveAudio_1.6.0_amd64.AppImage");
+      const sigPath = path.join(srcDir, "LiveAudio_1.6.0_amd64.AppImage.sig");
+      fs.writeFileSync(appImagePath, "ELF-appimage");
+      fs.writeFileSync(sigPath, "linux-minisign-sig");
+
+      const result = assemble_manifest({
+        version: "1.6.0",
+        platforms: {
+          "linux-x86_64": { installerPath: appImagePath, sigPath },
+        },
+        outDir,
+        repo: "plynte-labs/LiveAudio",
+        tag: "v1.6.0",
+      });
+
+      const manifest = JSON.parse(fs.readFileSync(result.manifestPath, "utf-8"));
+      assert.deepEqual(Object.keys(manifest.platforms), ["linux-x86_64"]);
+      assert.equal(manifest.platforms["linux-x86_64"].signature, "linux-minisign-sig");
+      assert.equal(
+        manifest.platforms["linux-x86_64"].url,
+        "https://github.com/plynte-labs/LiveAudio/releases/download/v1.6.0/LiveAudio_1.6.0_amd64.AppImage"
+      );
+    });
+
+    it("assembles combined Windows + Linux multi-platform manifest via CLI", () => {
+      const combinedDir = path.join(tmpDir, "combined-cli");
+      const outDir = path.join(tmpDir, "combined-out");
+      fs.mkdirSync(combinedDir, { recursive: true });
+
+      fs.writeFileSync(path.join(combinedDir, "LiveAudio_1.6.0_x64-setup.exe"), "exe-bytes");
+      fs.writeFileSync(path.join(combinedDir, "LiveAudio_1.6.0_x64-setup.exe.sig"), "win-sig-123");
+      fs.writeFileSync(path.join(combinedDir, "LiveAudio_1.6.0_amd64.AppImage"), "appimage-bytes");
+      fs.writeFileSync(path.join(combinedDir, "LiveAudio_1.6.0_amd64.AppImage.sig"), "linux-sig-456");
+
+      const code = main([
+        "--version",
+        "1.6.0",
+        "--bundle-dir",
+        combinedDir,
+        "--out-dir",
+        outDir,
+        "--repo",
+        "plynte-labs/LiveAudio",
+        "--tag",
+        "v1.6.0",
+      ]);
+
+      assert.equal(code, 0);
+      const manifest = JSON.parse(fs.readFileSync(path.join(outDir, "latest.json"), "utf-8"));
+      assert.equal(manifest.version, "1.6.0");
+      assert.deepEqual(Object.keys(manifest.platforms).sort(), ["linux-x86_64", "windows-x86_64"]);
+      assert.equal(manifest.platforms["windows-x86_64"].signature, "win-sig-123");
+      assert.equal(
+        manifest.platforms["windows-x86_64"].url,
+        "https://github.com/plynte-labs/LiveAudio/releases/download/v1.6.0/LiveAudio_1.6.0_x64-setup.exe"
+      );
+      assert.equal(manifest.platforms["linux-x86_64"].signature, "linux-sig-456");
+      assert.equal(
+        manifest.platforms["linux-x86_64"].url,
+        "https://github.com/plynte-labs/LiveAudio/releases/download/v1.6.0/LiveAudio_1.6.0_amd64.AppImage"
       );
     });
   });

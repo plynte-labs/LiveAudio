@@ -254,6 +254,14 @@ pub async fn install_nvidia_runtime(
     progress: impl FnMut(u64, u64),
     cancel: &AtomicBool,
 ) -> Result<(), DownloadError> {
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (dir, progress, cancel);
+        return Err(DownloadError::Http(
+            "NVIDIA CUDA runtime auto-install is currently only supported on Windows".to_string(),
+        ));
+    }
+    #[cfg(target_os = "windows")]
     install_runtime(dir, &current_manifest(), progress, cancel).await
 }
 
@@ -551,5 +559,26 @@ mod tests {
         install_runtime(&dir, &m, |_, _| {}, &AtomicBool::new(false)).await.unwrap();
         assert_eq!(std::fs::read(dir.join("b64.dll")).unwrap(), b"BBBB");
         assert!(runtime_status(&dir, &m).installed);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn install_nvidia_runtime_rejects_non_windows_without_touching_disk() {
+        let dir = std::env::temp_dir().join(format!(
+            "liveaudio-nv-unsupported-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut progress_called = false;
+        let err = install_nvidia_runtime(
+            &dir,
+            |_, _| progress_called = true,
+            &AtomicBool::new(false),
+        )
+        .await
+        .expect_err("non-Windows install must be rejected");
+        assert!(err.to_string().contains("only supported on Windows"), "{err}");
+        assert!(!progress_called);
+        assert!(!dir.exists(), "unsupported install must not create runtime directory");
     }
 }

@@ -13,8 +13,8 @@ The release workflow runs on a `v*` tag and builds two platforms.
 |---|---|---|
 | NSIS installer (`*-setup.exe`) and its `.sig` | `windows-latest` | Tauri desktop app with the `liveaudio-cli` and `liveaudio-asr-worker` sidecars, `onnxruntime.dll`, `onnxruntime_providers_shared.dll` and `DirectML.dll`. Per-user install. |
 | `liveaudio-cli-X.Y.Z-windows-x64.zip` | `windows-latest` | Standalone CLI and ASR worker with the ONNX Runtime and DirectML DLLs and their licenses. |
-| `latest.json` | `windows-latest` | Tauri updater manifest (Windows only, see section 4). |
-| AppImage (`*.AppImage`, `.sig`), `*.deb` | `ubuntu-22.04` | Desktop app bundles (AppImage is the configured target in `tauri.linux.conf.json`). |
+| `latest.json` | `publish` job | Tauri updater manifest (`windows-x86_64` NSIS + `linux-x86_64` AppImage, see section 4). |
+| AppImage (`*.AppImage`, `.sig`), `*.deb` | `ubuntu-22.04` | Desktop app bundles (`targets: ["appimage", "deb"]` in `tauri.linux.conf.json`). |
 | `liveaudio-cli-X.Y.Z-linux-x64.tar.gz` | `ubuntu-22.04` | Standalone CLI and ASR worker with ONNX Runtime CPU. |
 | `SHA256SUMS.txt` | publish job | SHA-256 of every asset above. |
 
@@ -42,7 +42,7 @@ The steps mirror CI. Run them from the repository root unless noted.
    node packaging/fetch_onnxruntime.mjs windows-x64 linux-x64
    ```
    On Windows the script also copies the four VC++ runtime DLLs (`vcruntime140`, `vcruntime140_1`, `msvcp140`, `msvcp140_1`) from the local Visual Studio `VC\Redist` (found via vswhere; not hash-pinned) so they ship app-locally next to the exes.
-   The script downloads ONNX Runtime 1.24.4 (and DirectML 1.15.4 on Windows),
+   The script downloads official NuGet packages for ONNX Runtime 1.24.4 (`Microsoft.ML.OnnxRuntime.DirectML` on Windows, `Microsoft.ML.OnnxRuntime` on Linux) and DirectML 1.15.4 on Windows,
    checks each archive against a pinned SHA-256 and aborts on mismatch. The
    pins live in `packaging/fetch_onnxruntime.mjs`.
 2. Build the sidecars:
@@ -89,23 +89,26 @@ signing (and reputation building) is an open item with no active track.
 
 ## 4. Update manifest (`latest.json`)
 
-`packaging/assemble_latest_manifest.mjs` runs in the Windows job after the
-bundle is built:
+`packaging/assemble_latest_manifest.mjs` runs in the `publish` job after both
+platform bundles are built:
 
 ```bash
 node packaging/assemble_latest_manifest.mjs --version X.Y.Z --out-dir release_assets
 ```
 
-- It finds the installer and its `.sig` under the NSIS bundle directories.
+- It finds the Windows NSIS installer and its `.sig`, plus the Linux `.AppImage`
+  and its `.sig` when present.
 - It writes `latest.json` with `version`, `notes`, `pub_date` and
-  `platforms["windows-x86_64"]` (`signature` = the raw `.sig` contents, `url` =
-  `https://github.com/<repo>/releases/download/<tag>/<installer file name>`).
+  `platforms["windows-x86_64"]` and `platforms["linux-x86_64"]` (`signature` =
+  the raw `.sig` contents, `url` =
+  `https://github.com/<repo>/releases/download/<tag>/<bundle file name>`).
 - `repo` and `tag` default to `GITHUB_REPOSITORY` and `GITHUB_REF_NAME`.
-- Only `windows-x86_64` is written. Linux users update by downloading a new
-  AppImage or deb manually.
+- Linux AppImage users update in-app via `platforms["linux-x86_64"]`. Linux
+  `.deb` installations cannot self-update in-app and update via GitHub Releases.
 
 The app checks `https://github.com/plynte-labs/LiveAudio/releases/latest/download/latest.json`
-(`plugins.updater.endpoints`) and installs in `passive` mode on Windows.
+(`plugins.updater.endpoints`), installs in `passive` mode on Windows, and
+replaces the AppImage in-place on Linux.
 
 ## 5. Checklist for a release
 

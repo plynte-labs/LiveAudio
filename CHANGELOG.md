@@ -4,6 +4,23 @@ Todos los cambios notables de LiveAudio se documentan aquí.
 
 ---
 
+## [Unreleased]
+
+### Agregado (Linux)
+
+- **Audio y Loopback nativo en Linux** — Enumeración amigable de micrófonos y captura de audio del sistema (`default_loopback`) mediante monitores PipeWire/PulseAudio con respaldo automático a ALSA y filtrado de dispositivos virtuales ruidosos.
+- **Empaquetado `.AppImage` + `.deb` y actualizador en Linux** — `tauri.linux.conf.json` genera paquetes `.AppImage` y `.deb`; el actualizador integrado soporta actualizaciones firmadas para `linux-x86_64` (`.AppImage`), mientras que instalaciones `.deb` reciben aviso para actualizar desde GitHub Releases.
+- **Contención de procesos huérfanos en Linux** — El supervisor aplica `PR_SET_PDEATHSIG` (`SIGKILL`) al sidecar ASR para garantizar cierre limpio si el proceso padre termina abruptamente.
+- **Fuentes del sistema en Linux e higiene de `xdg-open` en AppImage** — Descubrimiento de fuentes instaladas mediante `fc-list : family` en `liveaudio-core`, y limpieza de `APPIMAGE`, `APPDIR`, `LD_LIBRARY_PATH` y `LD_PRELOAD` al lanzar `xdg-open` desde un AppImage.
+
+### Cambiado (Linux)
+
+- **Descarga oficial de ONNX Runtime 1.24.4 en Linux desde NuGet** — `node packaging/fetch_onnxruntime.mjs` obtiene el paquete oficial `Microsoft.ML.OnnxRuntime` 1.24.4 con verificación SHA-256, y el worker ASR standalone descubre `../lib/LiveAudio/onnxruntime/linux-x64/libonnxruntime.so.1.24.4`.
+- **Guardia de plataforma para runtime NVIDIA** — `install_nvidia_runtime` rechaza ejecución fuera de Windows sin tocar red ni disco.
+- **Textos de interfaz neutrales por plataforma** — Las etiquetas de interfaz reemplazan referencias fijas a Windows (`WASAPI Loopback`, `DirectML / CPU`) por etiquetas multiplataforma (`System Audio (Loopback)` / `Audio del sistema (Loopback)` y `Compatible (GPU / CPU)`).
+
+---
+
 ## [1.6.0] - 2026-11-13
 
 ### Agregado

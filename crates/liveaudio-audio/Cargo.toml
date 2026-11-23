@@ -18,6 +18,8 @@ ringbuf = "0.5"
 rubato = "5.0"
 nnnoiseless = { version = "=0.5.2", default-features = false }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

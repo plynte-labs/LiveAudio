@@ -156,23 +156,39 @@ fn enumerate_cpal_devices_inner(host: &cpal::Host) -> (Vec<AudioDeviceInfo>, boo
 
 /// Enumerate all capture-capable audio devices on the system.
 ///
-/// Returns physical microphones and, on Windows WASAPI, system output loopback capture devices.
+/// Returns physical microphones and, on Windows WASAPI or Linux PulseAudio/PipeWire,
+/// system output loopback capture devices.
 pub fn enumerate_cpal_devices() -> Result<Vec<AudioDeviceInfo>, AudioError> {
+    #[cfg(target_os = "linux")]
+    if let Some(pulse_devices) = crate::linux_pulse::enumerate_pulse_devices() {
+        return Ok(pulse_devices);
+    }
+
     let host = cpal::default_host();
     let (devices, has_error) = enumerate_cpal_devices_inner(&host);
 
-    if !has_error {
-        return Ok(devices);
+    let resolved = if !has_error {
+        devices
+    } else {
+        debug!("Device enumeration on current thread encountered errors; retrying on clean audio thread.");
+        if let Some((clean_devices, _)) = with_clean_audio_thread(|| {
+            let clean_host = cpal::default_host();
+            enumerate_cpal_devices_inner(&clean_host)
+        }) {
+            clean_devices
+        } else {
+            devices
+        }
+    };
+
+    #[cfg(target_os = "linux")]
+    {
+        Ok(crate::linux_pulse::filter_linux_alsa_devices(resolved))
     }
 
-    debug!("Device enumeration on current thread encountered errors; retrying on clean audio thread.");
-    if let Some((clean_devices, _)) = with_clean_audio_thread(|| {
-        let clean_host = cpal::default_host();
-        enumerate_cpal_devices_inner(&clean_host)
-    }) {
-        Ok(clean_devices)
-    } else {
-        Ok(devices)
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok(resolved)
     }
 }
 

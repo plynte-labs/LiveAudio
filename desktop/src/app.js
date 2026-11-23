@@ -164,7 +164,7 @@ function mockInvoke(cmd, args) {
     case 'get_audio_devices':
       return Promise.resolve([
         { id: 'default_microphone', name: 'Micrófono predeterminado del sistema', is_default: true, kind: 'input' },
-        { id: 'wasapi_loopback', name: 'Audio del sistema / Altavoces (WASAPI Loopback)', is_default: false, kind: 'loopback' },
+        { id: 'default_loopback', name: 'Audio del sistema / Altavoces (Loopback)', is_default: false, kind: 'loopback' },
         { id: 'input_usb_mic', name: 'Micrófono USB HyperX SoloCast', is_default: false, kind: 'input' },
       ]);
 
@@ -780,7 +780,9 @@ async function checkForUpdatesManual() {
   } catch (err) {
     console.error('Update check failed:', err);
     if (elements.updaterStatus) {
-      elements.updaterStatus.textContent = t('err_update_offline');
+      const errMsg = String(err?.message ?? err ?? '');
+      const isLinuxDebNotice = /AppImage|\.deb/i.test(errMsg);
+      elements.updaterStatus.textContent = t(isLinuxDebNotice ? 'err_update_linux_deb' : 'err_update_offline');
       elements.updaterStatus.className = 'updater-status-text status-error';
     }
   } finally {
@@ -2226,8 +2228,13 @@ async function loadAudioDevices() {
     devices.forEach((dev) => {
       const opt = document.createElement('option');
       opt.value = dev.id;
+      const displayName = dev.id === 'default_microphone'
+        ? t('opt_default_mic')
+        : dev.id === 'default_loopback'
+          ? t('opt_loopback')
+          : dev.name;
       const defaultSuffix = dev.is_default ? ` (${getLanguage() === 'es' ? 'Predeterminado' : 'Default'})` : '';
-      opt.textContent = `${dev.name}${defaultSuffix}`;
+      opt.textContent = `${displayName}${defaultSuffix}`;
       if (currentConfig && currentConfig.audio_device && currentConfig.audio_device.id === dev.id) {
         opt.selected = true;
       }

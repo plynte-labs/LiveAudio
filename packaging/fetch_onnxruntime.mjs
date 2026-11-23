@@ -48,14 +48,13 @@ export const PLATFORMS = {
   "linux-x64": {
     archives: [
       {
-        url: `https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-x64-${ORT_VERSION}.tgz`,
-        sha256: "3a211fbea252c1e66290658f1b735b772056149f28321e71c308942cdb54b747",
-        kind: "tgz",
+        url: `${NUGET}/microsoft.ml.onnxruntime/${ORT_VERSION}/microsoft.ml.onnxruntime.${ORT_VERSION}.nupkg`,
+        sha256: "4b978d5065b85e7004b6c6f60ca494bd978fbe6836cbf0a0b52d82b61ab99638",
+        kind: "zip",
         files: [
-          { from: `onnxruntime-linux-x64-${ORT_VERSION}/lib/libonnxruntime.so.${ORT_VERSION}`, to: `libonnxruntime.so.${ORT_VERSION}` },
-          { from: `onnxruntime-linux-x64-${ORT_VERSION}/lib/libonnxruntime_providers_shared.so`, to: "libonnxruntime_providers_shared.so" },
-          { from: `onnxruntime-linux-x64-${ORT_VERSION}/LICENSE`, to: "LICENSE" },
-          { from: `onnxruntime-linux-x64-${ORT_VERSION}/ThirdPartyNotices.txt`, to: "ThirdPartyNotices.txt" },
+          { from: "runtimes/linux-x64/native/libonnxruntime.so", to: `libonnxruntime.so.${ORT_VERSION}` },
+          { from: "runtimes/linux-x64/native/libonnxruntime_providers_shared.so", to: "libonnxruntime_providers_shared.so" },
+          ...ORT_NOTICE_FILES,
         ],
       },
     ],

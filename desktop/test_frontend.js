@@ -93,14 +93,18 @@ async function loadAppHarness(initialConfig, options = {}) {
       dispatch(type, event = {}) { for (const fn of listeners.get(element)?.[type] ?? []) fn({ target: element, ...event }); },
       setAttribute() {}, removeAttribute() {}, getAttribute() { return null; }, focus() {}, blur() {},
       click() { element.dispatch('click'); },
-      replaceChildren() {}, appendChild() {}, remove() {}, querySelector() { return null; }, querySelectorAll() { return []; },
+      replaceChildren() {}, appendChild(child) { element.children.push(child); }, remove() {}, querySelector() { return null; }, querySelectorAll() { return []; },
     };
     return new Proxy(element, {
       get(target, prop) {
         if (prop in target || typeof prop === 'symbol' || prop === 'then') return target[prop];
         return () => undefined;
       },
-      set(target, prop, value) { target[prop] = value; return true; },
+      set(target, prop, value) {
+        if (prop === 'innerHTML' && value === '') target.children.length = 0;
+        target[prop] = value;
+        return true;
+      },
     });
   };
   const elementFor = (id) => {
@@ -165,7 +169,10 @@ async function loadAppHarness(initialConfig, options = {}) {
       case 'get_obs_overlay_info': return { url: '', connected: false };
       case 'get_usage_stats': return structuredClone(backend.usageStats ?? { audio_seconds: 0, subtitles: 0, sessions: 0, first_used: 0 });
       case 'get_support_environment': return 'LiveAudio 1.6.0 / OS: windows x86_64';
-      case 'get_audio_devices': return [];
+      case 'get_audio_devices': return structuredClone(backend.audioDevices ?? []);
+      case 'check_for_updates':
+        if (backend.checkUpdatesError) throw backend.checkUpdatesError;
+        return backend.updateAvailable ?? null;
       case 'list_system_fonts': return backend.systemFonts ?? null;
       case 'get_profile_presets': return [];
       case 'get_recent_logs': return [];
@@ -2424,8 +2431,8 @@ return { sanitizeThemeTokens, applyTheme };`)(fakeDocument);
   setLanguage('en');
   const enEngineLabels = [t('opt_asr_backend_auto'), t('opt_asr_backend_ort'), t('opt_asr_backend_ct2')];
   setLanguage('es');
-  assert(JSON.stringify(esEngineLabels) === JSON.stringify(['Automático (recomendado)', 'Compatible (DirectML / CPU)', 'NVIDIA CUDA'])
-    && JSON.stringify(enEngineLabels) === JSON.stringify(['Automatic (recommended)', 'Compatible (DirectML / CPU)', 'NVIDIA CUDA']),
+  assert(JSON.stringify(esEngineLabels) === JSON.stringify(['Automático (recomendado)', 'Compatible (GPU / CPU)', 'NVIDIA CUDA'])
+    && JSON.stringify(enEngineLabels) === JSON.stringify(['Automatic (recommended)', 'Compatible (GPU / CPU)', 'NVIDIA CUDA']),
   'Engine options use friendly labels in Spanish and English');
 
   const rtxGpu = { adapters: [{ vendor: 'nvidia', name: 'RTX', dedicated_vram_mb: 12000 }], cuda_driver_version: 13040,
@@ -2658,6 +2665,50 @@ return { sanitizeThemeTokens, applyTheme };`)(fakeDocument);
     const emojiLines = logSources.flatMap((file) => fs.readFileSync(path.join(__dirname, '..', file), 'utf8').split(/\r?\n/)
       .filter((line) => /\p{Extended_Pictographic}/u.test(line) && !line.includes('liveaudio doctor accénts')));
     assert(emojiLines.length === 0, 'Tracing, daemon and OBS overlay strings contain no emojis');
+  }
+
+  // Linux .deb updater notice & built-in audio device translation
+  {
+    for (const lang of ['es', 'en']) {
+      setLanguage(lang);
+      assert(Boolean(t('err_update_linux_deb') && t('err_update_linux_deb') !== 'err_update_linux_deb'),
+        `err_update_linux_deb exists in ${lang}`);
+    }
+    setLanguage('en');
+
+    assert(htmlContent.includes('<option value="default_loopback" data-i18n="opt_loopback">'),
+      'index.html fallback loopback option uses default_loopback');
+
+    const debHarness = await loadAppHarness({ ...styleBaseConfig, language: 'en' }, {
+      checkUpdatesError: 'Automatic updates on Linux require an AppImage install; .deb packages should be updated manually from GitHub Releases.',
+      audioDevices: [
+        { id: 'default_microphone', name: 'Micrófono predeterminado del sistema', is_default: true, kind: 'input' },
+        { id: 'default_loopback', name: 'Audio del sistema / Altavoces (Loopback)', is_default: false, kind: 'loopback' },
+        { id: 'loopback:alsa_output.pci.monitor', name: 'Monitor of Built-in Audio (Loopback)', is_default: false, kind: 'loopback' },
+      ],
+    });
+    debHarness.el('btn-check-now').click();
+    await debHarness.settle();
+    assert(debHarness.el('updater-status').textContent === t('err_update_linux_deb'),
+      'checkForUpdatesManual renders err_update_linux_deb for Linux .deb / AppImage errors');
+
+    const deviceOptions = debHarness.el('select-audio-device').children;
+    assert(deviceOptions.length === 3
+      && deviceOptions[0].value === 'default_microphone'
+      && deviceOptions[0].textContent === `${t('opt_default_mic')} (Default)`
+      && deviceOptions[1].value === 'default_loopback'
+      && deviceOptions[1].textContent === t('opt_loopback')
+      && deviceOptions[2].value === 'loopback:alsa_output.pci.monitor'
+      && deviceOptions[2].textContent === 'Monitor of Built-in Audio (Loopback)',
+    'loadAudioDevices translates built-in microphone/loopback labels and keeps physical/monitor names verbatim');
+
+    const offlineHarness = await loadAppHarness(styleBaseConfig, {
+      checkUpdatesError: new Error('network timeout'),
+    });
+    offlineHarness.el('btn-check-now').click();
+    await offlineHarness.settle();
+    assert(offlineHarness.el('updater-status').textContent === t('err_update_offline'),
+      'checkForUpdatesManual keeps err_update_offline for generic network errors');
   }
 
   // Restore Spanish as default

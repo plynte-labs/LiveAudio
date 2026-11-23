@@ -93,22 +93,18 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npx --yes @tauri-apps/cli@2.12.1 build --config src-tauri/tauri.release.conf.json
 
-      - name: Assemble updater manifest (latest.json)
-        if: runner.os == 'Windows'
-        run: |
-          node packaging/assemble_latest_manifest.mjs \
-            --version "${{ steps.version.outputs.version }}" \
-            --out-dir release_assets
-
       - name: Package Windows release assets
         if: runner.os == 'Windows'
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           mkdir -p release_assets
-          # Find and copy NSIS installer and updater artifacts if not already staged
-          find target/release/bundle/nsis desktop/src-tauri/target/release/bundle/nsis -type f -name "*.exe" -exec cp -n {} "release_assets/LiveAudio-Setup-${VERSION}.exe" \; 2>/dev/null || true
-          find target/release/bundle/nsis desktop/src-tauri/target/release/bundle/nsis -type f -name "*.sig" -exec cp -n {} "release_assets/" \; 2>/dev/null || true
-          
+          # Publish the NSIS installer and its updater signature under the stable name the docs link to
+          EXE=$(find target/release/bundle/nsis desktop/src-tauri/target/release/bundle/nsis -type f -name "*.exe" 2>/dev/null | head -n 1)
+          [ -n "$EXE" ] || (echo "Missing Windows NSIS .exe installer" && exit 1)
+          [ -f "$EXE.sig" ] || (echo "Missing Windows updater .sig signature" && exit 1)
+          cp "$EXE" "release_assets/LiveAudio-Setup-${VERSION}.exe"
+          cp "$EXE.sig" "release_assets/LiveAudio-Setup-${VERSION}.exe.sig"
+
           # Standalone CLI + ASR worker zip package with DirectML.dll and onnxruntime.dll preserved
           STAGE="stage/LiveAudio-cli-${VERSION}-windows-x64"
           mkdir -p "$STAGE/onnxruntime"
@@ -131,8 +127,11 @@ jobs:
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           mkdir -p release_assets
-          # Collect AppImage / Deb bundles and updater signatures
+          # Collect AppImage, updater signature, and Debian (.deb) bundles
           find target/release/bundle desktop/src-tauri/target/release/bundle -type f \( -name "*.AppImage" -o -name "*.AppImage.sig" -o -name "*.deb" \) -exec cp {} release_assets/ \; 2>/dev/null || true
+          ls release_assets/*.AppImage >/dev/null || (echo "Missing Linux .AppImage bundle" && exit 1)
+          ls release_assets/*.AppImage.sig >/dev/null || (echo "Missing Linux .AppImage.sig signature" && exit 1)
+          ls release_assets/*.deb >/dev/null || (echo "Missing Linux .deb bundle" && exit 1)
 
           # Standalone CLI + ASR worker tarball package with ONNX Runtime CPU preserved
           STAGE="stage/LiveAudio-cli-${VERSION}-linux-x64"
@@ -158,12 +157,24 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
       - name: Download all built artifacts
         uses: actions/download-artifact@v4
         with:
           path: release_assets
           pattern: release-*
           merge-multiple: true
+
+      - name: Assemble multi-platform updater manifest (latest.json)
+        run: |
+          node packaging/assemble_latest_manifest.mjs \
+            --version "${GITHUB_REF_NAME#v}" \
+            --tag "${GITHUB_REF_NAME}" \
+            --bundle-dir release_assets \
+            --out-dir release_assets
 
       - name: Generate SHA256SUMS.txt
         working-directory: release_assets

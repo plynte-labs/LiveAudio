@@ -1081,7 +1081,7 @@ fn session_sink_failure(stats: &SinkStats) -> Option<String> {
     })
 }
 
-/// Enumerate audio capture devices (Microphones and WASAPI Loopback).
+/// Enumerate audio capture devices (Microphones and System Loopback).
 #[tauri::command]
 pub async fn get_audio_devices() -> Result<Vec<AudioDeviceDto>, String> {
     let mut devices = vec![AudioDeviceDto {
@@ -1090,15 +1090,21 @@ pub async fn get_audio_devices() -> Result<Vec<AudioDeviceDto>, String> {
         is_default: true,
         kind: "input".to_string(),
     }];
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
     devices.push(AudioDeviceDto {
         id: "default_loopback".to_string(),
-        name: "Audio del sistema / Altavoces (WASAPI Loopback)".to_string(),
+        name: if cfg!(target_os = "windows") {
+            "Audio del sistema / Altavoces (WASAPI Loopback)".to_string()
+        } else {
+            "Audio del sistema / Altavoces (Loopback)".to_string()
+        },
         is_default: false,
         kind: "loopback".to_string(),
     });
 
-    let enumerated_devices = liveaudio_audio::enumerate_cpal_devices()
+    let enumerated_devices = tokio::task::spawn_blocking(liveaudio_audio::enumerate_cpal_devices)
+        .await
+        .map_err(|error| format!("Audio device enumeration task failed: {}", error))?
         .map_err(|error| format!("Failed to enumerate audio devices: {}", error))?;
     for device in enumerated_devices {
         devices.push(AudioDeviceDto {
@@ -2231,12 +2237,24 @@ struct NvidiaRuntimeProgress {
     total_bytes: Option<u64>,
 }
 
+fn ensure_nvidia_runtime_install_supported() -> Result<(), String> {
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("NVIDIA CUDA runtime auto-install is currently only supported on Windows".to_string())
+    }
+    #[cfg(target_os = "windows")]
+    {
+        Ok(())
+    }
+}
+
 /// Download and install the NVIDIA CUDA runtime. Only ever invoked by an explicit user action.
 #[tauri::command]
 pub async fn install_nvidia_runtime(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<NvidiaRuntimeStatus, String> {
+    ensure_nvidia_runtime_install_supported()?;
     let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
     {
         let mut slot = state.nvidia_install_cancel.lock().await;
@@ -2594,6 +2612,23 @@ pub async fn restart_service(
     result
 }
 
+#[cfg(any(test, all(not(target_os = "windows"), not(target_os = "macos"))))]
+const APPIMAGE_SANITIZED_ENV_VARS: &[&str] = &[
+    "APPIMAGE",
+    "APPDIR",
+    "LD_LIBRARY_PATH",
+    "LD_PRELOAD",
+];
+
+#[cfg(any(test, all(not(target_os = "windows"), not(target_os = "macos"))))]
+pub(crate) fn sanitize_appimage_env(cmd: &mut std::process::Command, is_appimage: bool) {
+    if is_appimage {
+        for key in APPIMAGE_SANITIZED_ENV_VARS {
+            cmd.env_remove(key);
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn open_session_folder(state: State<'_, AppState>) -> Result<String, String> {
     let path = if let Some(p) = state.session_path.read().await.clone() {
@@ -2622,7 +2657,12 @@ pub async fn open_session_folder(state: State<'_, AppState>) -> Result<String, S
     #[cfg(target_os = "macos")]
     let result = std::process::Command::new("open").arg(&session).spawn();
     #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
-    let result = std::process::Command::new("xdg-open").arg(&session).spawn();
+    let result = {
+        let mut command = tokio::process::Command::new("xdg-open");
+        command.arg(&session);
+        sanitize_appimage_env(command.as_std_mut(), std::env::var_os("APPIMAGE").is_some());
+        command.spawn()
+    };
     result.map_err(|error| format!("Failed to open session folder: {}", error))?;
     Ok(session.to_string_lossy().to_string())
 }
@@ -2651,10 +2691,16 @@ pub(crate) fn author_profile_open_command() -> (&'static str, &'static [&'static
 #[tauri::command]
 pub async fn open_author_profile() -> Result<(), String> {
     let (program, args) = author_profile_open_command();
-    std::process::Command::new(program)
-        .args(args)
-        .spawn()
-        .map_err(|error| format!("Failed to open author profile: {error}"))?;
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    let result = {
+        let mut command = tokio::process::Command::new(program);
+        command.args(args);
+        sanitize_appimage_env(command.as_std_mut(), std::env::var_os("APPIMAGE").is_some());
+        command.spawn()
+    };
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    let result = std::process::Command::new(program).args(args).spawn();
+    result.map_err(|error| format!("Failed to open author profile: {error}"))?;
     Ok(())
 }
 
@@ -2670,18 +2716,19 @@ pub async fn open_nvidia_license_url(url: String) -> Result<(), String> {
         return Err("URL is not an NVIDIA license page".to_string());
     }
     #[cfg(target_os = "windows")]
-    let mut command = std::process::Command::new("rundll32.exe");
-    #[cfg(target_os = "windows")]
-    command.args(["url.dll,FileProtocolHandler", url.as_str()]);
+    let result = std::process::Command::new("rundll32.exe")
+        .args(["url.dll,FileProtocolHandler", url.as_str()])
+        .spawn();
     #[cfg(target_os = "macos")]
-    let mut command = std::process::Command::new("open");
+    let result = std::process::Command::new("open").arg(url.as_str()).spawn();
     #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
-    let mut command = std::process::Command::new("xdg-open");
-    #[cfg(not(target_os = "windows"))]
-    command.arg(url.as_str());
-    command
-        .spawn()
-        .map_err(|error| format!("Failed to open license page: {error}"))?;
+    let result = {
+        let mut cmd = tokio::process::Command::new("xdg-open");
+        sanitize_appimage_env(cmd.as_std_mut(), std::env::var_os("APPIMAGE").is_some());
+        cmd.arg(url.as_str());
+        cmd.spawn()
+    };
+    result.map_err(|error| format!("Failed to open license page: {error}"))?;
     Ok(())
 }
 
@@ -2704,18 +2751,19 @@ pub(crate) fn support_link_url(id: &str) -> Option<&'static str> {
 pub async fn open_support_link(id: String) -> Result<(), String> {
     let url = support_link_url(&id).ok_or_else(|| "Unknown support link".to_string())?;
     #[cfg(target_os = "windows")]
-    let mut command = std::process::Command::new("rundll32.exe");
-    #[cfg(target_os = "windows")]
-    command.args(["url.dll,FileProtocolHandler", url]);
+    let result = std::process::Command::new("rundll32.exe")
+        .args(["url.dll,FileProtocolHandler", url])
+        .spawn();
     #[cfg(target_os = "macos")]
-    let mut command = std::process::Command::new("open");
+    let result = std::process::Command::new("open").arg(url).spawn();
     #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
-    let mut command = std::process::Command::new("xdg-open");
-    #[cfg(not(target_os = "windows"))]
-    command.arg(url);
-    command
-        .spawn()
-        .map_err(|error| format!("Failed to open support link: {error}"))?;
+    let result = {
+        let mut cmd = tokio::process::Command::new("xdg-open");
+        sanitize_appimage_env(cmd.as_std_mut(), std::env::var_os("APPIMAGE").is_some());
+        cmd.arg(url);
+        cmd.spawn()
+    };
+    result.map_err(|error| format!("Failed to open support link: {error}"))?;
     Ok(())
 }
 
@@ -3224,5 +3272,36 @@ mod commands_tests {
         let message = desktop_runtime_preflight_error(&error);
         assert!(!message.contains("Python"));
         assert!(message.contains("ASR runtime"));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn test_install_nvidia_runtime_rejected_off_windows() {
+        let err = ensure_nvidia_runtime_install_supported()
+            .expect_err("NVIDIA runtime install must be rejected on non-Windows");
+        assert!(err.contains("only supported on Windows"), "{err}");
+    }
+
+    #[test]
+    fn test_sanitize_appimage_env_removes_vars_when_appimage() {
+        let mut cmd = std::process::Command::new("xdg-open");
+        sanitize_appimage_env(&mut cmd, true);
+        let removed: Vec<&std::ffi::OsStr> = cmd
+            .get_envs()
+            .filter_map(|(key, value)| value.is_none().then_some(key))
+            .collect();
+        for expected in APPIMAGE_SANITIZED_ENV_VARS {
+            assert!(
+                removed.contains(&std::ffi::OsStr::new(expected)),
+                "expected {expected} to be removed from child env, got {removed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_sanitize_appimage_env_noop_when_not_appimage() {
+        let mut cmd = std::process::Command::new("xdg-open");
+        sanitize_appimage_env(&mut cmd, false);
+        assert_eq!(cmd.get_envs().count(), 0);
     }
 }
