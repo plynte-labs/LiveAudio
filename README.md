@@ -4,7 +4,7 @@ by Plynte Labs / FranGuh
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) [![Rust 2021](https://img.shields.io/badge/Rust-2021%20Edition-orange.svg)](https://www.rust-lang.org/) [![Tauri v2](https://img.shields.io/badge/Tauri-v2-blue.svg)](https://tauri.app/) [![DirectML](https://img.shields.io/badge/DirectML-DX12%20GPU-purple.svg)](https://learn.microsoft.com/en-us/windows/ai/directml/dml) [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux-lightgrey.svg)](#system-requirements)
 
-**Real-time, 100% local subtitles for streamers.** LiveAudio captures your mic or system audio, transcribes it locally on your GPU or CPU using native Whisper on ONNX Runtime DirectML or CPU (plus an optional NVIDIA CUDA engine), and streams live subtitles to OBS Studio with zero cloud reliance. Audio and transcripts never leave your machine; the application only queries GitHub Releases for updates every 24 hours (can be toggled off in Settings > Advanced).
+**Real-time, 100% local subtitles for streamers.** LiveAudio captures your mic or system audio, transcribes it locally on your GPU or CPU with NVIDIA Parakeet (recommended) or Whisper on ONNX Runtime DirectML or CPU (plus an optional NVIDIA CUDA engine for Whisper), and streams live subtitles to OBS Studio with zero cloud reliance. Audio and transcripts never leave your machine; the application only queries GitHub Releases for updates every 24 hours (can be toggled off in Settings > Advanced).
 
 <img width="1917" height="1020" alt="LiveAudio v1.6.0" src="https://github.com/user-attachments/assets/7b4c167c-9473-4009-836a-c5cb3592b29f" />
 
@@ -23,6 +23,7 @@ Mic / Loopback ──► Rust (CPAL Capture) ──► Rust (Silero VAD, ONNX) �
 ```
 
 - **100% Native Rust Core & Pipeline:** Audio capture (CPAL), Voice Activity Detection (Silero VAD in ONNX Runtime), Whisper ASR engine (in native Rust with ONNX Runtime DirectML for DirectX 12 hardware acceleration on NVIDIA, AMD, and Intel GPUs, plus CPU multi-thread fallback on Windows and Linux, and an optional NVIDIA CUDA engine on CTranslate2), WebSocket broadcast, and configuration management.
+- **Parakeet recommended over Whisper:** NVIDIA Parakeet-TDT 0.6B v3 (CC-BY-4.0) runs on the same ONNX Runtime stack (int8 on CPU, DirectML on GPU, downloaded on demand). It covers 25 European languages including Spanish and English, rarely hallucinates text on silence or noise, and in our benchmark it was about twice as fast as Whisper `small` on CPU. Choose Whisper for other languages, for translation to English, or when you need a context prompt.
 - **Zero Python Requirement:** No Python installation, virtual environments (`.venv`), or CUDA toolkit installation required. Windows distributions bundle `DirectML.dll` and `onnxruntime.dll` (`1.24.4-directml`) for plug-and-play DirectX 12 GPU acceleration.
 - **Process Supervision & Safety:** Win32 Job Objects on Windows and `PR_SET_PDEATHSIG` on Linux guarantee clean shutdown with 0 orphan or zombie processes.
 - **High-Speed Architecture:** Audio frames, VAD triggers, ASR chunks, and WebSocket broadcasts flow through lock-free channels with minimal latency.
@@ -220,7 +221,8 @@ LiveAudio/
 | Issue | Likely Cause | Solution |
 |---|---|---|
 | **No audio captured / blank subtitles** | Incorrect audio device selected | Check the **Setup** tab and confirm your mic or WASAPI loopback is selected. Verify permissions. |
-| **High latency (>3s) on CPU** | Model size too large for CPU | Switch to `tiny` or `base`, or select the `Fast` profile. |
+| **High latency (>3s) on CPU** | Model size too large for CPU | Switch to `parakeet` (CPU int8), or to Whisper `tiny` / `base`, or select the `Fast` profile. |
+| **Invented phrases on silence ("Thanks for watching")** | Whisper hallucination | Switch to `parakeet` for Spanish or English; otherwise keep the blacklist filter on. |
 | **OBS overlay shows disconnected** | LiveAudio not running or wrong port | Verify LiveAudio is started (**Start Transcription**). Check status pill for effective port (e.g., `8765`). If changed, use `?port=XXXX` in the OBS browser URL or use `http://127.0.0.1:<port>/overlay`. |
 | **DirectML / GPU initialization failure** | Outdated graphics drivers | Update your GPU drivers (NVIDIA, AMD, or Intel) or switch to CPU mode in settings. |
 | **Model download stalled** | Network timeout or TLS interruption | Click **Retry**. LiveAudio resumes downloads without restarting from scratch. |

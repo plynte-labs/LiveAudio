@@ -4,7 +4,9 @@ Todos los cambios notables de LiveAudio se documentan aquí.
 
 ---
 
-## [1.6.5] - 2026-11-23
+## [1.6.5] - 2026-11-24
+
+**Parakeet es ahora el modelo recomendado** en lugar de Whisper para español e inglés: casi no alucina frases en silencio o ruido y en CPU es aproximadamente el doble de rápido que Whisper `small`. Whisper sigue disponible para otros idiomas, la traducción al inglés y el prompt de contexto.
 
 ### Agregado
 
@@ -14,6 +16,7 @@ Todos los cambios notables de LiveAudio se documentan aquí.
 ### Cambiado
 
 - **Worker CUDA con ciclo de release propio** — El pin de `ct2-worker.pin.json` sigue la versión del crate del worker y apunta al release `ct2-worker-vX.Y.Z`, por lo que una versión nueva de la app ya no obliga a recompilar y subir el worker. Si un worker habla otra versión del protocolo, se detiene al iniciar y la app vuelve a ONNX Runtime.
+- **Worker CUDA `ct2-worker-v1.6.0` publicado** — Compilado con CUDA 12.8 y validado con el runtime cuBLAS 12.8 / cuDNN 9 que la app descarga; la aceleración NVIDIA para Whisper queda disponible.
 - **Oferta de aceleración NVIDIA** — Se oculta, y la instalación se rechaza antes de descargar, cuando el worker CUDA aún no está publicado.
 - **Pestaña Avanzado reorganizada** en secciones con iconos.
 - **Selector "Modelo" agrupado** por Whisper/Parakeet.
