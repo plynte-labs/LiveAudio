@@ -43,7 +43,7 @@ pub static VALID_DIAGNOSTICS_LEVELS: &[&str] = &["off", "minimal", "deep"];
 pub static VALID_TRANSCRIPTION_PURPOSES: &[&str] = &["subtitles", "transcription", "combined"];
 
 pub const DEFAULT_BLACKLIST: &str =
-    "amara.org, subtítulos por, suscríbete, dale like, gracias por ver, memos, gracias, activar la campanita";
+    "amara.org, subtítulos por, suscríbete, dale like, gracias por ver, activar la campanita";
 
 pub const MAX_ALLOWED_LOOPBACK_PORTS: usize = 32;
 
@@ -121,7 +121,8 @@ pub fn get_hf_home() -> PathBuf {
     get_models_home().join("hf")
 }
 
-fn default_cpu_threads() -> usize {
+/// Half the logical cores: the thread count the worker uses while `cpu_threads_auto` is on.
+pub fn default_cpu_threads() -> usize {
     std::thread::available_parallelism()
         .map(|n| (n.get() / 2).max(1))
         .unwrap_or(2)
@@ -158,6 +159,11 @@ pub struct LiveAudioConfig {
 
     #[serde(default = "default_cpu_threads")]
     pub cpu_threads: usize,
+
+    /// When true the worker uses `default_cpu_threads()` and ignores `cpu_threads`.
+    /// A config file without this key is migrated at load time (see `load_from_path`).
+    #[serde(default = "default_true")]
+    pub cpu_threads_auto: bool,
 
     #[serde(default = "default_model_size")]
     pub model_size: String,
@@ -248,6 +254,14 @@ pub struct LiveAudioConfig {
 
     #[serde(default)]
     pub whisper_context_prompt_en: String,
+
+    /// When false the Whisper context prompt is never sent to the worker.
+    #[serde(default = "default_true")]
+    pub context_prompt_enabled: bool,
+
+    /// When false transcriptions are published without blacklist filtering.
+    #[serde(default = "default_true")]
+    pub blacklist_enabled: bool,
 
     #[serde(default = "default_asr_language")]
     pub asr_language: String,
@@ -402,6 +416,7 @@ impl Default for LiveAudioConfig {
             device: default_device(),
             asr_backend: default_asr_backend(),
             cpu_threads: default_cpu_threads(),
+            cpu_threads_auto: true,
             model_size: default_model_size(),
             blacklist: default_blacklist(),
             continuous_session: true,
@@ -431,6 +446,8 @@ impl Default for LiveAudioConfig {
             save_vtt_enabled: true,
             whisper_context_prompt_es: String::new(),
             whisper_context_prompt_en: String::new(),
+            context_prompt_enabled: true,
+            blacklist_enabled: true,
             asr_language: default_asr_language(),
             follow_opencohost_language: false,
             settings_navigation_mode: default_settings_navigation_mode(),
@@ -452,6 +469,36 @@ impl Default for LiveAudioConfig {
 }
 
 impl LiveAudioConfig {
+    /// Context prompt for the worker in `lang` ("en", anything else is Spanish); `None` when the
+    /// prompt is switched off or empty.
+    pub fn context_prompt(&self, lang: &str) -> Option<&str> {
+        let prompt = if lang == "en" {
+            &self.whisper_context_prompt_en
+        } else {
+            &self.whisper_context_prompt_es
+        };
+        let prompt = prompt.trim();
+        (self.context_prompt_enabled && !prompt.is_empty()).then_some(prompt)
+    }
+
+    /// Applies the blacklist to one transcription; `Keep` when the filter is switched off.
+    pub fn filter_blacklist(&self, text: &str) -> crate::blacklist::BlacklistVerdict {
+        if self.blacklist_enabled {
+            crate::blacklist::filter_blacklisted(text, &self.blacklist)
+        } else {
+            crate::blacklist::BlacklistVerdict::Keep
+        }
+    }
+
+    /// Thread count handed to the worker: half the cores while automatic, else the saved value.
+    pub fn effective_cpu_threads(&self) -> usize {
+        if self.cpu_threads_auto {
+            default_cpu_threads()
+        } else {
+            self.cpu_threads
+        }
+    }
+
     /// Capture device id for the persisted `audio_device` selection.
     ///
     /// `None` means the OS default microphone; the legacy `wasapi_loopback` id
@@ -901,6 +948,16 @@ pub fn load_from_path(path: &Path) -> io::Result<LiveAudioConfig> {
             "max_chunk_duration".to_string(),
             serde_json::json!(max_chunk_bounds(purpose).1),
         );
+    }
+    // A pre-existing choice of threads stays manual; only a default-valued one becomes automatic.
+    if !fields.contains_key("cpu_threads_auto") {
+        let custom = fields
+            .get("cpu_threads")
+            .and_then(serde_json::Value::as_u64)
+            .is_some_and(|n| n != default_cpu_threads() as u64);
+        if custom {
+            fields.insert("cpu_threads_auto".to_string(), serde_json::json!(false));
+        }
     }
     serde_json::from_value(fields.into()).map_err(invalid)
 }
@@ -1375,6 +1432,56 @@ mod tests {
         assert_eq!(cfg.cpu_threads, default_cpu_threads());
         assert_eq!(cfg.device, "cuda");
         assert!(!cfg.obs_enabled);
+    }
+
+    #[test]
+    fn cpu_threads_auto_defaults_on_and_legacy_configs_migrate_by_value() {
+        assert!(LiveAudioConfig::default().cpu_threads_auto);
+        let same = format!(r#"{{"cpu_threads": {}}}"#, default_cpu_threads());
+        assert!(load_json("auto-legacy-default", &same).unwrap().cpu_threads_auto);
+        assert!(load_json("auto-legacy-empty", "{}").unwrap().cpu_threads_auto);
+        let custom = format!(r#"{{"cpu_threads": {}}}"#, default_cpu_threads() + 1);
+        let cfg = load_json("auto-legacy-custom", &custom).unwrap();
+        assert!(!cfg.cpu_threads_auto);
+        assert_eq!(cfg.cpu_threads, default_cpu_threads() + 1);
+        let explicit = format!(
+            r#"{{"cpu_threads": {}, "cpu_threads_auto": true}}"#,
+            default_cpu_threads() + 1
+        );
+        assert!(load_json("auto-explicit", &explicit).unwrap().cpu_threads_auto);
+    }
+
+    #[test]
+    fn prompt_and_blacklist_switches_default_on_and_gate_their_features() {
+        let mut cfg = load_json("switches-legacy", "{}").unwrap();
+        assert!(cfg.context_prompt_enabled && cfg.blacklist_enabled);
+        cfg.whisper_context_prompt_en = "  Rust stream ".to_string();
+        cfg.blacklist = "gracias por ver".to_string();
+        assert_eq!(cfg.context_prompt("en"), Some("Rust stream"));
+        assert_eq!(cfg.context_prompt("es"), None);
+        assert_eq!(
+            cfg.filter_blacklist("Gracias por ver."),
+            crate::blacklist::BlacklistVerdict::Drop
+        );
+        cfg.context_prompt_enabled = false;
+        cfg.blacklist_enabled = false;
+        assert_eq!(cfg.context_prompt("en"), None);
+        assert_eq!(
+            cfg.filter_blacklist("Gracias por ver."),
+            crate::blacklist::BlacklistVerdict::Keep
+        );
+    }
+
+    #[test]
+    fn effective_cpu_threads_follows_the_auto_switch() {
+        let mut cfg = LiveAudioConfig {
+            cpu_threads: 1,
+            cpu_threads_auto: true,
+            ..LiveAudioConfig::default()
+        };
+        assert_eq!(cfg.effective_cpu_threads(), default_cpu_threads());
+        cfg.cpu_threads_auto = false;
+        assert_eq!(cfg.effective_cpu_threads(), 1);
     }
 
     #[test]

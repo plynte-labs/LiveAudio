@@ -38,14 +38,14 @@
                 <span id="pill-ws-text">WS: 8765 (0 cli)</span>
               </div>
 
-              <div id="pill-hw" class="pill" title="Hardware y modelo ASR activo">
+              <div id="pill-hw" class="pill" title="Hardware y modelo ASR activo" data-i18n-title="title_pill_hw">
                 small | CUDA
               </div>
             </div>
           </details>
 
           <div class="lang-switch-container">
-            <select id="select-ui-lang" class="ui-lang-select" title="Idioma de interfaz / UI Language">
+            <select id="select-ui-lang" class="ui-lang-select" title="Idioma de la interfaz" data-i18n-title="title_ui_language">
               <option value="es">🇪🇸 ES</option>
               <option value="en">🇺🇸 EN</option>
             </select>
@@ -229,7 +229,7 @@
               <div class="card style-card" id="card-style-preview">
                 <div class="card-title"><span data-i18n="title_style_card_preview">Vista previa</span></div>
                 <div class="sub-preview-row">
-                  <div id="sub-style-preview" class="sub-style-preview" aria-label="Así se verán tus subtítulos">
+                  <div id="sub-style-preview" class="sub-style-preview" aria-label="Así se verán tus subtítulos" data-i18n-aria-label="sub_style_preview_text">
                     <span id="sub-style-preview-text" class="sub-box visible style-default" data-i18n="sub_style_preview_text">Así se verán tus subtítulos</span>
                   </div>
                   <button type="button" id="btn-sub-preview-play" class="btn-secondary btn-compact" title="Reproducir animación" data-i18n-title="title_sub_preview_play" data-i18n-aria-label="title_sub_preview_play" aria-label="Reproducir animación">
@@ -370,6 +370,10 @@
                     <input type="range" id="slider-cpu-threads" min="1" max="16" step="1" value="8">
                     <span id="val-cpu-threads" class="slider-value">8</span>
                   </div>
+                  <label class="switch-label">
+                    <span class="switch-track"><input type="checkbox" id="check-cpu-threads-auto" class="switch-input"><span class="switch-slider"></span></span>
+                    <span data-i18n="lbl_cpu_threads_auto">Automático</span>
+                  </label>
                   <span class="form-hint" data-i18n="hint_cpu_threads">Número de hilos que se usarán al transcribir con CPU.</span>
                 </div>
                 <div class="form-group engine-summary">
@@ -485,22 +489,31 @@
                 <div class="card-title"><span class="title-with-icon"><svg class="lucide lucide-book-a title-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H19a1 1 0 0 1 1 1v18a1 1 0 0 1-1 1H6.5a1 1 0 0 1 0-5H20"/><path d="m8 13 4-7 4 7"/><path d="M9.1 11h5.7"/></svg><span data-i18n="title_adv_vocab">Vocabulario y filtros</span></span></div>
                 <p class="adv-desc" data-i18n="desc_adv_vocab">Términos que ayudan al reconocimiento y frases que se descartan.</p>
                 <div class="form-group" id="group-prompt">
+                  <label class="switch-label">
+                    <span class="switch-track"><input type="checkbox" id="check-context-prompt-enabled" class="switch-input" aria-describedby="hint-prompt-whisper-only"><span class="switch-slider"></span></span>
+                    <span data-i18n="lbl_context_prompt_enabled">Use context prompt</span>
+                  </label>
+                  <span id="hint-prompt-whisper-only" class="form-hint" data-i18n="hint_prompt_whisper_only">The prompt only affects Whisper models; Parakeet ignores it.</span>
                   <div class="lang-header-row">
                     <div class="lang-field-title"><label for="prompt-es" id="lbl-prompt-title" data-i18n="lbl_prompt">Vocabulario y contexto</label><span id="badge-prompt-lang" class="badge-lang-indicator">🇪🇸 ES</span><span class="badge-restart" data-i18n="badge_restart">Requiere reinicio</span></div>
                     <button type="button" id="btn-suggest-prompt-es" class="btn-link" data-i18n="btn_use_preset_prompt">Cargar sugerencia</button>
                   </div>
                   <textarea id="prompt-es" class="form-control" rows="3" placeholder="Términos técnicos, jerga de juego, nombres propios..." data-i18n-placeholder="ph_prompt_es"></textarea>
-                  <span id="hint-prompt" class="form-hint" data-i18n="hint_prompt_es">Añade vocabulario que ayude al reconocimiento en el idioma seleccionado.</span>
+                  <span id="hint-prompt" class="form-hint">Añade vocabulario que ayude al reconocimiento en el idioma seleccionado.</span>
                 </div>
                 <div class="form-group" id="group-blacklist">
+                  <label class="switch-label">
+                    <span class="switch-track"><input type="checkbox" id="check-blacklist-enabled" class="switch-input"><span class="switch-slider"></span></span>
+                    <span data-i18n="lbl_blacklist_enabled">Filter blacklisted phrases</span>
+                  </label>
                   <div class="lang-header-row" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
                     <div style="display: flex; align-items: center; gap: 8px;">
                       <label for="input-blacklist" id="lbl-blacklist" data-i18n="lbl_blacklist">Filtro de Frases Alucinadas (Blacklist)</label>
                       <span id="badge-blacklist-lang" class="badge-lang-indicator">🇪🇸 ES</span>
                     </div>
                   </div>
-                  <textarea id="input-blacklist" class="form-control" rows="2" placeholder="Palabras separadas por comas que se omitirán si Whisper las genera en silencio..."></textarea>
-                  <span id="hint-blacklist" class="form-hint" data-i18n="hint_blacklist">Palabras separadas por comas que se omitirán si Whisper las genera en silencio.</span>
+                  <textarea id="input-blacklist" class="form-control" rows="2" placeholder="Frases separadas por comas que se quitan si Whisper las inventa en silencio..." data-i18n-placeholder="ph_blacklist"></textarea>
+                  <span id="hint-blacklist" class="form-hint" data-i18n="hint_blacklist">Frases separadas por comas. Se quitan cuando son toda la transcripción o están al inicio o al final; las que quedan en medio del texto se conservan.</span>
                 </div>
               </div>
 
@@ -747,7 +760,7 @@
             <span id="modal-icon" class="modal-icon"><svg class="lucide lucide-triangle-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg></span>
             <h3 id="modal-title" class="modal-title">Confirmar Acción</h3>
           </div>
-          <button id="modal-btn-close" class="modal-btn-close" type="button" aria-label="Cerrar modal">×</button>
+          <button id="modal-btn-close" class="modal-btn-close" type="button" aria-label="Cerrar ventana" data-i18n-aria-label="aria_modal_close">×</button>
         </div>
         <div class="modal-body">
           <p id="modal-message" class="modal-message">¿Estás seguro de continuar?</p>

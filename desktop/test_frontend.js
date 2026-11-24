@@ -378,6 +378,53 @@ async function runTests() {
     && jsContent.includes('cfg.rnnoise_enabled = elements.checkRnnoiseEnabled.checked')
     && jsContent.includes('cfg.acoustic_events_enabled = elements.checkAcousticEventsEnabled.checked'),
     'optional audio settings round-trip through the desktop draft and saved config');
+  assert(/<label class="switch-label">\s*<span class="switch-track"><input type="checkbox" id="check-context-prompt-enabled"/.test(htmlContent)
+    && /<label class="switch-label">\s*<span class="switch-track"><input type="checkbox" id="check-blacklist-enabled"/.test(htmlContent)
+    && jsContent.includes('checkContextPromptEnabled.checked = config.context_prompt_enabled !== false')
+    && jsContent.includes('checkBlacklistEnabled.checked = config.blacklist_enabled !== false')
+    && jsContent.includes('cfg.context_prompt_enabled = elements.checkContextPromptEnabled.checked')
+    && jsContent.includes('cfg.blacklist_enabled = elements.checkBlacklistEnabled.checked')
+    && jsContent.includes("'check-context-prompt-enabled'") && jsContent.includes("'check-blacklist-enabled'"),
+    'the context prompt and blacklist switches round-trip through the form, save and dirty-state flow');
+  for (const key of ['lbl_context_prompt_enabled', 'lbl_blacklist_enabled', 'hint_prompt_whisper_only']) {
+    assert((i18nContent.match(new RegExp(`${key}:`, 'g')) || []).length === 2,
+      `${key} is localized in Spanish and English`);
+  }
+  assert(/hint_prompt_whisper_only:[\s\S]*?Parakeet/.test(i18nContent),
+    'the prompt hint says Parakeet ignores the prompt');
+  // The vocabulary hints and placeholders follow the UI language, per vocabulary language.
+  for (const key of ['hint_prompt_es', 'hint_prompt_en', 'ph_prompt_es', 'ph_prompt_en', 'hint_blacklist', 'ph_blacklist',
+    'update_no_release_notes', 'title_pill_hw', 'title_ui_language', 'aria_modal_close', 'lbl_port_n', 'err_copy_failed']) {
+    assert((i18nContent.match(new RegExp(`^    ${key}:`, 'gm')) || []).length === 2, `${key} is localized in Spanish and English`);
+  }
+  {
+    const enStart = i18nContent.indexOf('\n  en: {');
+    const enBlock = i18nContent.slice(enStart, i18nContent.indexOf('PROFILE_I18N', enStart));
+    const spanishInEn = enBlock.split('\n').filter((line) => /[áéíóúñ¿¡]/.test(line.replace(/'[^']*·[^']*'/g, '')));
+    assert(spanishInEn.length === 0, `The English locale has no Spanish-only characters${spanishInEn.length ? `: ${spanishInEn[0].trim().slice(0, 60)}` : ''}`);
+    assert(/hint_blacklist:[^\n]*start or end/.test(enBlock) && /hint_prompt_es:[^\n]*Spanish/.test(enBlock),
+      'English blacklist and Spanish-vocabulary hints are English and describe the new behavior');
+  }
+  {
+    // Guard: user-facing text goes through i18n. String literals with Spanish-only characters are allowed only on
+    // lines tagged `i18n-allow` (locale data such as blacklist presets) and inside the browser-only mock backend
+    // delimited by `i18n-allow-begin` / `i18n-allow-end`.
+    for (const file of ['app.js', 'runtime-settings.js']) {
+      let inMock = false;
+      const offenders = [];
+      fs.readFileSync(path.join(__dirname, 'src', file), 'utf8').split('\n').forEach((line, i) => {
+        if (line.includes('i18n-allow-begin')) inMock = true;
+        if (line.includes('i18n-allow-end')) inMock = false;
+        if (inMock || line.includes('i18n-allow') || /^\s*(\/\/|\*|\/\*)/.test(line)) return;
+        if (/(['"`])(?:(?!\1).)*[áéíóúñ¿¡](?:(?!\1).)*\1/.test(line)) offenders.push(`${file}:${i + 1}`);
+      });
+      assert(offenders.length === 0, `${file} has no hardcoded Spanish UI literals${offenders.length ? `: ${offenders.join(', ')}` : ''}`);
+    }
+    const html = fs.readFileSync(path.join(__dirname, 'src', 'index.html'), 'utf8');
+    const bareAttrs = [...html.matchAll(/<[^>]*\b(?:title|aria-label|placeholder)="[^"]*[áéíóúñ¿¡][^"]*"[^>]*>/g)]
+      .map((m) => m[0]).filter((tag) => !/data-i18n-(title|aria-label|placeholder)/.test(tag));
+    assert(bareAttrs.length === 0, `Accented title/aria-label/placeholder attributes in index.html are translated${bareAttrs.length ? `: ${bareAttrs[0].slice(0, 70)}` : ''}`);
+  }
   assert(jsContent.includes('checkFollowOpencohostLanguage.checked = Boolean(config.follow_opencohost_language)')
     && jsContent.includes('cfg.follow_opencohost_language = elements.checkFollowOpencohostLanguage.checked'),
     'follow OpenCohost language toggle round-trips through the desktop draft and saved config');
@@ -523,6 +570,8 @@ async function runTests() {
   const dtsPath = path.join(__dirname, 'src', 'types.d.ts');
   assert(fs.existsSync(dtsPath), 'types.d.ts exists');
   const dtsContent = fs.readFileSync(dtsPath, 'utf8');
+  assert(dtsContent.includes('context_prompt_enabled: boolean;') && dtsContent.includes('blacklist_enabled: boolean;'),
+    'types.d.ts declares the prompt and blacklist switches');
 
   assert(dtsContent.includes('interface AudioDevice'), 'AudioDevice type declared');
   assert(dtsContent.includes('interface ServiceStatus'), 'ServiceStatus type declared');
@@ -1631,8 +1680,8 @@ return { sanitizeThemeTokens, applyTheme };`)(fakeDocument);
   // 15. Style tab through the real app.js (vm harness): save -> adopt, edits during a save, external changes
   // The stub has no <option> elements, so the model select keeps ''; the blacklists and flags are set so the form round-trips.
   const styleBaseConfig = {
-    language: 'es', asr_language: 'es', follow_opencohost_language: false, model_size: '', device: 'cpu', cpu_threads: 4, silence_timeout: 1.5,
-    max_chunk_duration: 10, ws_port: 8765, blacklist: 'x', whisper_context_prompt_es: '', whisper_context_prompt_en: '',
+    language: 'es', asr_language: 'es', follow_opencohost_language: false, model_size: '', device: 'cpu', cpu_threads: 4, cpu_threads_auto: true, silence_timeout: 1.5,
+    max_chunk_duration: 10, ws_port: 8765, blacklist: 'x', whisper_context_prompt_es: '', whisper_context_prompt_en: '', context_prompt_enabled: true, blacklist_enabled: true,
     extra: { blacklist_es: 'x', blacklist_en: 'x' }, continuous_session: false, save_transcript_enabled: false,
     save_vtt_enabled: false, rnnoise_enabled: false, mcp_style_enabled: false, mcp_system_enabled: false, acoustic_events_enabled: false, live_partial_subtitles_enabled: false, asr_backend: 'auto',
     selected_profile_id: 'balanced', profile_mode: 'preset',
@@ -2094,7 +2143,7 @@ return { sanitizeThemeTokens, applyTheme };`)(fakeDocument);
         `Advanced card #${card} is a titled card holding its controls`);
     }
     const boxes = [...advHtml.matchAll(/<input type="checkbox"[^>]*>/g)].map((m) => m[0]);
-    assert(boxes.length === 6 && boxes.every((tag) => tag.includes('class="switch-input"')) && !advHtml.includes('checkbox-label'),
+    assert(boxes.length === 9 && boxes.every((tag) => tag.includes('class="switch-input"')) && !advHtml.includes('checkbox-label'),
       'Every Advanced checkbox is a real checkbox styled as the toggle switch');
     assert((advHtml.match(/class="badge-restart"/g) || []).length >= 4 && advHtml.includes('data-i18n="badge_restart"'), 'Restart-required settings carry the restart badge');
     assert(/id="chip-adv-unsaved"[^>]*\bhidden\b/.test(advHtml) && /id="chip-adv-unsaved"[^>]*role="status"/.test(advHtml) && !advHtml.includes('id="btn-adv-reset"'),
@@ -2111,6 +2160,61 @@ return { sanitizeThemeTokens, applyTheme };`)(fakeDocument);
       && defaults.rnnoise_enabled === false && defaults.mcp_style_enabled === false && defaults.mcp_system_enabled === false && defaults.check_updates_enabled === true
       && !('subtitle_theme' in defaults) && !('subtitle_presets' in defaults) && !('whisper_context_prompt_es' in defaults),
     'advancedDefaults holds only Advanced keys (no styles, no vocabulary)');
+  }
+  {
+    // T1: the event log follows the UI language; unknown phases keep the backend text.
+    const { t, setLanguage } = i18nModule;
+    for (const lang of ['es', 'en']) {
+      setLanguage(lang);
+      const sameLang = (key) => i18nModule.TRANSLATIONS[lang][key];
+      assert(runtimeSettings.setupLogLine('starting_worker', 'Starting the ASR worker', null, t) === `[starting_worker] ${sameLang('runtime_setup_worker_starting')}`,
+        `starting_worker log line is translated (${lang})`);
+      assert(runtimeSettings.setupLogLine('ready', 'ASR runtime is ready.', 100, t) === `[ready] ${sameLang('runtime_setup_ready')} (100%)`,
+        `ready log line is translated with percent (${lang})`);
+      assert(runtimeSettings.setupLogLine('error', 'boom', null, t) === `[error] ${sameLang('log_phase_error').replace('{text}', 'boom')}` && sameLang('log_phase_error').includes('{text}'),
+        `error has a translated prefix and a raw detail (${lang})`);
+      assert(runtimeSettings.setupLogLine('downloading', '(1/3) encoder.onnx', 40.4, t) === `[downloading] ${sameLang('log_phase_downloading').replace('{text}', '(1/3) encoder.onnx')} (40%)`
+        && sameLang('log_phase_downloading').includes('{text}'), `downloading is translated with the file label and percent (${lang})`);
+      assert(runtimeSettings.setupLogLine('future_phase', 'raw text', null, t) === '[future_phase] raw text', `unknown phase falls back to the backend text (${lang})`);
+      assert(t('status_fallback_cpu') !== 'status_fallback_cpu' && t('status_stalled') !== 'status_stalled', `extra asr states are translated (${lang})`);
+      const status = runtimeSettings.statusLogLine({ is_running: true, asr_state: 'listening', audio_state: 'standby' }, t);
+      assert(status.includes(sameLang('log_status_running')) && status.includes(sameLang('status_listening')) && !status.includes('Estado') === (lang === 'en'),
+        `status log line is translated (${lang})`);
+      const keys = ['log_service_stopping', 'log_service_stopped', 'log_service_starting', 'log_service_started', 'log_service_error', 'log_setup_repair_start',
+        'log_setup_repair_done', 'log_setup_repair_error', 'log_hw_fallback', 'log_blacklist_added', 'log_blacklist_error', 'log_prompt_added', 'log_prompt_error',
+        'log_status_line', 'log_status_running', 'log_asr_stopping', 'log_audio_label'];
+      assert(keys.every((k) => sameLang(k)), `log keys exist (${lang})`);
+    }
+  {
+    // Every phase emitted by the backend, the worker or the frontend has a translation key.
+    const src = (...parts) => fs.readFileSync(path.join(__dirname, ...parts), 'utf8');
+    const emitted = new Set([
+      ...[...src('src-tauri', 'src', 'commands.rs').matchAll(/phase: "([a-z_]+)"\.to_string\(\)/g)].map((m) => m[1]),
+      ...[...src('..', 'crates', 'liveaudio-asr-worker', 'src', 'download.rs').matchAll(/progress_cb\(\s*"([a-z_]+)"/g)].map((m) => m[1]),
+      ...[...src('src', 'app.js').matchAll(/setRuntimeSetupProgress\(\{ phase: '([a-z_]+)'/g)].map((m) => m[1]),
+    ]);
+    const missing = [...emitted].filter((phase) => !runtimeSettings.SETUP_PHASE_KEYS[phase]);
+    assert(emitted.size >= 5 && missing.length === 0, `every emitted setup phase is mapped (emitted: ${[...emitted].join(', ')}; missing: ${missing.join(', ') || 'none'})`);
+    for (const lang of ['es', 'en']) {
+      assert(Object.values(runtimeSettings.SETUP_PHASE_KEYS).every((key) => i18nModule.TRANSLATIONS[lang][key]), `phase keys exist (${lang})`);
+    }
+  }
+  {
+    // T3: Automatic shows the backend's real thread count and never overwrites the saved manual value.
+    const gpuStatus = { adapters: [], cuda_driver_version: null, nvidia_runtime: { installed: false, missing: [] }, worker_published: true, license_urls: [],
+      selected_backend: 'ort', reason: 'no_gpu', default_cpu_threads: 3 };
+    setLanguage('es');
+    const h = await loadAppHarness(styleBaseConfig, { gpuStatus });
+    await h.settle();
+    assert(h.el('slider-cpu-threads').value == 3 && h.el('val-cpu-threads').textContent == 3 && h.el('slider-cpu-threads').disabled === true,
+      'Automatic shows the backend automatic thread count in the disabled slider');
+    assert(h.app.advancedChangesUnsaved() === false, 'Automatic does not turn the displayed value into an unsaved change');
+    h.el('check-cpu-threads-auto').checked = false;
+    h.el('check-cpu-threads-auto').dispatch('change');
+    assert(h.el('slider-cpu-threads').value == 4 && h.el('val-cpu-threads').textContent == 4 && h.el('slider-cpu-threads').disabled === false,
+      'Automatic off restores the saved manual value');
+  }
+    setLanguage('es');
   }
   {
     const base = { ...styleBaseConfig, rnnoise_enabled: true, ws_port: 9000, silence_timeout: 1.5, mcp_style_enabled: true, mcp_system_enabled: true, subtitle_style: 'neon', subtitle_theme: { '--sub-color': '#123456' } };
@@ -2327,7 +2431,7 @@ return { sanitizeThemeTokens, applyTheme };`)(fakeDocument);
   'GPU reason codes map to localized keys with an unknown fallback');
   const offerBase = {
     adapters: [{ vendor: 'nvidia', name: 'RTX', dedicated_vram_mb: 12000 }], cuda_driver_version: 12080,
-    nvidia_runtime: { installed: false, missing: ['x'] }, license_urls: [], selected_backend: 'ort', reason: 'nvidia_runtime_not_installed',
+    nvidia_runtime: { installed: false, missing: ['x'] }, worker_published: true, license_urls: [], selected_backend: 'ort', reason: 'nvidia_runtime_not_installed',
   };
   assert(typeof runtimeSettings.nvidiaOfferVisible === 'function'
     && runtimeSettings.nvidiaOfferVisible(offerBase, false) === true
@@ -2336,6 +2440,7 @@ return { sanitizeThemeTokens, applyTheme };`)(fakeDocument);
     && runtimeSettings.nvidiaOfferVisible({ ...offerBase, cuda_driver_version: null }, false) === false
     && runtimeSettings.nvidiaOfferVisible({ ...offerBase, adapters: [{ vendor: 'amd', name: 'RX', dedicated_vram_mb: 8000 }] }, false) === false
     && runtimeSettings.nvidiaOfferVisible({ ...offerBase, nvidia_runtime: { installed: true, missing: [] } }, false) === false
+    && runtimeSettings.nvidiaOfferVisible({ ...offerBase, worker_published: false }, false) === false
     && runtimeSettings.nvidiaOfferVisible(null, false) === false,
   'NVIDIA offer shows only with an NVIDIA GPU, driver >= 12080, runtime missing and not dismissed');
   assert(htmlContent.includes('id="card-nvidia-runtime"') && htmlContent.includes('id="btn-nvidia-enable"')
@@ -2459,7 +2564,7 @@ return { sanitizeThemeTokens, applyTheme };`)(fakeDocument);
 
   // Home card and Advanced summary through the real app.js (vm harness)
   const rtxStatus = { adapters: [{ vendor: 'nvidia', name: 'NVIDIA GeForce RTX 3060', dedicated_vram_mb: 12115 }], cuda_driver_version: 13040,
-    nvidia_runtime: { installed: false, missing: ['cublas64_12.dll'] }, license_urls: [], selected_backend: 'ort', reason: 'nvidia_runtime_not_installed' };
+    nvidia_runtime: { installed: false, missing: ['cublas64_12.dll'] }, worker_published: true, license_urls: [], selected_backend: 'ort', reason: 'nvidia_runtime_not_installed' };
   const loadNvidiaHarness = (options) => { setLanguage('es'); return loadAppHarness(styleBaseConfig, options); };
   {
     const h = await loadNvidiaHarness({ gpuStatus: rtxStatus, deriveSelected: true });
@@ -2512,8 +2617,21 @@ return { sanitizeThemeTokens, applyTheme };`)(fakeDocument);
     await notYet.settle();
     notYet.el('modal-btn-confirm').click();
     await notYet.settle();
-    assert(notYet.el('nvidia-result-text').textContent === t('nvidia_card_unavailable') && notYet.el('nvidia-error-text').textContent.includes('404'),
-    'A 404 from the download shows that acceleration is not available for this version yet');
+    assert(notYet.el('nvidia-result-text').textContent === t('nvidia_card_error_hint') && notYet.el('nvidia-error-text').textContent.includes('404'),
+    'A 404 from an NVIDIA download is a plain error, not the unavailable-for-this-version message');
+  }
+  {
+    const unpublished = await loadNvidiaHarness({ gpuStatus: rtxStatus, installError: 'worker_not_published' });
+    unpublished.el('btn-nvidia-enable').click();
+    await unpublished.settle();
+    unpublished.el('modal-btn-confirm').click();
+    await unpublished.settle();
+    assert(unpublished.el('nvidia-result-text').textContent === t('nvidia_card_unavailable'),
+    'The unpublished-worker refusal shows that acceleration is not available for this version yet');
+  }
+  {
+    const hidden = await loadNvidiaHarness({ gpuStatus: { ...rtxStatus, worker_published: false }, deriveSelected: true });
+    assert(hidden.el('nvidia-offer').hidden === true, 'The offer stays hidden while the CUDA worker is not published');
   }
   {
     const cuda = await loadNvidiaHarness({ gpuStatus: { ...rtxStatus, nvidia_runtime: { installed: true, missing: [] }, selected_backend: 'ct2_cuda', reason: 'nvidia_cuda_ready' },
@@ -2754,6 +2872,20 @@ return { sanitizeThemeTokens, applyTheme };`)(fakeDocument);
     await pk.settle();
     assert(pk.el('slider-cpu-threads').disabled === true,
       'Parakeet on a GPU disables the CPU threads slider');
+    assert(pk.el('check-cpu-threads-auto').disabled === true, 'A GPU device disables the CPU threads Automatic switch');
+    pk.el('select-compute-device').value = 'cpu';
+    pk.el('select-compute-device').dispatch('change');
+    await pk.settle();
+    pk.el('check-cpu-threads-auto').checked = true;
+    pk.el('check-cpu-threads-auto').dispatch('change');
+    assert(pk.el('check-cpu-threads-auto').disabled === false && pk.el('slider-cpu-threads').disabled === true,
+      'Automatic on CPU disables the slider and keeps the switch enabled');
+    pk.el('check-cpu-threads-auto').checked = false;
+    pk.el('check-cpu-threads-auto').dispatch('change');
+    assert(pk.el('slider-cpu-threads').disabled === false, 'Automatic off enables the CPU threads slider');
+    assert(runtimeSettings.ADVANCED_KEYS.includes('cpu_threads_auto') && runtimeSettings.advancedDefaults(8).cpu_threads_auto === true
+      && i18nModule.TRANSLATIONS.es.lbl_cpu_threads_auto && i18nModule.TRANSLATIONS.en.lbl_cpu_threads_auto,
+    'cpu_threads_auto is an Advanced key, defaults on and has es/en labels');
     pk.el('select-compute-device').value = 'cpu';
     pk.el('select-compute-device').dispatch('change');
     await pk.settle();

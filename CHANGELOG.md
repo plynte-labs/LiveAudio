@@ -13,17 +13,24 @@ Todos los cambios notables de LiveAudio se documentan aquí.
 
 ### Cambiado
 
+- **Worker CUDA con ciclo de release propio** — El pin de `ct2-worker.pin.json` sigue la versión del crate del worker y apunta al release `ct2-worker-vX.Y.Z`, por lo que una versión nueva de la app ya no obliga a recompilar y subir el worker. Si un worker habla otra versión del protocolo, se detiene al iniciar y la app vuelve a ONNX Runtime.
+- **Oferta de aceleración NVIDIA** — Se oculta, y la instalación se rechaza antes de descargar, cuando el worker CUDA aún no está publicado.
 - **Pestaña Avanzado reorganizada** en secciones con iconos.
 - **Selector "Modelo" agrupado** por Whisper/Parakeet.
 - **El control de hilos de CPU** solo está activo cuando se usa CPU.
+- **Hilos de CPU automáticos** — Nuevo interruptor "Automático" (activado por defecto): usa la mitad de los núcleos y deshabilita el control manual. Una configuración anterior con un número de hilos personalizado se conserva en modo manual.
+- **Interruptores de prompt y blacklist** — En Avanzado, "Usar prompt de contexto" y "Filtrar frases de la blacklist" (activados por defecto) permiten apagar cada función sin borrar el texto. El prompt solo afecta a los modelos Whisper; Parakeet lo ignora.
 - **Iconos de sección** en la pantalla principal.
 - **Indicadores "Detenido" e "Inactivo" eliminados.**
 
 ### Corregido
 
+- **Blacklist por palabras completas y solo en los bordes** — Antes cualquier coincidencia, incluso dentro de otra palabra ("comemos" por "memos", "unlikely" por "like"), descartaba la frase completa. Ahora solo se comparan palabras completas: si la frase es solo texto vetado se descarta, si la frase vetada está al inicio o al final se recorta y se conserva el resto, y en medio del texto no se toca. Se quitaron `like`, `gracias` y `memos` de las listas predeterminadas (las listas guardadas por el usuario no se modifican).
+- **Textos de Vocabulario y filtros traducidos** — Las ayudas y ejemplos del prompt y de la blacklist, el título del indicador de hardware, el selector de idioma, el botón de cerrar, los puertos y varios avisos seguían el idioma español aunque la interfaz estuviera en inglés. La ayuda de la blacklist describe ahora el recorte en los bordes.
 - **Instalador de Windows** publicado de nuevo como `LiveAudio-Setup-<versión>.exe`.
 - **Resolución de `pactl`** movida fuera del runtime asíncrono.
 - **Advertencias de Rust 1.100** (`try_update`, `homepage` redundante).
+- **Registro de eventos traducido** — Las líneas de servicio, estado, preparación del entorno y las fases del worker siguen el idioma de la interfaz.
 
 ### Agregado (Linux)
 

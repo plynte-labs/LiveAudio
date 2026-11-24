@@ -65,6 +65,7 @@ export interface LiveAudioConfig {
   output_dir: string;
   device: 'cuda' | 'cpu';
   cpu_threads: number;
+  cpu_threads_auto: boolean;
   model_size: string;
   blacklist: string;
   continuous_session: boolean;
@@ -86,6 +87,8 @@ export interface LiveAudioConfig {
   ws_port: number;
   obs_enabled: boolean;
   rnnoise_enabled: boolean;
+  context_prompt_enabled: boolean;
+  blacklist_enabled: boolean;
   follow_opencohost_language: boolean;
   mcp_style_enabled: boolean;
   mcp_system_enabled: boolean;

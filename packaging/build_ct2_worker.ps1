@@ -40,14 +40,14 @@ $ErrorActionPreference = "Stop"
 
 function Write-Pin([string]$Exe) {
     $root = Resolve-Path (Join-Path $PSScriptRoot "..")
-    $version = (Select-String -Path (Join-Path $root "Cargo.toml") -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+    $version = (Select-String -Path (Join-Path $root "crates/liveaudio-asr-worker-ct2/Cargo.toml") -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
     $stage = Join-Path $root "dist-ct2"
     New-Item -ItemType Directory -Force $stage | Out-Null
     $staged = Join-Path $stage "liveaudio-asr-worker-cuda.exe"
     Copy-Item $Exe $staged -Force
     $pin = [ordered]@{
         version = $version
-        url     = "https://github.com/plynte-labs/LiveAudio/releases/download/v$version/liveaudio-asr-worker-cuda.exe"
+        url     = "https://github.com/plynte-labs/LiveAudio/releases/download/ct2-worker-v$version/liveaudio-asr-worker-cuda.exe"
         sha256  = (Get-FileHash $staged -Algorithm SHA256).Hash.ToLower()
         size    = (Get-Item $staged).Length
     }

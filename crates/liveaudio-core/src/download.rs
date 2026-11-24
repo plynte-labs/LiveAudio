@@ -17,6 +17,9 @@ pub enum DownloadError {
     HashMismatch { expected: String, actual: String },
     #[error("size mismatch: expected {expected}, got {actual}")]
     SizeMismatch { expected: u64, actual: u64 },
+    /// Stable text the UI matches on: keep `worker_not_published` intact.
+    #[error("worker_not_published: the CUDA worker is not published for this release")]
+    WorkerUnpublished,
     #[error("download cancelled")]
     Cancelled,
     #[error("zip: {0}")]

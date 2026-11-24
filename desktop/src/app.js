@@ -4,7 +4,7 @@
  * LiveAudio Tauri Desktop Frontend Application Logic
  */
 
-import { adoptSavedStyle, audioStateKey, bindProfileSelection, bindTabNavigation, externalConfigUpdate, generalFields, hardwareStatusLabel, mergeSavedConfigIntoForm, monitorBannerText, opencohostStatusText, monitorFeedAction, monitorFeedText, persistAndApplyRuntimeConfig, sessionFailureLabel, STYLE_CONFIG_KEYS, styleFields, engineKind, isParakeetModel, gpuReasonKey, nvidiaOfferVisible, nvidiaCardView, nvidiaInstallConfig, advancedView, TAB_RESETS } from './runtime-settings.js';
+import { setupLogLine, statusLogLine, adoptSavedStyle, audioStateKey, bindProfileSelection, bindTabNavigation, externalConfigUpdate, generalFields, hardwareStatusLabel, mergeSavedConfigIntoForm, monitorBannerText, opencohostStatusText, monitorFeedAction, monitorFeedText, persistAndApplyRuntimeConfig, sessionFailureLabel, STYLE_CONFIG_KEYS, styleFields, engineKind, isParakeetModel, gpuReasonKey, nvidiaOfferVisible, nvidiaCardView, nvidiaInstallConfig, advancedView, TAB_RESETS } from './runtime-settings.js';
 import { initLanguage, setLanguage, getLanguage, t, applyTranslations, getProfilePresetData, PROFILE_I18N } from './i18n.js';
 import { controlsFromTheme, deletePreset, fontChoices, fontFamiliesForPlatform, loadPresetTheme, presetNameFromOption, presetOptionValue, previewHoldMs, previewProperties, previewWordDelays, savePreset, themeFromControls } from './subtitle-style.js';
 
@@ -27,6 +27,7 @@ async function listen(eventName, callback) {
 }
 
 // In-browser mock handler for isolated preview & testing
+// i18n-allow-begin: browser-only mock backend returns Spanish sample data
 function mockInvoke(cmd, args) {
   console.log(`[Mock Tauri IPC] ${cmd}`, args);
   switch (cmd) {
@@ -151,9 +152,11 @@ function mockInvoke(cmd, args) {
         adapters: [{ vendor: 'nvidia', name: 'NVIDIA GeForce RTX 3060', dedicated_vram_mb: 12115 }],
         cuda_driver_version: 12080,
         nvidia_runtime: { installed: false, missing: ['cublas64_12.dll'] },
+        worker_published: true,
         license_urls: ['https://developer.download.nvidia.com/compute/cudnn/redist/cudnn/LICENSE.txt'],
         selected_backend: 'ort',
         reason: 'nvidia_runtime_not_installed',
+        default_cpu_threads: 4,
       });
 
     case 'install_nvidia_runtime':
@@ -253,6 +256,7 @@ function mockInvoke(cmd, args) {
       return Promise.reject(`Command not found: ${cmd}`);
   }
 }
+// i18n-allow-end
 
 // Global App State
 let currentConfig = null;
@@ -272,8 +276,8 @@ let drafts = {
     en: '',
   },
   blacklists: {
-    es: 'amara.org, subtítulos por, suscríbete, dale like, gracias por ver, memos, gracias, activar la campanita',
-    en: 'amara.org, subtitles by, subscribe, like, thank you for watching, thanks for watching, please subscribe',
+    es: 'amara.org, subtítulos por, suscríbete, dale like, gracias por ver, activar la campanita', // i18n-allow: blacklist preset data
+    en: 'amara.org, subtitles by, subscribe, thank you for watching, thanks for watching, please subscribe',
   },
 };
 let currentAsrLang = 'es';
@@ -327,6 +331,7 @@ const elements = {
   sliderCpuThreads: document.getElementById('slider-cpu-threads'),
   groupCpuThreads: document.getElementById('group-cpu-threads'),
   valCpuThreads: document.getElementById('val-cpu-threads'),
+  checkCpuThreadsAuto: document.getElementById('check-cpu-threads-auto'),
   sliderSilenceTimeout: document.getElementById('slider-silence-timeout'),
   valSilenceTimeout: document.getElementById('val-silence-timeout'),
   sliderMaxChunk: document.getElementById('slider-max-chunk'),
@@ -409,6 +414,8 @@ const elements = {
   checkSaveTranscript: document.getElementById('check-save-transcript'),
   checkSaveVtt: document.getElementById('check-save-vtt'),
   checkRnnoiseEnabled: document.getElementById('check-rnnoise-enabled'),
+  checkContextPromptEnabled: document.getElementById('check-context-prompt-enabled'),
+  checkBlacklistEnabled: document.getElementById('check-blacklist-enabled'),
   checkFollowOpencohostLanguage: document.getElementById('check-follow-opencohost-language'),
   statusOpencohostLanguage: document.getElementById('status-opencohost-language'),
   checkMcpStyleEnabled: document.getElementById('check-mcp-style-enabled'),
@@ -520,9 +527,9 @@ async function copyLogs() {
   });
   try {
     await navigator.clipboard.writeText(lines.join('\n'));
-    showToast(t('toast_logs_copied') || 'Registro copiado');
+    showToast(t('toast_logs_copied'));
   } catch (err) {
-    showToast(`Error: ${err}`, true);
+    showToast(`${t('status_error')}: ${err}`, true);
   }
 }
 
@@ -553,14 +560,26 @@ function syncEngineControls() {
   renderEngineSummary();
 }
 
+// Manual CPU threads (the saved value) and the backend's automatic count. The slider shows the automatic
+// count while Automatic is on; collectFormData always saves the manual one.
+let manualCpuThreads = 1;
+let autoCpuThreads = null;
+function renderCpuThreads() {
+  const shown = elements.checkCpuThreadsAuto.checked && autoCpuThreads ? autoCpuThreads : manualCpuThreads;
+  elements.sliderCpuThreads.value = shown;
+  elements.valCpuThreads.textContent = shown;
+}
+
 function updateComputeDeviceReactivity(device) {
   const currentDevice = device || (elements.selectComputeDevice ? elements.selectComputeDevice.value : 'cpu');
   const isCuda = currentDevice === 'cuda';
   const group = elements.groupCpuThreads || elements.sliderCpuThreads?.closest('.form-group');
 
   if (elements.sliderCpuThreads) {
-    elements.sliderCpuThreads.disabled = isCuda;
+    elements.sliderCpuThreads.disabled = isCuda || elements.checkCpuThreadsAuto.checked;
   }
+  elements.checkCpuThreadsAuto.disabled = isCuda;
+  renderCpuThreads();
 
   if (group) {
     group.classList.toggle('device-dimmed', isCuda);
@@ -578,9 +597,9 @@ function updateComputeDeviceReactivity(device) {
 let closeConfirmed = false;
 let closePromptOpen = false;
 let saveGeneralConfig = async () => {};
-const ADVANCED_FIELD_IDS = ['select-model-size', 'select-compute-device', 'slider-cpu-threads', 'select-asr-backend', 'slider-silence-timeout', 'slider-max-chunk',
+const ADVANCED_FIELD_IDS = ['select-model-size', 'select-compute-device', 'slider-cpu-threads', 'check-cpu-threads-auto', 'select-asr-backend', 'slider-silence-timeout', 'slider-max-chunk',
   'slider-vad-pad', 'slider-vad-threshold', 'check-rnnoise-enabled', 'check-live-partial-subtitles-enabled', 'select-backlog-policy', 'slider-max-live-delay',
-  'slider-catchup-interval', 'prompt-es', 'input-blacklist', 'input-ws-port', 'check-acoustic-events-enabled', 'check-mcp-style-enabled', 'check-mcp-system-enabled', 'check-updates-enabled'];
+  'slider-catchup-interval', 'check-context-prompt-enabled', 'prompt-es', 'check-blacklist-enabled', 'input-blacklist', 'input-ws-port', 'check-acoustic-events-enabled', 'check-mcp-style-enabled', 'check-mcp-system-enabled', 'check-updates-enabled'];
 function setupCloseGuard(appWindow) {
   if (!appWindow || typeof appWindow.onCloseRequested !== 'function') return;
   appWindow.onCloseRequested(async (event) => {
@@ -756,7 +775,7 @@ function renderReleaseNotes(update) {
 
   if (elements.updateReleaseNotes) {
     const notes = (update.notes || '').trim();
-    elements.updateReleaseNotes.textContent = notes || (getLanguage() === 'es' ? 'Sin notas de la versión.' : 'No release notes provided.');
+    elements.updateReleaseNotes.textContent = notes || t('update_no_release_notes');
   }
 
   syncUpdaterUI();
@@ -959,13 +978,13 @@ function updateStatusUI(status) {
   elements.pillHw.classList.toggle('hw-fallback', isFallback);
 
   if (isFallback) {
-    elements.pillHw.title = status.fallback_reason || t('hw_fallback_warning') || 'GPU fallback occurred';
+    elements.pillHw.title = status.fallback_reason || t('hw_fallback_warning');
   } else if (status.is_running && status.effective_device) {
     const eff = String(status.effective_device).toLowerCase();
     if (eff === 'cuda') {
-      elements.pillHw.title = t('hw_active_cuda') || 'GPU activa (CUDA)';
+      elements.pillHw.title = t('hw_active_cuda');
     } else if (eff === 'directml' || eff === 'dml') {
-      elements.pillHw.title = t('hw_active_directml') || 'GPU activa (DirectML)';
+      elements.pillHw.title = t('hw_active_directml');
     } else {
       elements.pillHw.title = hwLabel;
     }
@@ -977,8 +996,8 @@ function updateStatusUI(status) {
     hasNotifiedHardwareFallback = false;
   } else if (status.fallback_occurred && !hasNotifiedHardwareFallback) {
     hasNotifiedHardwareFallback = true;
-    const reason = status.fallback_reason || t('hw_fallback_warning') || 'GPU no disponible; usando CPU como respaldo';
-    appendLogEntry('warn', `Fallback de hardware: ${reason}`, 'ASR');
+    const reason = status.fallback_reason || t('hw_fallback_warning');
+    appendLogEntry('warn', t('log_hw_fallback').replace('{reason}', reason), 'ASR');
     showToast(reason, 'warning');
   }
 
@@ -1002,7 +1021,7 @@ function updateStatusUI(status) {
   }
   if (elements.feedEmptyState && elements.subtitlesFeedContainer && !elements.subtitlesFeedContainer.querySelector('.feed-item')) {
     elements.feedEmptyState.textContent = isFeedLive
-      ? (t('feed_listening_live') || 'Escuchando audio en vivo — habla para ver los subtítulos en tiempo real...')
+      ? (t('feed_listening_live'))
       : t('feed_empty_hint');
     elements.feedEmptyState.hidden = false;
   }
@@ -1099,7 +1118,7 @@ function addSubtitleToFeed(text, cue = null) {
   menuBtn.type = 'button';
   menuBtn.setAttribute('aria-haspopup', 'true');
   menuBtn.setAttribute('aria-expanded', 'false');
-  const menuLabel = t('feed_item_menu_title') || 'Opciones de subtítulo';
+  const menuLabel = t('feed_item_menu_title');
   menuBtn.setAttribute('aria-label', menuLabel);
   menuBtn.title = menuLabel;
   menuBtn.setAttribute('data-i18n-aria-label', 'feed_item_menu_title');
@@ -1234,7 +1253,7 @@ function markFeedItemsBlocked(phrase) {
         const badge = document.createElement('span');
         badge.className = 'feed-item-badge-blocked';
         badge.setAttribute('data-i18n', 'badge_blocked');
-        badge.textContent = t('badge_blocked') || 'Baneado';
+        badge.textContent = t('badge_blocked');
         body.appendChild(badge);
       }
     }
@@ -1273,10 +1292,10 @@ async function addPhraseToBlacklist(text, itemElement) {
     try {
       const saved = await invoke('save_config', { config: newConfig, base: savedConfig });
       adoptSavedConfig(newConfig, saved);
-      appendLogEntry('info', `Frase añadida a lista negra: "${trimmed}"`, 'BLACKLIST');
+      appendLogEntry('info', t('log_blacklist_added').replace('{text}', trimmed), 'BLACKLIST');
       showToast(t('toast_added_to_blacklist'));
     } catch (err) {
-      appendLogEntry('error', `Error guardando lista negra: ${err}`, 'BLACKLIST');
+      appendLogEntry('error', t('log_blacklist_error').replace('{error}', err), 'BLACKLIST');
       showToast(`${t('status_error')}: ${err}`, true);
     }
   });
@@ -1309,10 +1328,10 @@ async function addTermToInitialPrompt(text) {
     try {
       const saved = await invoke('save_config', { config: newConfig, base: savedConfig });
       adoptSavedConfig(newConfig, saved);
-      appendLogEntry('info', `Término añadido a vocabulario/prompt: "${trimmed}"`, 'PROMPT');
+      appendLogEntry('info', t('log_prompt_added').replace('{text}', trimmed), 'PROMPT');
       showToast(t('toast_added_to_prompt'));
     } catch (err) {
-      appendLogEntry('error', `Error guardando vocabulario/prompt: ${err}`, 'PROMPT');
+      appendLogEntry('error', t('log_prompt_error').replace('{error}', err), 'PROMPT');
       showToast(`${t('status_error')}: ${err}`, true);
     }
   });
@@ -1347,7 +1366,7 @@ async function copyTextToClipboard(text, toastKey = 'toast_text_copied') {
       copyTextFallback(trimmed);
       showToast(t(toastKey));
     } catch (fallbackErr) {
-      showToast(`Error al copiar: ${err}`, true);
+      showToast(`${t('err_copy_failed')}: ${err}`, true);
     }
   }
 }
@@ -1360,7 +1379,7 @@ function clearSubtitleFeed() {
   if (elements.feedEmptyState) {
     const isLive = Boolean(currentStatus?.is_running || currentStatus?.monitor_mode || (monitorFeed && monitorFeed.socket));
     elements.feedEmptyState.textContent = isLive
-      ? (t('feed_listening_live') || 'Escuchando audio en vivo — habla para ver los subtítulos en tiempo real...')
+      ? (t('feed_listening_live'))
       : t('feed_empty_hint');
     elements.feedEmptyState.hidden = false;
   }
@@ -1894,7 +1913,7 @@ function renderSubtitlePreview() {
   elements.subStylePreview.dataset.font = font;
 
   const style = baseStyle();
-  const rawText = t('sub_style_preview_text') || 'Así se verán tus subtítulos';
+  const rawText = t('sub_style_preview_text');
   const cleanText = String(rawText).replace(/\s+/g, ' ').trim();
   if (style === 'karaoke' || style === 'rgb' || style === 'typewriter') {
     elements.subStylePreviewText.textContent = '';
@@ -1986,10 +2005,10 @@ function populateAdvancedControls(config) {
   } else {
     if (elements.deviceRadioCpu) elements.deviceRadioCpu.checked = true;
   }
+  elements.checkCpuThreadsAuto.checked = config.cpu_threads_auto !== false;
+  manualCpuThreads = config.cpu_threads;
   updateComputeDeviceReactivity(config.device || 'cpu');
 
-  elements.sliderCpuThreads.value = config.cpu_threads;
-  elements.valCpuThreads.textContent = config.cpu_threads;
 
   elements.sliderSilenceTimeout.value = config.silence_timeout;
   elements.valSilenceTimeout.textContent = `${config.silence_timeout}s`;
@@ -2020,6 +2039,9 @@ function populateAdvancedControls(config) {
   elements.valVadThreshold.textContent = `${config.vad_threshold || 0.5}`;
 
   elements.checkRnnoiseEnabled.checked = Boolean(config.rnnoise_enabled);
+  elements.checkContextPromptEnabled.checked = config.context_prompt_enabled !== false;
+  elements.checkBlacklistEnabled.checked = config.blacklist_enabled !== false;
+  dimVocabularyEditors();
   elements.checkFollowOpencohostLanguage.checked = Boolean(config.follow_opencohost_language);
   refreshOpencohostStatus();
   if (elements.checkMcpStyleEnabled) elements.checkMcpStyleEnabled.checked = config.mcp_style_enabled === true;
@@ -2072,6 +2094,12 @@ function populateForm(config, updateSavedBaseline = true) {
   syncAdvancedUnsaved();
 }
 
+// The editors stay editable while their switch is off, but look dimmed.
+function dimVocabularyEditors() {
+  elements.promptEs?.classList.toggle('is-dimmed', !elements.checkContextPromptEnabled.checked);
+  elements.inputBlacklist?.classList.toggle('is-dimmed', !elements.checkBlacklistEnabled.checked);
+}
+
 // Synchronize dynamic prompt and blacklist content based on active spoken language
 function syncAsrLanguageUi(newLang) {
   if (newLang !== currentAsrLang) {
@@ -2093,23 +2121,17 @@ function syncAsrLanguageUi(newLang) {
 
   if (elements.promptEs) {
     elements.promptEs.value = drafts.prompts[newLang] || '';
-    elements.promptEs.placeholder = newLang === 'en'
-      ? 'Custom gaming terms, names, slang...'
-      : 'Términos técnicos, jerga de juego, nombres propios...';
+    elements.promptEs.placeholder = t(newLang === 'en' ? 'ph_prompt_en' : 'ph_prompt_es');
   }
   if (elements.hintPrompt) {
-    elements.hintPrompt.textContent = newLang === 'en'
-      ? "Ayuda a reducir alucinaciones en inglés. Ej: 'Coding stream, Python tutorials, backend development'."
-      : "Ayuda a reducir alucinaciones en español. Ej: 'Stream de gaming, jugamos Minecraft y charlamos con viewers'.";
+    elements.hintPrompt.textContent = t(newLang === 'en' ? 'hint_prompt_en' : 'hint_prompt_es');
   }
 
   if (elements.inputBlacklist) {
     elements.inputBlacklist.value = drafts.blacklists[newLang] || '';
   }
   if (elements.hintBlacklist) {
-    elements.hintBlacklist.textContent = newLang === 'en'
-      ? "Palabras en inglés que se omitirán si Whisper las genera en silencio."
-      : "Palabras separadas por comas que se omitirán si Whisper las genera en silencio.";
+    elements.hintBlacklist.textContent = t('hint_blacklist');
   }
 }
 
@@ -2129,7 +2151,8 @@ function collectFormData() {
   cfg.device = elements.selectComputeDevice
     ? elements.selectComputeDevice.value
     : (elements.deviceRadioCuda && elements.deviceRadioCuda.checked ? 'cuda' : 'cpu');
-  cfg.cpu_threads = parseInt(elements.sliderCpuThreads.value, 10);
+  cfg.cpu_threads = manualCpuThreads;
+  cfg.cpu_threads_auto = elements.checkCpuThreadsAuto.checked;
   cfg.silence_timeout = parseFloat(elements.sliderSilenceTimeout.value);
   cfg.max_chunk_duration = parseFloat(elements.sliderMaxChunk.value);
   if (cfg.max_chunk_duration > 15.0) {
@@ -2163,6 +2186,8 @@ function collectFormData() {
   cfg.save_transcript_enabled = elements.checkSaveTranscript.checked;
   cfg.save_vtt_enabled = elements.checkSaveVtt.checked;
   cfg.rnnoise_enabled = elements.checkRnnoiseEnabled.checked;
+  cfg.context_prompt_enabled = elements.checkContextPromptEnabled.checked;
+  cfg.blacklist_enabled = elements.checkBlacklistEnabled.checked;
   if (elements.checkMcpStyleEnabled) cfg.mcp_style_enabled = elements.checkMcpStyleEnabled.checked;
   if (elements.checkMcpSystemEnabled) cfg.mcp_system_enabled = elements.checkMcpSystemEnabled.checked;
   if (elements.checkUpdatesEnabled) cfg.check_updates_enabled = elements.checkUpdatesEnabled.checked;
@@ -2282,7 +2307,7 @@ function renderAllowedConnections(data) {
 
         const portSpan = document.createElement('span');
         portSpan.className = 'conn-origin';
-        portSpan.textContent = `Port ${port}`;
+        portSpan.textContent = t('lbl_port_n').replace('{port}', port);
         info.appendChild(portSpan);
 
         if (port === 1420) {
@@ -2296,7 +2321,7 @@ function renderAllowedConnections(data) {
         revokeBtn.type = 'button';
         revokeBtn.className = 'btn-secondary btn-sm';
         revokeBtn.textContent = t('btn_revoke_port');
-        revokeBtn.setAttribute('aria-label', `${t('btn_revoke_port')} port ${port}`);
+        revokeBtn.setAttribute('aria-label', `${t('btn_revoke_port')} ${t('lbl_port_n').replace('{port}', port)}`);
         revokeBtn.addEventListener('click', async () => {
           revokeBtn.disabled = true;
           try {
@@ -2351,7 +2376,7 @@ function renderAllowedConnections(data) {
           allowBtn.type = 'button';
           allowBtn.className = 'btn-secondary btn-sm';
           allowBtn.textContent = t('btn_allow_origin');
-          allowBtn.setAttribute('aria-label', `${t('btn_allow_origin')} port ${entry.port}`);
+          allowBtn.setAttribute('aria-label', `${t('btn_allow_origin')} ${t('lbl_port_n').replace('{port}', entry.port)}`);
           allowBtn.addEventListener('click', async () => {
             allowBtn.disabled = true;
             try {
@@ -2467,6 +2492,10 @@ async function initApp() {
       updateProfileDescription();
       updateStatusUI(currentStatus);
       applyTranslations(newLang);
+      // applyTranslations resets the vocabulary hints; keep typed text and re-localize them for the selected vocabulary language.
+      if (elements.promptEs) drafts.prompts[currentAsrLang] = elements.promptEs.value;
+      if (elements.inputBlacklist) drafts.blacklists[currentAsrLang] = elements.inputBlacklist.value;
+      syncAsrLanguageUi(currentAsrLang);
       updateComputeDeviceReactivity();
       renderEngineSummary();
       refreshOpencohostStatus();
@@ -2482,6 +2511,7 @@ async function initApp() {
   }
 
   // Advanced controls: the chip follows every edit; Reset asks first and only edits the form.
+  for (const el of [elements.checkContextPromptEnabled, elements.checkBlacklistEnabled]) el.addEventListener('change', dimVocabularyEditors);
   for (const id of ADVANCED_FIELD_IDS) {
     for (const type of ['input', 'change']) document.getElementById(id)?.addEventListener(type, syncAdvancedUnsaved);
   }
@@ -2532,8 +2562,10 @@ async function initApp() {
   elements.btnAboutSponsor.addEventListener('click', () => openSupportLink('sponsor'));
 
   // Slider bindings
+  elements.checkCpuThreadsAuto.addEventListener('change', () => updateComputeDeviceReactivity());
   elements.sliderCpuThreads.addEventListener('input', (e) => {
-    elements.valCpuThreads.textContent = e.target.value;
+    manualCpuThreads = parseInt(e.target.value, 10);
+    renderCpuThreads();
   });
   elements.sliderSilenceTimeout.addEventListener('input', (e) => {
     elements.valSilenceTimeout.textContent = `${e.target.value}s`;
@@ -2695,18 +2727,18 @@ async function initApp() {
 
     try {
       if (targetAction === 'stopping') {
-        appendLogEntry('info', 'Deteniendo servicio de transcripción...', 'SERVICE');
+        appendLogEntry('info', t('log_service_stopping'), 'SERVICE');
         const newStatus = await invoke('stop_service');
         currentStatus = newStatus;
-        appendLogEntry('info', 'Servicio detenido.', 'SERVICE');
+        appendLogEntry('info', t('log_service_stopped'), 'SERVICE');
       } else {
-        appendLogEntry('info', 'Iniciando servicio de transcripción...', 'SERVICE');
+        appendLogEntry('info', t('log_service_starting'), 'SERVICE');
         const newStatus = await invoke('start_service');
         currentStatus = newStatus;
-        appendLogEntry('info', 'Servicio iniciado correctamente.', 'SERVICE');
+        appendLogEntry('info', t('log_service_started'), 'SERVICE');
       }
     } catch (err) {
-      appendLogEntry('error', `Error en servicio: ${err}`, 'ERROR');
+      appendLogEntry('error', t('log_service_error').replace('{error}', err), 'ERROR');
       showToast(`${t('status_error')}: ${err}`, true);
     } finally {
       isServiceActionPending = false;
@@ -2722,13 +2754,13 @@ async function initApp() {
 
   elements.btnRuntimeRepair.addEventListener('click', async () => {
     try {
-      appendLogEntry('info', 'Iniciando verificación/reparación de entorno ASR...', 'SETUP');
+      appendLogEntry('info', t('log_setup_repair_start'), 'SETUP');
       setRuntimeSetupProgress({ phase: 'starting', text: t('runtime_setup_starting'), percent: null });
       await invoke('prepare_asr_runtime');
       setRuntimeSetupProgress({ phase: 'ready', text: t('runtime_setup_ready'), percent: 100 });
-      appendLogEntry('info', 'Entorno ASR preparado con éxito.', 'SETUP');
+      appendLogEntry('info', t('log_setup_repair_done'), 'SETUP');
     } catch (error) {
-      appendLogEntry('error', `Error al preparar entorno ASR: ${error}`, 'SETUP');
+      appendLogEntry('error', t('log_setup_repair_error').replace('{error}', error), 'SETUP');
       setRuntimeSetupProgress({ phase: 'error', text: String(error), percent: null });
       showToast(`${t('status_error')}: ${error}`, true);
     }
@@ -2922,7 +2954,7 @@ async function initApp() {
   try {
     const recentLogs = await invoke('get_recent_logs', { maxLines: 40 });
     if (elements.loggerConsole) elements.loggerConsole.innerHTML = '';
-    appendLogEntry('info', t('log_events_ready') || 'Sistema listo.', 'SYSTEM');
+    appendLogEntry('info', t('log_events_ready'), 'SYSTEM');
     if (Array.isArray(recentLogs)) {
       for (const line of recentLogs) {
         const clean = line.replace(/\x1b\[[0-9;]*m/g, '').trim();
@@ -2935,7 +2967,7 @@ async function initApp() {
       }
     }
   } catch (_) {
-    appendLogEntry('info', t('log_events_ready') || 'Sistema listo.', 'SYSTEM');
+    appendLogEntry('info', t('log_events_ready'), 'SYSTEM');
   }
 
   // Subscribe to Tauri events safely
@@ -2966,14 +2998,12 @@ async function initApp() {
 
           if (phaseChanged || textChanged || milestoneCrossed) {
             lastLoggedSetup = { phase, text: cleanText, milestone };
-            const pctStr = percent != null ? ` (${Math.round(percent)}%)` : '';
-            appendLogEntry(isErr ? 'error' : 'info', `[${phase}] ${cleanText}${pctStr}`, 'SETUP');
+            appendLogEntry(isErr ? 'error' : 'info', setupLogLine(phase, cleanText, percent, t), 'SETUP');
           }
         } else {
           if (phase !== lastLoggedSetup.phase || cleanText !== lastLoggedSetup.text) {
             lastLoggedSetup = { phase, text: cleanText, milestone: null };
-            const pctStr = percent != null ? ` (${Math.round(percent)}%)` : '';
-            appendLogEntry(isErr ? 'error' : 'info', `[${phase}] ${cleanText}${pctStr}`, 'SETUP');
+            appendLogEntry(isErr ? 'error' : 'info', setupLogLine(phase, cleanText, percent, t), 'SETUP');
           }
         }
       }
@@ -2991,11 +3021,7 @@ async function initApp() {
           audio_state !== lastLoggedStatus.audio_state
         ) {
           lastLoggedStatus = { is_running, asr_state, audio_state };
-          const runningLabel = is_running ? 'En ejecución' : 'Detenido';
-          let logMsg = `Estado: ${runningLabel} | ASR: ${asr_state}`;
-          if (is_running && (audio_state === 'standby' || audio_state === 'reconnecting')) {
-            logMsg += ` | Audio: ${audio_state}`;
-          }
+          const logMsg = statusLogLine(event.payload, t);
           appendLogEntry('info', logMsg, 'STATUS');
         }
       }
@@ -3206,7 +3232,7 @@ function renderNvidiaCard() {
 function nvidiaResultText(state, running) {
   if (state === 'success') return t(running ? 'nvidia_card_success_restart' : 'nvidia_card_success_next');
   if (state !== 'error') return '';
-  return t(/HTTP status 404/.test(nvidiaErrorMessage) ? 'nvidia_card_unavailable' : 'nvidia_card_error_hint');
+  return t(nvidiaErrorMessage.includes('worker_not_published') ? 'nvidia_card_unavailable' : 'nvidia_card_error_hint');
 }
 
 function nvidiaProgressText(p) {
@@ -3221,6 +3247,8 @@ function nvidiaProgressText(p) {
 async function refreshGpuStatus() {
   try {
     gpuStatus = await invoke('get_gpu_backend_status');
+    autoCpuThreads = gpuStatus?.default_cpu_threads || null;
+    updateComputeDeviceReactivity();
   } catch (_) {
     gpuStatus = null;
   }

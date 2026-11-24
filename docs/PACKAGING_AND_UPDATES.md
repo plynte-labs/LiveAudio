@@ -25,7 +25,7 @@ published release.
 
 The CUDA ASR worker (`liveaudio-asr-worker-cuda.exe`, CTranslate2) is **not built by CI** and
 is not in the installer. The maintainer builds it locally and uploads it to the release as an
-extra asset (section 5). The app downloads it on demand, with the NVIDIA cuBLAS/cuDNN DLLs,
+separate `ct2-worker-vX.Y.Z` release (section 5), on its own cycle. The app downloads it on demand, with the NVIDIA cuBLAS/cuDNN DLLs,
 after an explicit user click; the download is pinned by `packaging/ct2-worker.pin.json`
 (URL, SHA-256, size) and verified before use.
 
@@ -114,30 +114,42 @@ replaces the AppImage in-place on Linux.
 
 1. Bump the version in `desktop/src-tauri/tauri.conf.json` and the workspace
    `Cargo.toml`. Update `CHANGELOG.md` and `HISTORIAL_CAMBIOS.md`.
-2. Build the CUDA worker locally with the new version (needs the CUDA toolchain,
-   about 18 minutes; see `crates/liveaudio-asr-worker-ct2/README.md`):
+2. The CUDA worker ships on its own cycle, tagged `ct2-worker-vX.Y.Z` where `X.Y.Z` is the
+   `crates/liveaudio-asr-worker-ct2` crate version (not the app version). Rebuild and
+   re-pin it only when that crate changes (needs the CUDA toolchain, about 18 minutes; see
+   `crates/liveaudio-asr-worker-ct2/README.md`):
    ```powershell
    .\packaging\build_ct2_worker.ps1 -CudaRoot <toolkit root> -Pin
    ```
    `-Pin` copies the exe to `dist-ct2/` (gitignored) and rewrites
-   `packaging/ct2-worker.pin.json` with the version, release URL, SHA-256 and size.
-3. Commit `packaging/ct2-worker.pin.json`. The app embeds it at compile time, so it
-   must be in the tagged commit. While it holds the all-zero SHA-256 placeholder the
-   app reports the worker as not published and keeps using the ONNX Runtime worker.
-4. Tag `vX.Y.Z` and push the tag. The workflow builds the app (unchanged; it does not
-   build the CUDA worker).
-5. When the draft release appears, upload the worker as a release asset. The name
-   must match the pin URL:
+   `packaging/ct2-worker.pin.json` with the crate version, the
+   `ct2-worker-vX.Y.Z` release URL, SHA-256 and size. Create that release once and upload
+   the exe (it must match the pin URL):
    ```bash
-   gh release upload vX.Y.Z dist-ct2/liveaudio-asr-worker-cuda.exe
+   gh release create ct2-worker-vX.Y.Z --latest=false dist-ct2/liveaudio-asr-worker-cuda.exe --title "CUDA worker X.Y.Z" --notes "CTranslate2 CUDA worker for LiveAudio."
    ```
+   The "Latest" GitHub release must always be an app release: the updater reads
+   `releases/latest/download/latest.json`, so never mark a worker release as latest.
+   Published `ct2-worker-v*` releases are immutable. Any change to the worker or to its path
+   dependency `liveaudio-worker-protocol` requires bumping the ct2 crate version and a new
+   tag; never re-upload an asset under an existing tag.
+   A normal app release needs none of this: leave the pin untouched.
+3. Commit `packaging/ct2-worker.pin.json` when it changed. The app embeds it at compile
+   time, so it must be in the tagged commit. While it holds the all-zero SHA-256
+   placeholder the app reports the worker as not published, hides the NVIDIA offer and
+   keeps using the ONNX Runtime worker. A worker that reports a different protocol
+   version than the app is stopped at startup and the app falls back to ONNX Runtime.
+4. Tag `vX.Y.Z` and push the tag. The workflow builds the app (unchanged; it does not
+   build or upload the CUDA worker).
+5. Before publishing the app draft, check that the `ct2-worker-v...` release named in the
+   pin exists and is published.
 6. Check that the draft has all assets, that `latest.json` points at the installer
    name, and that `SHA256SUMS.txt` matches. The worker is not in `SHA256SUMS.txt`
    (the pin file holds its hash).
 7. Smoke-test the installer on a clean Windows machine, including the on-demand
    NVIDIA install. Follow [UPDATER_TESTING.md](UPDATER_TESTING.md) for the updater path.
-8. Publish the draft. The worker must be uploaded before publishing: users download it
-   from the published release URL. Upload the exact exe whose SHA-256 and size are in the
+8. Publish the draft. The worker release must already be published: users download it
+   from the pin URL. It must hold the exact exe whose SHA-256 and size are in the
    committed pin; the installer downloads and verifies the worker before the NVIDIA
    archives, so a missing or different asset fails the install early.
 9. Before publishing, complete the signed-update round trip in

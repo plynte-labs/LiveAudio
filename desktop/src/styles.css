@@ -677,6 +677,10 @@ textarea.form-control {
   color: #cbd5e1;
 }
 
+.form-control.is-dimmed {
+  opacity: 0.5;
+}
+
 .form-group.device-dimmed .form-hint {
   color: var(--accent-amber);
 }
