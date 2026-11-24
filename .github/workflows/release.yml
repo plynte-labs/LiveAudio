@@ -102,7 +102,8 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           mkdir -p release_assets
           # Publish the NSIS installer and its updater signature under the stable name the docs link to
-          EXE=$(find target/release/bundle/nsis desktop/src-tauri/target/release/bundle/nsis -type f -name "*.exe" 2>/dev/null | head -n 1)
+          # `|| true`: find exits 1 for the bundle dir that does not exist, and pipefail would abort silently
+          EXE=$(find target/release/bundle/nsis desktop/src-tauri/target/release/bundle/nsis -type f -name "*.exe" 2>/dev/null | head -n 1 || true)
           [ -n "$EXE" ] || (echo "Missing Windows NSIS .exe installer" && exit 1)
           [ -f "$EXE.sig" ] || (echo "Missing Windows updater .sig signature" && exit 1)
           cp "$EXE" "release_assets/LiveAudio-Setup-${VERSION}.exe"
