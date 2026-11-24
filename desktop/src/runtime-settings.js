@@ -21,6 +21,7 @@ const RUNTIME_SETTINGS = [
   'save_transcript_enabled',
   'save_vtt_enabled',
   'rnnoise_enabled',
+  'context_prompt_enabled',
   'acoustic_events_enabled',
   'live_partial_subtitles_enabled',
   'asr_backend',
@@ -362,6 +363,8 @@ export const TAB_RESETS = Object.freeze({
 export function advancedView(config) {
   const view = Object.fromEntries(ADVANCED_KEYS.map((key) => [key, config?.[key]]));
   view.model_size = String(view.model_size ?? '').split(' ')[0];
+  view.context_prompt_enabled = config?.context_prompt_enabled !== false;
+  view.blacklist_enabled = config?.blacklist_enabled !== false;
   view.blacklist = String(config?.blacklist ?? '').trim();
   view.prompt_es = String(config?.whisper_context_prompt_es ?? '').trim();
   view.prompt_en = String(config?.whisper_context_prompt_en ?? '').trim();

@@ -850,17 +850,11 @@ async fn run_service(
             .to_string()
     });
 
-    let prompt = if clean_lang == "en" {
-        &config.whisper_context_prompt_en
-    } else {
-        &config.whisper_context_prompt_es
-    };
-
     selected.config.init_payload = Some(worker_init_payload(
         &config,
         &clean_model_name,
         &clean_lang,
-        Some(prompt.as_str()).filter(|prompt| !prompt.is_empty()),
+        config.context_prompt(&clean_lang),
     ));
     selected.config.decode_timeout =
         Some(Duration::from_secs(config.asr_decode_timeout_sec.into()));

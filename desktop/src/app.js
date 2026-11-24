@@ -412,6 +412,8 @@ const elements = {
   checkSaveTranscript: document.getElementById('check-save-transcript'),
   checkSaveVtt: document.getElementById('check-save-vtt'),
   checkRnnoiseEnabled: document.getElementById('check-rnnoise-enabled'),
+  checkContextPromptEnabled: document.getElementById('check-context-prompt-enabled'),
+  checkBlacklistEnabled: document.getElementById('check-blacklist-enabled'),
   checkFollowOpencohostLanguage: document.getElementById('check-follow-opencohost-language'),
   statusOpencohostLanguage: document.getElementById('status-opencohost-language'),
   checkMcpStyleEnabled: document.getElementById('check-mcp-style-enabled'),
@@ -595,7 +597,7 @@ let closePromptOpen = false;
 let saveGeneralConfig = async () => {};
 const ADVANCED_FIELD_IDS = ['select-model-size', 'select-compute-device', 'slider-cpu-threads', 'check-cpu-threads-auto', 'select-asr-backend', 'slider-silence-timeout', 'slider-max-chunk',
   'slider-vad-pad', 'slider-vad-threshold', 'check-rnnoise-enabled', 'check-live-partial-subtitles-enabled', 'select-backlog-policy', 'slider-max-live-delay',
-  'slider-catchup-interval', 'prompt-es', 'input-blacklist', 'input-ws-port', 'check-acoustic-events-enabled', 'check-mcp-style-enabled', 'check-mcp-system-enabled', 'check-updates-enabled'];
+  'slider-catchup-interval', 'check-context-prompt-enabled', 'prompt-es', 'check-blacklist-enabled', 'input-blacklist', 'input-ws-port', 'check-acoustic-events-enabled', 'check-mcp-style-enabled', 'check-mcp-system-enabled', 'check-updates-enabled'];
 function setupCloseGuard(appWindow) {
   if (!appWindow || typeof appWindow.onCloseRequested !== 'function') return;
   appWindow.onCloseRequested(async (event) => {
@@ -2035,6 +2037,9 @@ function populateAdvancedControls(config) {
   elements.valVadThreshold.textContent = `${config.vad_threshold || 0.5}`;
 
   elements.checkRnnoiseEnabled.checked = Boolean(config.rnnoise_enabled);
+  elements.checkContextPromptEnabled.checked = config.context_prompt_enabled !== false;
+  elements.checkBlacklistEnabled.checked = config.blacklist_enabled !== false;
+  dimVocabularyEditors();
   elements.checkFollowOpencohostLanguage.checked = Boolean(config.follow_opencohost_language);
   refreshOpencohostStatus();
   if (elements.checkMcpStyleEnabled) elements.checkMcpStyleEnabled.checked = config.mcp_style_enabled === true;
@@ -2085,6 +2090,12 @@ function populateForm(config, updateSavedBaseline = true) {
 
   updateProfileDescription();
   syncAdvancedUnsaved();
+}
+
+// The editors stay editable while their switch is off, but look dimmed.
+function dimVocabularyEditors() {
+  elements.promptEs?.classList.toggle('is-dimmed', !elements.checkContextPromptEnabled.checked);
+  elements.inputBlacklist?.classList.toggle('is-dimmed', !elements.checkBlacklistEnabled.checked);
 }
 
 // Synchronize dynamic prompt and blacklist content based on active spoken language
@@ -2179,6 +2190,8 @@ function collectFormData() {
   cfg.save_transcript_enabled = elements.checkSaveTranscript.checked;
   cfg.save_vtt_enabled = elements.checkSaveVtt.checked;
   cfg.rnnoise_enabled = elements.checkRnnoiseEnabled.checked;
+  cfg.context_prompt_enabled = elements.checkContextPromptEnabled.checked;
+  cfg.blacklist_enabled = elements.checkBlacklistEnabled.checked;
   if (elements.checkMcpStyleEnabled) cfg.mcp_style_enabled = elements.checkMcpStyleEnabled.checked;
   if (elements.checkMcpSystemEnabled) cfg.mcp_system_enabled = elements.checkMcpSystemEnabled.checked;
   if (elements.checkUpdatesEnabled) cfg.check_updates_enabled = elements.checkUpdatesEnabled.checked;
@@ -2498,6 +2511,7 @@ async function initApp() {
   }
 
   // Advanced controls: the chip follows every edit; Reset asks first and only edits the form.
+  for (const el of [elements.checkContextPromptEnabled, elements.checkBlacklistEnabled]) el.addEventListener('change', dimVocabularyEditors);
   for (const id of ADVANCED_FIELD_IDS) {
     for (const type of ['input', 'change']) document.getElementById(id)?.addEventListener(type, syncAdvancedUnsaved);
   }

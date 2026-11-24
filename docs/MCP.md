@@ -89,7 +89,7 @@ Run `get_config_schema` for the authoritative list matching your active switches
 Changes to style settings take effect in the running OBS overlay within about a second and do not require restarting the ASR service.
 
 ### System Settings (Group B, Medium Risk — enabled by `mcp_system_enabled`)
-- Transcription: `device`, `asr_backend`, `cpu_threads`, `cpu_threads_auto`, `model_size`, `asr_language`, `transcription_purpose`, `asr_decode_timeout_sec`, `whisper_context_prompt_es`, `whisper_context_prompt_en`, `blacklist`.
+- Transcription: `device`, `asr_backend`, `cpu_threads`, `cpu_threads_auto`, `model_size`, `asr_language`, `transcription_purpose`, `asr_decode_timeout_sec`, `whisper_context_prompt_es`, `whisper_context_prompt_en`, `context_prompt_enabled`, `blacklist`, `blacklist_enabled`.
 - Audio segmentation and VAD: `silence_timeout`, `max_chunk_duration`, `vad_speech_pad_ms`, `vad_threshold`, `continuous_session`, `rnnoise_enabled`, `acoustic_events_enabled`, `live_partial_subtitles_enabled`, `prewarm`.
 - Subtitles and output: `subtitle_ribbon_max_lines`, `subtitle_backlog_policy`, `subtitle_max_live_delay_sec`, `subtitle_catchup_interval_sec`, `save_transcript_enabled`, `save_vtt_enabled`.
 - Network and app: `ws_port`, `obs_enabled`, `language`, `settings_navigation_mode`, `diagnostics_enabled`, `diagnostics_level`.

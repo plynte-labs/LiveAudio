@@ -4,7 +4,7 @@
 
 use crate::commands::{
     acquire_service_lock, admit_worker_event_generation, asr_progress_from_worker_event,
-    asr_progress_update_for_worker_event, desktop_runtime_preflight_error,
+    asr_language_and_prompt, asr_progress_update_for_worker_event, desktop_runtime_preflight_error,
     ensure_startup_websocket, get_service_status_internal,
     persist_config_and_apply, poll_foreign_service, profile_presets, refresh_foreign_service,
     retry_once_if_already_running, shutdown_service_resources, stop_active_websocket,
@@ -2262,4 +2262,16 @@ async fn shutdown_lets_pending_finals_finish_before_stopping_the_event_task() {
         !pending_at_stop.load(Ordering::SeqCst),
         "event task must keep running until the pending final was delivered"
     );
+}
+
+#[test]
+fn context_prompt_is_only_sent_while_its_switch_is_on() {
+    let mut cfg = LiveAudioConfig {
+        asr_language: "en".to_string(),
+        whisper_context_prompt_en: "Rust stream".to_string(),
+        ..LiveAudioConfig::default()
+    };
+    assert_eq!(asr_language_and_prompt(&cfg).1.as_deref(), Some("Rust stream"));
+    cfg.context_prompt_enabled = false;
+    assert_eq!(asr_language_and_prompt(&cfg).1, None);
 }

@@ -489,6 +489,11 @@
                 <div class="card-title"><span class="title-with-icon"><svg class="lucide lucide-book-a title-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H19a1 1 0 0 1 1 1v18a1 1 0 0 1-1 1H6.5a1 1 0 0 1 0-5H20"/><path d="m8 13 4-7 4 7"/><path d="M9.1 11h5.7"/></svg><span data-i18n="title_adv_vocab">Vocabulario y filtros</span></span></div>
                 <p class="adv-desc" data-i18n="desc_adv_vocab">Términos que ayudan al reconocimiento y frases que se descartan.</p>
                 <div class="form-group" id="group-prompt">
+                  <label class="switch-label">
+                    <span class="switch-track"><input type="checkbox" id="check-context-prompt-enabled" class="switch-input" aria-describedby="hint-prompt-whisper-only"><span class="switch-slider"></span></span>
+                    <span data-i18n="lbl_context_prompt_enabled">Use context prompt</span>
+                  </label>
+                  <span id="hint-prompt-whisper-only" class="form-hint" data-i18n="hint_prompt_whisper_only">The prompt only affects Whisper models; Parakeet ignores it.</span>
                   <div class="lang-header-row">
                     <div class="lang-field-title"><label for="prompt-es" id="lbl-prompt-title" data-i18n="lbl_prompt">Vocabulario y contexto</label><span id="badge-prompt-lang" class="badge-lang-indicator">🇪🇸 ES</span><span class="badge-restart" data-i18n="badge_restart">Requiere reinicio</span></div>
                     <button type="button" id="btn-suggest-prompt-es" class="btn-link" data-i18n="btn_use_preset_prompt">Cargar sugerencia</button>
@@ -497,6 +502,10 @@
                   <span id="hint-prompt" class="form-hint" data-i18n="hint_prompt_es">Añade vocabulario que ayude al reconocimiento en el idioma seleccionado.</span>
                 </div>
                 <div class="form-group" id="group-blacklist">
+                  <label class="switch-label">
+                    <span class="switch-track"><input type="checkbox" id="check-blacklist-enabled" class="switch-input"><span class="switch-slider"></span></span>
+                    <span data-i18n="lbl_blacklist_enabled">Filter blacklisted phrases</span>
+                  </label>
                   <div class="lang-header-row" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
                     <div style="display: flex; align-items: center; gap: 8px;">
                       <label for="input-blacklist" id="lbl-blacklist" data-i18n="lbl_blacklist">Filtro de Frases Alucinadas (Blacklist)</label>

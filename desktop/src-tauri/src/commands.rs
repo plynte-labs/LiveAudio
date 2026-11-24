@@ -13,7 +13,7 @@ use liveaudio_core::asr::worker::{
     presentation_text, transcript_text_from_result, worker_init_payload,
 };
 use liveaudio_core::asr::AsrTranscriptionResponse;
-use liveaudio_core::blacklist::{filter_blacklisted, fold_diacritics, BlacklistVerdict};
+use liveaudio_core::blacklist::{fold_diacritics, BlacklistVerdict};
 use liveaudio_core::config::{
     get_data_home, save_config as save_config_core, LiveAudioConfig, SubtitlePreset,
 };
@@ -1345,11 +1345,6 @@ async fn start_pipeline_locked(
         .unwrap_or("small")
         .to_string();
     let clean_lang = liveaudio_core::opencohost::effective_asr_language(&config);
-    let prompt = if clean_lang == "en" {
-        &config.whisper_context_prompt_en
-    } else {
-        &config.whisper_context_prompt_es
-    };
 
     let mut selected = match prepare_worker(liveaudio_core::backend::effective_backend_pref(&config.asr_backend, &config.device, &config.model_size)).await {
         Ok(selected) => selected,
@@ -1374,7 +1369,7 @@ async fn start_pipeline_locked(
         &config,
         &clean_model_name,
         &clean_lang,
-        Some(prompt.as_str()).filter(|prompt| !prompt.is_empty()),
+        config.context_prompt(&clean_lang),
     ));
     selected.config.decode_timeout =
         Some(Duration::from_secs(config.asr_decode_timeout_sec.into()));
@@ -1601,8 +1596,7 @@ async fn start_pipeline_locked(
                                             let text = transcript_text_from_result(payload);
                                             let text = text.trim();
                                             if !text.is_empty() {
-                                                let blacklist = state_events.config.read().await.blacklist.clone();
-                                                let shown = match filter_blacklisted(text, &blacklist) {
+                                                let shown = match state_events.config.read().await.filter_blacklist(text) {
                                                     BlacklistVerdict::Keep => Some(text.to_string()),
                                                     BlacklistVerdict::Trim(rest) => Some(rest),
                                                     BlacklistVerdict::Drop => None,
@@ -1630,8 +1624,7 @@ async fn start_pipeline_locked(
                                             };
 
                                             if !text.is_empty() {
-                                                let blacklist = state_events.config.read().await.blacklist.clone();
-                                                let verdict = filter_blacklisted(text, &blacklist);
+                                                let verdict = state_events.config.read().await.filter_blacklist(text);
                                                 if verdict == BlacklistVerdict::Drop {
                                                     tracing::info!("[Blacklist Filter] Dropped hallucinated transcription [{}] ({} characters)", utt_id, text.chars().count());
                                                 } else {
@@ -2421,14 +2414,9 @@ fn utterance_seq(utterance_id: &str) -> u64 {
         .unwrap_or(0)
 }
 
-fn asr_language_and_prompt(cfg: &LiveAudioConfig) -> (String, Option<String>) {
+pub(crate) fn asr_language_and_prompt(cfg: &LiveAudioConfig) -> (String, Option<String>) {
     let clean_lang = liveaudio_core::opencohost::effective_asr_language(cfg);
-    let prompt = if clean_lang == "en" {
-        cfg.whisper_context_prompt_en.trim()
-    } else {
-        cfg.whisper_context_prompt_es.trim()
-    };
-    let context_prompt = (!prompt.is_empty()).then(|| prompt.to_string());
+    let context_prompt = cfg.context_prompt(&clean_lang).map(str::to_string);
     (clean_lang, context_prompt)
 }
 

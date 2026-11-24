@@ -19,6 +19,7 @@ Todos los cambios notables de LiveAudio se documentan aquí.
 - **Selector "Modelo" agrupado** por Whisper/Parakeet.
 - **El control de hilos de CPU** solo está activo cuando se usa CPU.
 - **Hilos de CPU automáticos** — Nuevo interruptor "Automático" (activado por defecto): usa la mitad de los núcleos y deshabilita el control manual. Una configuración anterior con un número de hilos personalizado se conserva en modo manual.
+- **Interruptores de prompt y blacklist** — En Avanzado, "Usar prompt de contexto" y "Filtrar frases de la blacklist" (activados por defecto) permiten apagar cada función sin borrar el texto. El prompt solo afecta a los modelos Whisper; Parakeet lo ignora.
 - **Iconos de sección** en la pantalla principal.
 - **Indicadores "Detenido" e "Inactivo" eliminados.**
 
