@@ -13,8 +13,8 @@ The release workflow runs on a `v*` tag and builds two platforms.
 |---|---|---|
 | NSIS installer (`*-setup.exe`) and its `.sig` | `windows-latest` | Tauri desktop app with the `liveaudio-cli` and `liveaudio-asr-worker` sidecars, `onnxruntime.dll`, `onnxruntime_providers_shared.dll` and `DirectML.dll`. Per-user install. |
 | `liveaudio-cli-X.Y.Z-windows-x64.zip` | `windows-latest` | Standalone CLI and ASR worker with the ONNX Runtime and DirectML DLLs and their licenses. |
-| `latest.json` | `windows-latest` | Tauri updater manifest (Windows only, see section 4). |
-| AppImage (`*.AppImage`, `.sig`), `*.deb` | `ubuntu-22.04` | Desktop app bundles (AppImage is the configured target in `tauri.linux.conf.json`). |
+| `latest.json` | `publish` job | Tauri updater manifest (`windows-x86_64` NSIS + `linux-x86_64` AppImage, see section 4). |
+| AppImage (`*.AppImage`, `.sig`), `*.deb` | `ubuntu-22.04` | Desktop app bundles (`targets: ["appimage", "deb"]` in `tauri.linux.conf.json`). |
 | `liveaudio-cli-X.Y.Z-linux-x64.tar.gz` | `ubuntu-22.04` | Standalone CLI and ASR worker with ONNX Runtime CPU. |
 | `SHA256SUMS.txt` | publish job | SHA-256 of every asset above. |
 
@@ -25,7 +25,7 @@ published release.
 
 The CUDA ASR worker (`liveaudio-asr-worker-cuda.exe`, CTranslate2) is **not built by CI** and
 is not in the installer. The maintainer builds it locally and uploads it to the release as an
-extra asset (section 5). The app downloads it on demand, with the NVIDIA cuBLAS/cuDNN DLLs,
+separate `ct2-worker-vX.Y.Z` release (section 5), on its own cycle. The app downloads it on demand, with the NVIDIA cuBLAS/cuDNN DLLs,
 after an explicit user click; the download is pinned by `packaging/ct2-worker.pin.json`
 (URL, SHA-256, size) and verified before use.
 
@@ -42,7 +42,7 @@ The steps mirror CI. Run them from the repository root unless noted.
    node packaging/fetch_onnxruntime.mjs windows-x64 linux-x64
    ```
    On Windows the script also copies the four VC++ runtime DLLs (`vcruntime140`, `vcruntime140_1`, `msvcp140`, `msvcp140_1`) from the local Visual Studio `VC\Redist` (found via vswhere; not hash-pinned) so they ship app-locally next to the exes.
-   The script downloads ONNX Runtime 1.24.4 (and DirectML 1.15.4 on Windows),
+   The script downloads official NuGet packages for ONNX Runtime 1.24.4 (`Microsoft.ML.OnnxRuntime.DirectML` on Windows, `Microsoft.ML.OnnxRuntime` on Linux) and DirectML 1.15.4 on Windows,
    checks each archive against a pinned SHA-256 and aborts on mismatch. The
    pins live in `packaging/fetch_onnxruntime.mjs`.
 2. Build the sidecars:
@@ -89,52 +89,67 @@ signing (and reputation building) is an open item with no active track.
 
 ## 4. Update manifest (`latest.json`)
 
-`packaging/assemble_latest_manifest.mjs` runs in the Windows job after the
-bundle is built:
+`packaging/assemble_latest_manifest.mjs` runs in the `publish` job after both
+platform bundles are built:
 
 ```bash
 node packaging/assemble_latest_manifest.mjs --version X.Y.Z --out-dir release_assets
 ```
 
-- It finds the installer and its `.sig` under the NSIS bundle directories.
+- It finds the Windows NSIS installer and its `.sig`, plus the Linux `.AppImage`
+  and its `.sig` when present.
 - It writes `latest.json` with `version`, `notes`, `pub_date` and
-  `platforms["windows-x86_64"]` (`signature` = the raw `.sig` contents, `url` =
-  `https://github.com/<repo>/releases/download/<tag>/<installer file name>`).
+  `platforms["windows-x86_64"]` and `platforms["linux-x86_64"]` (`signature` =
+  the raw `.sig` contents, `url` =
+  `https://github.com/<repo>/releases/download/<tag>/<bundle file name>`).
 - `repo` and `tag` default to `GITHUB_REPOSITORY` and `GITHUB_REF_NAME`.
-- Only `windows-x86_64` is written. Linux users update by downloading a new
-  AppImage or deb manually.
+- Linux AppImage users update in-app via `platforms["linux-x86_64"]`. Linux
+  `.deb` installations cannot self-update in-app and update via GitHub Releases.
 
 The app checks `https://github.com/plynte-labs/LiveAudio/releases/latest/download/latest.json`
-(`plugins.updater.endpoints`) and installs in `passive` mode on Windows.
+(`plugins.updater.endpoints`), installs in `passive` mode on Windows, and
+replaces the AppImage in-place on Linux.
 
 ## 5. Checklist for a release
 
 1. Bump the version in `desktop/src-tauri/tauri.conf.json` and the workspace
    `Cargo.toml`. Update `CHANGELOG.md` and `HISTORIAL_CAMBIOS.md`.
-2. Build the CUDA worker locally with the new version (needs the CUDA toolchain,
-   about 18 minutes; see `crates/liveaudio-asr-worker-ct2/README.md`):
+2. The CUDA worker ships on its own cycle, tagged `ct2-worker-vX.Y.Z` where `X.Y.Z` is the
+   `crates/liveaudio-asr-worker-ct2` crate version (not the app version). Rebuild and
+   re-pin it only when that crate changes (needs the CUDA toolchain, about 18 minutes; see
+   `crates/liveaudio-asr-worker-ct2/README.md`):
    ```powershell
    .\packaging\build_ct2_worker.ps1 -CudaRoot <toolkit root> -Pin
    ```
    `-Pin` copies the exe to `dist-ct2/` (gitignored) and rewrites
-   `packaging/ct2-worker.pin.json` with the version, release URL, SHA-256 and size.
-3. Commit `packaging/ct2-worker.pin.json`. The app embeds it at compile time, so it
-   must be in the tagged commit. While it holds the all-zero SHA-256 placeholder the
-   app reports the worker as not published and keeps using the ONNX Runtime worker.
-4. Tag `vX.Y.Z` and push the tag. The workflow builds the app (unchanged; it does not
-   build the CUDA worker).
-5. When the draft release appears, upload the worker as a release asset. The name
-   must match the pin URL:
+   `packaging/ct2-worker.pin.json` with the crate version, the
+   `ct2-worker-vX.Y.Z` release URL, SHA-256 and size. Create that release once and upload
+   the exe (it must match the pin URL):
    ```bash
-   gh release upload vX.Y.Z dist-ct2/liveaudio-asr-worker-cuda.exe
+   gh release create ct2-worker-vX.Y.Z --latest=false dist-ct2/liveaudio-asr-worker-cuda.exe --title "CUDA worker X.Y.Z" --notes "CTranslate2 CUDA worker for LiveAudio."
    ```
+   The "Latest" GitHub release must always be an app release: the updater reads
+   `releases/latest/download/latest.json`, so never mark a worker release as latest.
+   Published `ct2-worker-v*` releases are immutable. Any change to the worker or to its path
+   dependency `liveaudio-worker-protocol` requires bumping the ct2 crate version and a new
+   tag; never re-upload an asset under an existing tag.
+   A normal app release needs none of this: leave the pin untouched.
+3. Commit `packaging/ct2-worker.pin.json` when it changed. The app embeds it at compile
+   time, so it must be in the tagged commit. While it holds the all-zero SHA-256
+   placeholder the app reports the worker as not published, hides the NVIDIA offer and
+   keeps using the ONNX Runtime worker. A worker that reports a different protocol
+   version than the app is stopped at startup and the app falls back to ONNX Runtime.
+4. Tag `vX.Y.Z` and push the tag. The workflow builds the app (unchanged; it does not
+   build or upload the CUDA worker).
+5. Before publishing the app draft, check that the `ct2-worker-v...` release named in the
+   pin exists and is published.
 6. Check that the draft has all assets, that `latest.json` points at the installer
    name, and that `SHA256SUMS.txt` matches. The worker is not in `SHA256SUMS.txt`
    (the pin file holds its hash).
 7. Smoke-test the installer on a clean Windows machine, including the on-demand
    NVIDIA install. Follow [UPDATER_TESTING.md](UPDATER_TESTING.md) for the updater path.
-8. Publish the draft. The worker must be uploaded before publishing: users download it
-   from the published release URL. Upload the exact exe whose SHA-256 and size are in the
+8. Publish the draft. The worker release must already be published: users download it
+   from the pin URL. It must hold the exact exe whose SHA-256 and size are in the
    committed pin; the installer downloads and verifies the worker before the NVIDIA
    archives, so a missing or different asset fails the install early.
 9. Before publishing, complete the signed-update round trip in

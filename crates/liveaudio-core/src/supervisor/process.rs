@@ -10,6 +10,7 @@
 //! - Cooperative cancellation via `CancellationToken`
 //! - Idempotent double-shutdown guarantees
 
+use liveaudio_worker_protocol::protocol::PROTOCOL_VERSION;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -60,6 +61,16 @@ async fn handle_job_assignment(
         });
     }
     Ok(())
+}
+
+/// True when a worker event declares a protocol version other than the one this app speaks.
+/// A missing version means the base protocol. Workers ship on their own cycle, so a stale
+/// or newer binary must fail the start (and fall back) instead of misbehaving mid-session.
+fn protocol_mismatch(event: &serde_json::Value) -> bool {
+    match event.get("version") {
+        None => false,
+        Some(v) => v.as_u64() != Some(u64::from(PROTOCOL_VERSION)),
+    }
 }
 
 /// Tracks the decode the worker reports in its pong and returns true once that same
@@ -874,6 +885,8 @@ impl ProcessSupervisor {
         cmd.kill_on_drop(true);
         #[cfg(windows)]
         crate::runtime::apply_no_console_to_tokio(&mut cmd);
+        #[cfg(target_os = "linux")]
+        liveaudio_audio::configure_linux_parent_death_signal(cmd.as_std_mut());
 
         if let Some(ref dir) = config.working_dir {
             cmd.current_dir(dir);
@@ -966,6 +979,8 @@ impl ProcessSupervisor {
         let worker_event_tx_stdout = worker_event_tx.clone();
         let decode_timeout = config.decode_timeout;
         let decode_kill = kill_notify.clone();
+        let protocol_mismatch_reason = Arc::new(std::sync::Mutex::new(None::<String>));
+        let mismatch_stdout = protocol_mismatch_reason.clone();
 
         tokio::spawn(async move {
             let mut decoding: Option<(String, Instant)> = None;
@@ -973,6 +988,14 @@ impl ProcessSupervisor {
             while let Ok(Some(line)) = read_worker_line(&mut reader).await {
                 last_event_clone.store(now_millis(), Ordering::SeqCst);
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) {
+                    let is_rejected_ready = val.get("event").and_then(|v| v.as_str()) == Some("ready") && protocol_mismatch(&val);
+                    if is_rejected_ready {
+                        let reason = format!("worker protocol version mismatch: expected {PROTOCOL_VERSION}, got {}", val["version"]);
+                        tracing::error!("Worker PID {pid}: {reason}; stopping it");
+                        *mismatch_stdout.lock().unwrap() = Some(reason);
+                        decode_kill.notify_one();
+                        continue;
+                    }
                     let _ = worker_event_tx_stdout.send(val.clone());
                     if let Some(event_type) = val.get("event").and_then(|v| v.as_str()) {
                         match event_type {
@@ -1057,7 +1080,7 @@ impl ProcessSupervisor {
             })
         });
         let init_cmd = serde_json::json!({
-            "version": 1,
+            "version": PROTOCOL_VERSION,
             "cmd": "init",
             "attempt_id": attempt_id,
             "timestamp_ms": now_millis(),
@@ -1075,7 +1098,8 @@ impl ProcessSupervisor {
                 _ = ready_notify.notified() => Ok(()),
                 _ = exit_notify.notified() => Err(SupervisorError::ProcessSpawnFailed {
                     name: config.name.clone(),
-                    reason: "Child exited prematurely before sending ready event".to_string(),
+                    reason: protocol_mismatch_reason.lock().unwrap().take()
+                        .unwrap_or_else(|| "Child exited prematurely before sending ready event".to_string()),
                 }),
                 _ = async { if let Some(token) = cancellation { token.cancelled().await } } => Err(SupervisorError::Cancelled),
                 _ = wait_for_startup_stall(&last_event_ms, stall_window) => Err(SupervisorError::ProcessSpawnFailed {
@@ -1134,7 +1158,7 @@ impl ProcessSupervisor {
                 }
 
                 let ping = serde_json::json!({
-                    "version": 1,
+                    "version": PROTOCOL_VERSION,
                     "cmd": "ping",
                     "timestamp_ms": now_millis(),
                 });
@@ -1324,7 +1348,7 @@ impl ProcessSupervisor {
             }
 
             let shutdown_cmd = serde_json::json!({
-                "version": 1,
+                "version": PROTOCOL_VERSION,
                 "cmd": "shutdown",
                 "payload": {
                     "grace_timeout_ms": timeout.as_millis() as u64
@@ -1467,6 +1491,20 @@ impl ServiceSupervisor for ProcessSupervisor {
 mod tests {
     use super::*;
 
+    #[test]
+    fn ready_with_foreign_protocol_version_is_rejected() {
+        let ok = serde_json::json!({"event": "ready", "version": PROTOCOL_VERSION});
+        let legacy = serde_json::json!({"event": "ready"});
+        let newer = serde_json::json!({"event": "ready", "version": 2});
+        assert!(!protocol_mismatch(&ok));
+        assert!(!protocol_mismatch(&legacy), "a missing version means the base protocol");
+        assert!(protocol_mismatch(&newer));
+        for bad in [r#""2""#, "2.0", "null", "-1", "true"] {
+            let event: serde_json::Value = serde_json::from_str(&format!(r#"{{"event":"ready","version":{bad}}}"#)).unwrap();
+            assert!(protocol_mismatch(&event), "version {bad} must be a mismatch");
+        }
+    }
+
     #[cfg(windows)]
     #[test]
     fn windows_worker_processes_use_create_no_window() {
@@ -1552,5 +1590,140 @@ mod native_worker_discovery_tests {
         let cfg = WorkerProcessConfig::default();
         assert!(cfg.args.is_empty());
         assert_eq!(cfg.name, "asr-worker");
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_pdeathsig_tests {
+    use liveaudio_audio::configure_linux_parent_death_signal;
+    use crate::supervisor::is_parent_alive;
+    use std::process::Stdio;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    use tokio::process::Command;
+
+    const HELPER_PID_FILE_ENV: &str = "LIVEAUDIO_PDEATHSIG_TEST_PID_FILE";
+
+    fn is_process_gone_or_zombie(pid: u32) -> bool {
+        if !is_parent_alive(pid) {
+            return true;
+        }
+        match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Err(_) => true,
+            Ok(stat) => stat
+                .rsplit_once(") ")
+                .and_then(|(_, rest)| rest.chars().next())
+                == Some('Z'),
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn linux_pdeathsig_parent_helper() {
+        let Ok(pid_file) = std::env::var(HELPER_PID_FILE_ENV) else {
+            return;
+        };
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("helper tokio runtime");
+        rt.block_on(async {
+            let mut cmd = Command::new("sh");
+            cmd.args(["-c", "echo $$ > \"$1\"; exec sleep 60", "sh", &pid_file])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            configure_linux_parent_death_signal(cmd.as_std_mut());
+            let _child = cmd.spawn().expect("spawn grandchild");
+            for _ in 0..200 {
+                if std::fs::read_to_string(&pid_file)
+                    .ok()
+                    .and_then(|s| s.trim().parse::<u32>().ok())
+                    .is_some()
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            println!("ready");
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        });
+    }
+
+    #[tokio::test]
+    async fn linux_child_terminates_when_parent_exits_abruptly() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let pid_file = std::env::temp_dir().join(format!(
+            "liveaudio-pdeathsig-{}-{unique}.pid",
+            std::process::id()
+        ));
+        let exe = std::env::current_exe().expect("current test binary");
+
+        let mut helper = Command::new(exe)
+            .args([
+                "--exact",
+                "supervisor::process::linux_pdeathsig_tests::linux_pdeathsig_parent_helper",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(HELPER_PID_FILE_ENV, &pid_file)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn helper parent process");
+
+        let stdout = helper.stdout.take().expect("helper stdout");
+        let mut lines = BufReader::new(stdout).lines();
+        let ready = tokio::time::timeout(Duration::from_secs(5), async {
+            while let Ok(Some(line)) = lines.next_line().await {
+                if line.trim() == "ready" {
+                    return true;
+                }
+            }
+            false
+        })
+        .await
+        .expect("helper must signal ready");
+        assert!(ready, "helper exited before signaling ready");
+
+        let grandchild_pid: u32 = std::fs::read_to_string(&pid_file)
+            .expect("grandchild pid file")
+            .trim()
+            .parse()
+            .expect("numeric grandchild pid");
+        assert!(
+            !is_process_gone_or_zombie(grandchild_pid),
+            "grandchild must be alive while parent is alive"
+        );
+
+        helper.kill().await.expect("SIGKILL helper parent");
+        let _ = helper.wait().await;
+
+        let terminated = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if is_process_gone_or_zombie(grandchild_pid) {
+                    return true;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap_or(false);
+
+        if !terminated {
+            unsafe {
+                libc::kill(grandchild_pid as i32, libc::SIGKILL);
+            }
+        }
+        let _ = std::fs::remove_file(&pid_file);
+
+        assert!(
+            terminated,
+            "grandchild PID {grandchild_pid} must terminate when parent is abruptly killed"
+        );
     }
 }

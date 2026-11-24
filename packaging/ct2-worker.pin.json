@@ -1,6 +1,6 @@
 {
-  "version": "1.6.0",
-  "url": "https://github.com/plynte-labs/LiveAudio/releases/download/v1.6.0/liveaudio-asr-worker-cuda.exe",
-  "sha256": "40eaccfb012634e00c6d6fe71c3ff76c063cef55d6fe10e58999c37611249f72",
-  "size": 44753408
+    "version":  "1.6.0",
+    "url":  "https://github.com/plynte-labs/LiveAudio/releases/download/ct2-worker-v1.6.0/liveaudio-asr-worker-cuda.exe",
+    "sha256":  "40e3d73254819890e7e2910c0578d6389fabe004f6547f7c7b08fc910e4b8a68",
+    "size":  45117440
 }

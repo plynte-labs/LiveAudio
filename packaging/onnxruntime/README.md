@@ -15,9 +15,9 @@ The script downloads each official archive, aborts on any SHA-256 mismatch, extr
 |---|---|---|---|---|
 | Windows x64 | NuGet `Microsoft.ML.OnnxRuntime.DirectML` | 1.24.4 | `onnxruntime.dll`, `onnxruntime_providers_shared.dll`, `LICENSE`, `ThirdPartyNotices.txt` | DirectX 12 DirectML (NVIDIA, AMD, Intel) + CPU |
 | Windows x64 | NuGet `Microsoft.AI.DirectML` | 1.15.4 | `DirectML.dll`, `DirectML-LICENSE.txt` | - |
-| Linux x64 | [onnxruntime-linux-x64-1.24.4.tgz](https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-linux-x64-1.24.4.tgz) | 1.24.4 | `libonnxruntime.so.1.24.4`, `libonnxruntime_providers_shared.so`, `LICENSE`, `ThirdPartyNotices.txt` | Multi-threaded CPU |
+| Linux x64 | NuGet `Microsoft.ML.OnnxRuntime` | 1.24.4 | `libonnxruntime.so.1.24.4`, `libonnxruntime_providers_shared.so`, `LICENSE`, `ThirdPartyNotices.txt` | Multi-threaded CPU |
 
-SHA-256 pins live in `packaging/fetch_onnxruntime.mjs`. To bump a version, update the URL and hash there, the Linux `.so` filename in `crates/liveaudio-core/src/runtime.rs`, `crates/liveaudio-vad/src/runtime.rs`, `desktop/src-tauri/tauri.linux.conf.json`, and the CI/release assertions.
+SHA-256 pins live in `packaging/fetch_onnxruntime.mjs`. To bump a version, update the URL and hash there, the Linux `.so` filename in `crates/liveaudio-core/src/runtime.rs`, `crates/liveaudio-vad/src/runtime.rs`, `crates/liveaudio-asr-worker/src/model.rs`, `desktop/src-tauri/tauri.linux.conf.json`, and the CI/release assertions.
 
 ## Licenses
 

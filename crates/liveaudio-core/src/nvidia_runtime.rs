@@ -162,7 +162,7 @@ pub fn runtime_status(dir: &Path, m: &Manifest) -> NvidiaRuntimeStatus {
 }
 
 pub fn nvidia_runtime_status(dir: &Path) -> NvidiaRuntimeStatus {
-    nvidia_runtime_status_with(dir, &current_manifest(), worker_pin().is_published())
+    nvidia_runtime_status_with(dir, &current_manifest(), worker_published())
 }
 
 /// Unpublished worker (placeholder pin): never installed, with the reason spelled out.
@@ -210,7 +210,10 @@ pub async fn install_runtime(
         let path = dir.join(w.name);
         let matches = tokio::task::spawn_blocking(move || file_sha256(&path)).await.ok().flatten().is_some_and(|h| h == w.sha256);
         if !matches {
-            download_verified(w.url, &dir.join(w.name), w.sha256, Some(w.size), |d, _| progress(d, total), cancel).await?;
+            // A 404 on the worker asset means the release was never published; NVIDIA 404s stay plain errors.
+            download_verified(w.url, &dir.join(w.name), w.sha256, Some(w.size), |d, _| progress(d, total), cancel)
+                .await
+                .map_err(|e| if matches!(e, DownloadError::Status(404)) { DownloadError::WorkerUnpublished } else { e })?;
         }
         base += w.size;
         progress(base, total);
@@ -249,11 +252,40 @@ pub async fn install_runtime(
     Ok(())
 }
 
+/// Whether the pin file names a published CUDA worker (not the all-zero placeholder).
+pub fn worker_published() -> bool {
+    worker_pin().is_published()
+}
+
 pub async fn install_nvidia_runtime(
     dir: &Path,
     progress: impl FnMut(u64, u64),
     cancel: &AtomicBool,
 ) -> Result<(), DownloadError> {
+    install_nvidia_runtime_with(dir, worker_published(), progress, cancel).await
+}
+
+/// Refuses before any network or disk work when the worker is unpublished: the archives alone
+/// (~1.2 GB) would install "successfully" yet never enable acceleration.
+async fn install_nvidia_runtime_with(
+    dir: &Path,
+    worker_published: bool,
+    progress: impl FnMut(u64, u64),
+    cancel: &AtomicBool,
+) -> Result<(), DownloadError> {
+    // The platform check comes first so non-Windows always reports the platform error.
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (dir, worker_published, progress, cancel);
+        return Err(DownloadError::Http(
+            "NVIDIA CUDA runtime auto-install is currently only supported on Windows".to_string(),
+        ));
+    }
+    #[cfg(target_os = "windows")]
+    if !worker_published {
+        return Err(DownloadError::WorkerUnpublished);
+    }
+    #[cfg(target_os = "windows")]
     install_runtime(dir, &current_manifest(), progress, cancel).await
 }
 
@@ -464,7 +496,8 @@ mod tests {
         let f = fixture().await; // archives reachable, /w.exe is 404
         let m = with_worker(manifest_for(&f, &sha(&f.zip), &sha(&f.lic)), &f, b"MZ-worker");
         let dir = tempdir("workerfirst");
-        install_runtime(&dir, &m, |_, _| {}, &AtomicBool::new(false)).await.unwrap_err();
+        let err = install_runtime(&dir, &m, |_, _| {}, &AtomicBool::new(false)).await.unwrap_err();
+        assert!(matches!(err, DownloadError::WorkerUnpublished), "a 404 on the worker asset means it is not published: {err:?}");
         assert!(!dir.join("a64.dll").exists(), "archives must not be fetched before the worker is verified");
     }
 
@@ -482,16 +515,34 @@ mod tests {
     #[test]
     fn tracked_pin_is_placeholder_or_valid_release_pin() {
         let p = parse_pin(include_str!("../../../packaging/ct2-worker.pin.json")).unwrap();
-        assert_eq!(p.version, env!("CARGO_PKG_VERSION"));
+        // The worker ships on its own cycle: the pin tracks the worker crate, not the app version.
+        let manifest = include_str!("../../liveaudio-asr-worker-ct2/Cargo.toml");
+        let worker_version = manifest
+            .lines()
+            .find_map(|l| l.strip_prefix("version = \"")?.strip_suffix('"'))
+            .expect("worker crate version");
+        assert_eq!(p.version, worker_version);
+        assert_eq!(
+            p.url,
+            format!("https://github.com/plynte-labs/LiveAudio/releases/download/ct2-worker-v{}/liveaudio-asr-worker-cuda.exe", p.version)
+        );
         if p.is_published() {
             assert_eq!(p.sha256.len(), 64);
             assert!(p.sha256.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()));
             assert!(p.size > 0);
-            assert_eq!(
-                p.url,
-                format!("https://github.com/plynte-labs/LiveAudio/releases/download/v{}/liveaudio-asr-worker-cuda.exe", p.version)
-            );
         }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[tokio::test]
+    async fn install_refuses_unpublished_worker_before_any_download() {
+        let dir = tempdir("unpub-install").join("never-created");
+        let err = install_nvidia_runtime_with(&dir, false, |_, _| panic!("no download may start"), &AtomicBool::new(false))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DownloadError::WorkerUnpublished), "{err:?}");
+        assert!(err.to_string().starts_with("worker_not_published"), "{err}");
+        assert!(!dir.exists(), "nothing may be created on disk");
     }
 
     #[test]
@@ -533,7 +584,7 @@ mod tests {
         std::fs::write(dir.join("worker.exe"), b"corrupt").unwrap();
         let m = with_worker(m, &dead, b"MZ-worker");
         let err = install_runtime(&dir, &m, |_, _| {}, &AtomicBool::new(false)).await.unwrap_err();
-        assert!(matches!(err, DownloadError::Status(404)), "{err:?}");
+        assert!(matches!(err, DownloadError::WorkerUnpublished), "{err:?}");
         assert_eq!(std::fs::read_to_string(dir.join("installed.json")).unwrap(), format!(r#"["{}"]"#, sha(&f.zip)));
     }
 
@@ -551,5 +602,26 @@ mod tests {
         install_runtime(&dir, &m, |_, _| {}, &AtomicBool::new(false)).await.unwrap();
         assert_eq!(std::fs::read(dir.join("b64.dll")).unwrap(), b"BBBB");
         assert!(runtime_status(&dir, &m).installed);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn install_nvidia_runtime_rejects_non_windows_without_touching_disk() {
+        let dir = std::env::temp_dir().join(format!(
+            "liveaudio-nv-unsupported-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut progress_called = false;
+        let err = install_nvidia_runtime(
+            &dir,
+            |_, _| progress_called = true,
+            &AtomicBool::new(false),
+        )
+        .await
+        .expect_err("non-Windows install must be rejected");
+        assert!(err.to_string().contains("only supported on Windows"), "{err}");
+        assert!(!progress_called);
+        assert!(!dir.exists(), "unsupported install must not create runtime directory");
     }
 }

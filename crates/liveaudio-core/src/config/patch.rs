@@ -21,8 +21,10 @@ pub const MCP_PATCHABLE_KEYS: &[&str] = &[
     "device",
     "asr_backend",
     "cpu_threads",
+    "cpu_threads_auto",
     "model_size",
     "blacklist",
+    "blacklist_enabled",
     "continuous_session",
     "subtitle_style",
     "subtitle_display_mode",
@@ -44,7 +46,9 @@ pub const MCP_PATCHABLE_KEYS: &[&str] = &[
     "save_vtt_enabled",
     "whisper_context_prompt_es",
     "whisper_context_prompt_en",
+    "context_prompt_enabled",
     "asr_language",
+    "follow_opencohost_language",
     "settings_navigation_mode",
     "language",
     "diagnostics_enabled",
@@ -82,12 +86,16 @@ pub fn is_key_enabled(key: &str, style_enabled: bool, system_enabled: bool) -> b
 pub const RESTART_REQUIRED_KEYS: &[&str] = &[
     "device",
     "asr_backend",
+    "cpu_threads",
+    "cpu_threads_auto",
     "model_size",
     "ws_port",
     "asr_language",
+    "follow_opencohost_language",
     "language",
     "whisper_context_prompt_es",
     "whisper_context_prompt_en",
+    "context_prompt_enabled",
     "silence_timeout",
     "max_chunk_duration",
     "vad_speech_pad_ms",
@@ -489,6 +497,20 @@ mod tests {
         assert!(MCP_PATCHABLE_KEYS.contains(&"asr_backend"));
         assert!(RESTART_REQUIRED_KEYS.contains(&"asr_backend"));
         assert_eq!(enum_values("asr_backend"), Some(VALID_ASR_BACKENDS));
+    }
+
+    #[test]
+    fn cpu_threads_keys_are_patchable_and_restart_required() {
+        assert!(MCP_PATCHABLE_KEYS.contains(&"cpu_threads"));
+        assert!(MCP_PATCHABLE_KEYS.contains(&"cpu_threads_auto"));
+        assert!(RESTART_REQUIRED_KEYS.contains(&"cpu_threads"));
+        assert!(RESTART_REQUIRED_KEYS.contains(&"cpu_threads_auto"));
+    }
+
+    #[test]
+    fn follow_opencohost_language_is_patchable_and_restart_required() {
+        assert!(MCP_PATCHABLE_KEYS.contains(&"follow_opencohost_language"));
+        assert!(RESTART_REQUIRED_KEYS.contains(&"follow_opencohost_language"));
     }
 
     #[test]

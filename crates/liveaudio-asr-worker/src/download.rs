@@ -48,6 +48,7 @@ fn pinned_revision(repo_id: &str) -> &'static str {
         "onnx-community/whisper-small" => "36050c46d777d46dc4b5f43f6d90574fc38f8732",
         "onnx-community/whisper-medium-ONNX" => "d3978248a6b5de6df7ec29ddfbde3993845fa806",
         "onnx-community/whisper-large-v3-turbo" => "360ebcde2559d60bb474678be3c1de9ef347d01a",
+        PARAKEET_REPO => "8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce",
         _ => "main",
     }
 }
@@ -162,6 +163,7 @@ pub fn resolve_repo_id(model_name: &str) -> String {
         return trimmed.to_string();
     }
     match trimmed.to_lowercase().as_str() {
+        "parakeet" => PARAKEET_REPO.to_string(),
         "tiny" | "tiny.en" => "onnx-community/whisper-tiny".to_string(),
         "base" | "base.en" => "onnx-community/whisper-base".to_string(),
         "small" | "small.en" => "onnx-community/whisper-small".to_string(),
@@ -193,6 +195,81 @@ pub fn resolve_cache_dir(cache_override: Option<&str>, repo_id: &str) -> PathBuf
         .join("models")
         .join("onnx")
         .join(&sanitized)
+}
+
+/// Repo of the Parakeet-TDT 0.6B v3 ONNX export (CC-BY-4.0).
+pub const PARAKEET_REPO: &str = "istupakov/parakeet-tdt-0.6b-v3-onnx";
+
+/// Files fetched for Parakeet. CPU uses the int8 encoder; a GPU adds the full-precision encoder and
+/// its external weights (`.data`, which must sit next to the `.onnx`). The preprocessor and the
+/// per-frame decoder always run on the CPU from the int8 files.
+pub fn parakeet_files(gpu: bool) -> Vec<&'static str> {
+    let encoder: &[&str] = if gpu {
+        &["encoder-model.onnx", "encoder-model.onnx.data"]
+    } else {
+        &["encoder-model.int8.onnx"]
+    };
+    let mut files = encoder.to_vec();
+    files.extend(["decoder_joint-model.int8.onnx", "nemo128.onnx", "vocab.txt", "config.json"]);
+    files
+}
+
+pub fn is_parakeet_model(model_name: &str) -> bool {
+    model_name.to_lowercase().contains("parakeet")
+}
+
+#[derive(Debug, Clone)]
+pub struct ParakeetPaths {
+    pub preprocessor: PathBuf,
+    pub encoder: PathBuf,
+    pub decoder_joint: PathBuf,
+    pub vocab: PathBuf,
+}
+
+fn parakeet_paths(dir: &Path, gpu: bool) -> Result<ParakeetPaths, String> {
+    for f in parakeet_files(gpu) {
+        let p = dir.join(f);
+        if !p.is_file() || std::fs::metadata(&p).map_or(true, |m| m.len() == 0) {
+            return Err(format!("Missing {f} in {}", dir.display()));
+        }
+    }
+    Ok(ParakeetPaths {
+        preprocessor: dir.join("nemo128.onnx"),
+        encoder: dir.join(if gpu { "encoder-model.onnx" } else { "encoder-model.int8.onnx" }),
+        decoder_joint: dir.join("decoder_joint-model.int8.onnx"),
+        vocab: dir.join("vocab.txt"),
+    })
+}
+
+/// Resolves (and downloads, verified against the pinned revision) the Parakeet files.
+pub async fn prepare_parakeet(
+    cache_override: Option<&str>,
+    local_files_only: bool,
+    gpu: bool,
+    mut progress_cb: impl FnMut(&str, &str, Option<f64>, Option<u64>, Option<u64>, Option<u64>, Option<f64>),
+) -> Result<ParakeetPaths, String> {
+    let cache_dir = resolve_cache_dir(cache_override, PARAKEET_REPO);
+    if local_files_only {
+        return parakeet_paths(&cache_dir, gpu);
+    }
+    std::fs::create_dir_all(&cache_dir)
+        .map_err(|e| format!("Failed to create cache directory {}: {e}", cache_dir.display()))?;
+    let client = Client::builder()
+        .user_agent(concat!("LiveAudio/", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(CONNECT_TIMEOUT)
+        .read_timeout(READ_IDLE_TIMEOUT)
+        .build()
+        .map_err(|e| format!("Failed to build HTTP client: {e}"))?;
+    let revision = pinned_revision(PARAKEET_REPO);
+    let siblings = match fetch_repo_siblings(&client, PARAKEET_REPO, revision).await {
+        Ok(s) => s,
+        // Offline: accept a complete earlier download.
+        Err(err) => return parakeet_paths(&cache_dir, gpu).map_err(|_| err),
+    };
+    let files: Vec<String> = parakeet_files(gpu).iter().map(|f| f.to_string()).collect();
+    fetch_required_files(&client, PARAKEET_REPO, revision, &cache_dir, &siblings, &files, &mut progress_cb)
+        .await?;
+    parakeet_paths(&cache_dir, gpu)
 }
 
 pub async fn prepare_model(
@@ -238,7 +315,7 @@ pub async fn prepare_model(
         .map_err(|e| format!("Failed to create cache directory {}: {e}", cache_dir.display()))?;
 
     let client = Client::builder()
-        .user_agent("LiveAudio/1.6.0")
+        .user_agent(concat!("LiveAudio/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(CONNECT_TIMEOUT)
         .read_timeout(READ_IDLE_TIMEOUT)
         .build()
@@ -331,6 +408,22 @@ pub async fn prepare_model(
         }
     }
 
+    fetch_required_files(&client, &repo_id, revision, &cache_dir, &siblings, &required_files, &mut progress_cb)
+        .await?;
+
+    verify_local_dir_with_precision(&cache_dir, precision, false)
+}
+
+/// Downloads every file in `required_files` that is not already complete in `cache_dir`.
+async fn fetch_required_files(
+    client: &Client,
+    repo_id: &str,
+    revision: &str,
+    cache_dir: &Path,
+    siblings: &[Sibling],
+    required_files: &[String],
+    progress_cb: &mut impl FnMut(&str, &str, Option<f64>, Option<u64>, Option<u64>, Option<u64>, Option<f64>),
+) -> Result<(), String> {
     let total_files = required_files.len();
     for (idx, rel_path) in required_files.iter().enumerate() {
         let dest_path = cache_dir.join(rel_path);
@@ -353,18 +446,18 @@ pub async fn prepare_model(
 
         let display_name = format!("({}/{}) {}", idx + 1, total_files, rel_path);
         download_single_file(
-            &client,
-            &resolve_file_url(&repo_id, revision, rel_path),
+            client,
+            &resolve_file_url(repo_id, revision, rel_path),
             rel_path,
             &expected,
             &dest_path,
             &display_name,
-            &mut progress_cb,
+            progress_cb,
         )
         .await?;
     }
 
-    verify_local_dir_with_precision(&cache_dir, precision, false)
+    Ok(())
 }
 
 /// Byte offset at which a download response body starts. A 200 carries the whole file; a 206 must
@@ -767,6 +860,63 @@ mod tests {
             resolve_file_url("o/r", "abc", "onnx/x.onnx"),
             "https://huggingface.co/o/r/resolve/abc/onnx/x.onnx"
         );
+    }
+
+    #[test]
+    fn parakeet_resolves_to_a_pinned_repo_and_is_detected_by_name() {
+        assert_eq!(resolve_repo_id("parakeet"), PARAKEET_REPO);
+        let rev = pinned_revision(PARAKEET_REPO);
+        assert_eq!(rev.len(), 40);
+        assert!(is_parakeet_model("parakeet"));
+        assert!(is_parakeet_model("Parakeet-TDT"));
+        assert!(!is_parakeet_model("small"));
+    }
+
+    #[test]
+    fn parakeet_cpu_downloads_only_the_int8_files() {
+        assert_eq!(
+            parakeet_files(false),
+            ["encoder-model.int8.onnx", "decoder_joint-model.int8.onnx", "nemo128.onnx", "vocab.txt", "config.json"]
+        );
+    }
+
+    #[test]
+    fn parakeet_gpu_adds_the_fp32_encoder_with_its_external_data() {
+        let files = parakeet_files(true);
+        assert_eq!(
+            files,
+            [
+                "encoder-model.onnx",
+                "encoder-model.onnx.data",
+                "decoder_joint-model.int8.onnx",
+                "nemo128.onnx",
+                "vocab.txt",
+                "config.json"
+            ]
+        );
+        assert!(!files.contains(&"encoder-model.int8.onnx"), "the GPU set never needs the int8 encoder");
+    }
+
+    #[test]
+    fn parakeet_paths_require_every_file_of_the_chosen_set() {
+        let dir = std::env::temp_dir().join(format!("liveaudio-pk-paths-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(parakeet_paths(&dir, false).is_err());
+        for f in parakeet_files(false) {
+            std::fs::write(dir.join(f), b"x").unwrap();
+        }
+        let paths = parakeet_paths(&dir, false).unwrap();
+        assert!(paths.encoder.ends_with("encoder-model.int8.onnx"));
+        assert!(paths.preprocessor.ends_with("nemo128.onnx"));
+        assert!(parakeet_paths(&dir, true).is_err(), "the fp32 encoder files are not there yet");
+        for f in parakeet_files(true) {
+            std::fs::write(dir.join(f), b"x").unwrap();
+        }
+        let gpu = parakeet_paths(&dir, true).unwrap();
+        assert!(gpu.encoder.ends_with("encoder-model.onnx"));
+        assert_eq!(gpu.encoder.parent(), dir.join("encoder-model.onnx.data").parent(), "data sits next to the model");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

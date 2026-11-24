@@ -8,7 +8,7 @@
 
 ## Project Facts
 
-- Open source (MIT). Version 1.6.0. No IP-protection constraints.
+- Open source (MIT). Version 1.6.5. No IP-protection constraints.
 - Rust workspace (`crates/`) plus a Tauri 2 desktop app (`desktop/`). The Python runtime has been removed: there is no Python ASR worker, no `uv`, no torch, and no `setup-runtime` command.
   - `liveaudio-audio`: capture via `cpal`; RNNoise noise suppression (off by default, `rnnoise_enabled`).
   - `liveaudio-vad`: Silero VAD v6 via ONNX Runtime (`ort`); the model is embedded.

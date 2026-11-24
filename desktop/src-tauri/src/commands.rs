@@ -13,6 +13,7 @@ use liveaudio_core::asr::worker::{
     presentation_text, transcript_text_from_result, worker_init_payload,
 };
 use liveaudio_core::asr::AsrTranscriptionResponse;
+use liveaudio_core::blacklist::{fold_diacritics, BlacklistVerdict};
 use liveaudio_core::config::{
     get_data_home, save_config as save_config_core, LiveAudioConfig, SubtitlePreset,
 };
@@ -1081,7 +1082,7 @@ fn session_sink_failure(stats: &SinkStats) -> Option<String> {
     })
 }
 
-/// Enumerate audio capture devices (Microphones and WASAPI Loopback).
+/// Enumerate audio capture devices (Microphones and System Loopback).
 #[tauri::command]
 pub async fn get_audio_devices() -> Result<Vec<AudioDeviceDto>, String> {
     let mut devices = vec![AudioDeviceDto {
@@ -1090,15 +1091,21 @@ pub async fn get_audio_devices() -> Result<Vec<AudioDeviceDto>, String> {
         is_default: true,
         kind: "input".to_string(),
     }];
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
     devices.push(AudioDeviceDto {
         id: "default_loopback".to_string(),
-        name: "Audio del sistema / Altavoces (WASAPI Loopback)".to_string(),
+        name: if cfg!(target_os = "windows") {
+            "Audio del sistema / Altavoces (WASAPI Loopback)".to_string()
+        } else {
+            "Audio del sistema / Altavoces (Loopback)".to_string()
+        },
         is_default: false,
         kind: "loopback".to_string(),
     });
 
-    let enumerated_devices = liveaudio_audio::enumerate_cpal_devices()
+    let enumerated_devices = tokio::task::spawn_blocking(liveaudio_audio::enumerate_cpal_devices)
+        .await
+        .map_err(|error| format!("Audio device enumeration task failed: {}", error))?
         .map_err(|error| format!("Failed to enumerate audio devices: {}", error))?;
     for device in enumerated_devices {
         devices.push(AudioDeviceDto {
@@ -1337,23 +1344,9 @@ async fn start_pipeline_locked(
         .next()
         .unwrap_or("small")
         .to_string();
-    let clean_lang = if !config.asr_language.is_empty() {
-        config.asr_language.clone()
-    } else {
-        config
-            .language
-            .as_deref()
-            .filter(|language| !language.is_empty() && *language != "auto")
-            .unwrap_or("es")
-            .to_string()
-    };
-    let prompt = if clean_lang == "en" {
-        &config.whisper_context_prompt_en
-    } else {
-        &config.whisper_context_prompt_es
-    };
+    let clean_lang = liveaudio_core::opencohost::effective_asr_language(&config);
 
-    let mut selected = match prepare_worker(liveaudio_core::backend::effective_backend_pref(&config.asr_backend, &config.device)).await {
+    let mut selected = match prepare_worker(liveaudio_core::backend::effective_backend_pref(&config.asr_backend, &config.device, &config.model_size)).await {
         Ok(selected) => selected,
         Err(error) => {
             *state.asr_state.write().await = "stopped".to_string();
@@ -1376,7 +1369,7 @@ async fn start_pipeline_locked(
         &config,
         &clean_model_name,
         &clean_lang,
-        Some(prompt.as_str()).filter(|prompt| !prompt.is_empty()),
+        config.context_prompt(&clean_lang),
     ));
     selected.config.decode_timeout =
         Some(Duration::from_secs(config.asr_decode_timeout_sec.into()));
@@ -1603,10 +1596,14 @@ async fn start_pipeline_locked(
                                             let text = transcript_text_from_result(payload);
                                             let text = text.trim();
                                             if !text.is_empty() {
-                                                let blacklist = state_events.config.read().await.blacklist.clone();
-                                                if !is_text_blacklisted(text, &blacklist) {
+                                                let shown = match state_events.config.read().await.filter_blacklist(text) {
+                                                    BlacklistVerdict::Keep => Some(text.to_string()),
+                                                    BlacklistVerdict::Trim(rest) => Some(rest),
+                                                    BlacklistVerdict::Drop => None,
+                                                };
+                                                if let Some(shown) = shown {
                                                     partial_gate_events.mark_shown(seq);
-                                                    publish_partial(&app_events, &ws_events, utt_id, &presentation_text(text));
+                                                    publish_partial(&app_events, &ws_events, utt_id, &presentation_text(&shown));
                                                 }
                                             }
                                         }
@@ -1627,10 +1624,19 @@ async fn start_pipeline_locked(
                                             };
 
                                             if !text.is_empty() {
-                                                let blacklist = state_events.config.read().await.blacklist.clone();
-                                                if is_text_blacklisted(text, &blacklist) {
-                                                    tracing::info!("[Blacklist Filter] Descartando transcripción alucinada [{}] ({} caracteres)", utt_id, text.chars().count());
+                                                let verdict = state_events.config.read().await.filter_blacklist(text);
+                                                if verdict == BlacklistVerdict::Drop {
+                                                    tracing::info!("[Blacklist Filter] Dropped hallucinated transcription [{}] ({} characters)", utt_id, text.chars().count());
                                                 } else {
+                                                    let trimmed_by_filter;
+                                                    let text = match verdict {
+                                                        BlacklistVerdict::Trim(rest) => {
+                                                            tracing::info!("[Blacklist Filter] Trimmed blacklisted phrases at the edges [{}] ({} -> {} characters)", utt_id, text.chars().count(), rest.chars().count());
+                                                            trimmed_by_filter = rest;
+                                                            trimmed_by_filter.as_str()
+                                                        }
+                                                        _ => text,
+                                                    };
                                                     let trimmed_text = {
                                                         let prev_guard = state_events.previous_transcript.read().await;
                                                         if let Some(ref prev) = *prev_guard {
@@ -2164,6 +2170,7 @@ pub(crate) fn build_gpu_backend_status(
     cuda_driver_version: Option<i32>,
     nvidia_runtime: NvidiaRuntimeStatus,
     ct2_worker: Option<&std::path::Path>,
+    worker_published: bool,
 ) -> GpuBackendStatusDto {
     let (backend, reason) =
         select_backend(pref, adapters, cuda_driver_version, &nvidia_runtime, ct2_worker);
@@ -2184,15 +2191,18 @@ pub(crate) fn build_gpu_backend_status(
             .collect(),
         cuda_driver_version,
         nvidia_runtime,
+        worker_published,
         license_urls: license_urls(),
         selected_backend: backend_name(backend).to_string(),
         reason: reason.to_string(),
+        default_cpu_threads: liveaudio_core::default_cpu_threads(),
+        max_cpu_threads: liveaudio_core::max_cpu_threads(),
     }
 }
 
 /// Backend preference the next start will use, so the pre-start status matches it (device cpu forces ORT).
 pub(crate) fn gpu_status_pref(config: &LiveAudioConfig) -> String {
-    effective_backend_pref(&config.asr_backend, &config.device).to_string()
+    effective_backend_pref(&config.asr_backend, &config.device, &config.model_size).to_string()
 }
 
 #[tauri::command]
@@ -2207,10 +2217,17 @@ pub async fn get_gpu_backend_status(
             cuda_driver_version(),
             nvidia_runtime_status(&nvidia_runtime_dir()),
             discover_ct2_worker().as_deref(),
+            liveaudio_core::nvidia_worker_published(),
         )
     })
     .await
     .map_err(|e| e.to_string())
+}
+
+/// What OpenCohost's locale file says and which file was checked, for the Advanced tab status line.
+#[tauri::command]
+pub fn opencohost_language_status() -> liveaudio_core::opencohost::LocaleStatus {
+    liveaudio_core::opencohost::locale_status_from_env()
 }
 
 /// Installed font families for the Style tab picker; empty off Windows or when DirectWrite fails.
@@ -2231,12 +2248,24 @@ struct NvidiaRuntimeProgress {
     total_bytes: Option<u64>,
 }
 
+fn ensure_nvidia_runtime_install_supported() -> Result<(), String> {
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("NVIDIA CUDA runtime auto-install is currently only supported on Windows".to_string())
+    }
+    #[cfg(target_os = "windows")]
+    {
+        Ok(())
+    }
+}
+
 /// Download and install the NVIDIA CUDA runtime. Only ever invoked by an explicit user action.
 #[tauri::command]
 pub async fn install_nvidia_runtime(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<NvidiaRuntimeStatus, String> {
+    ensure_nvidia_runtime_install_supported()?;
     let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
     {
         let mut slot = state.nvidia_install_cancel.lock().await;
@@ -2386,22 +2415,9 @@ fn utterance_seq(utterance_id: &str) -> u64 {
         .unwrap_or(0)
 }
 
-fn asr_language_and_prompt(cfg: &LiveAudioConfig) -> (String, Option<String>) {
-    let clean_lang = if !cfg.asr_language.is_empty() {
-        cfg.asr_language.clone()
-    } else {
-        cfg.language
-            .as_deref()
-            .filter(|language| !language.is_empty() && *language != "auto")
-            .unwrap_or("es")
-            .to_string()
-    };
-    let prompt = if clean_lang == "en" {
-        cfg.whisper_context_prompt_en.trim()
-    } else {
-        cfg.whisper_context_prompt_es.trim()
-    };
-    let context_prompt = (!prompt.is_empty()).then(|| prompt.to_string());
+pub(crate) fn asr_language_and_prompt(cfg: &LiveAudioConfig) -> (String, Option<String>) {
+    let clean_lang = liveaudio_core::opencohost::effective_asr_language(cfg);
+    let context_prompt = cfg.context_prompt(&clean_lang).map(str::to_string);
     (clean_lang, context_prompt)
 }
 
@@ -2594,6 +2610,23 @@ pub async fn restart_service(
     result
 }
 
+#[cfg(any(test, all(not(target_os = "windows"), not(target_os = "macos"))))]
+const APPIMAGE_SANITIZED_ENV_VARS: &[&str] = &[
+    "APPIMAGE",
+    "APPDIR",
+    "LD_LIBRARY_PATH",
+    "LD_PRELOAD",
+];
+
+#[cfg(any(test, all(not(target_os = "windows"), not(target_os = "macos"))))]
+pub(crate) fn sanitize_appimage_env(cmd: &mut std::process::Command, is_appimage: bool) {
+    if is_appimage {
+        for key in APPIMAGE_SANITIZED_ENV_VARS {
+            cmd.env_remove(key);
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn open_session_folder(state: State<'_, AppState>) -> Result<String, String> {
     let path = if let Some(p) = state.session_path.read().await.clone() {
@@ -2622,7 +2655,12 @@ pub async fn open_session_folder(state: State<'_, AppState>) -> Result<String, S
     #[cfg(target_os = "macos")]
     let result = std::process::Command::new("open").arg(&session).spawn();
     #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
-    let result = std::process::Command::new("xdg-open").arg(&session).spawn();
+    let result = {
+        let mut command = tokio::process::Command::new("xdg-open");
+        command.arg(&session);
+        sanitize_appimage_env(command.as_std_mut(), std::env::var_os("APPIMAGE").is_some());
+        command.spawn()
+    };
     result.map_err(|error| format!("Failed to open session folder: {}", error))?;
     Ok(session.to_string_lossy().to_string())
 }
@@ -2651,10 +2689,16 @@ pub(crate) fn author_profile_open_command() -> (&'static str, &'static [&'static
 #[tauri::command]
 pub async fn open_author_profile() -> Result<(), String> {
     let (program, args) = author_profile_open_command();
-    std::process::Command::new(program)
-        .args(args)
-        .spawn()
-        .map_err(|error| format!("Failed to open author profile: {error}"))?;
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    let result = {
+        let mut command = tokio::process::Command::new(program);
+        command.args(args);
+        sanitize_appimage_env(command.as_std_mut(), std::env::var_os("APPIMAGE").is_some());
+        command.spawn()
+    };
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    let result = std::process::Command::new(program).args(args).spawn();
+    result.map_err(|error| format!("Failed to open author profile: {error}"))?;
     Ok(())
 }
 
@@ -2670,18 +2714,19 @@ pub async fn open_nvidia_license_url(url: String) -> Result<(), String> {
         return Err("URL is not an NVIDIA license page".to_string());
     }
     #[cfg(target_os = "windows")]
-    let mut command = std::process::Command::new("rundll32.exe");
-    #[cfg(target_os = "windows")]
-    command.args(["url.dll,FileProtocolHandler", url.as_str()]);
+    let result = std::process::Command::new("rundll32.exe")
+        .args(["url.dll,FileProtocolHandler", url.as_str()])
+        .spawn();
     #[cfg(target_os = "macos")]
-    let mut command = std::process::Command::new("open");
+    let result = std::process::Command::new("open").arg(url.as_str()).spawn();
     #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
-    let mut command = std::process::Command::new("xdg-open");
-    #[cfg(not(target_os = "windows"))]
-    command.arg(url.as_str());
-    command
-        .spawn()
-        .map_err(|error| format!("Failed to open license page: {error}"))?;
+    let result = {
+        let mut cmd = tokio::process::Command::new("xdg-open");
+        sanitize_appimage_env(cmd.as_std_mut(), std::env::var_os("APPIMAGE").is_some());
+        cmd.arg(url.as_str());
+        cmd.spawn()
+    };
+    result.map_err(|error| format!("Failed to open license page: {error}"))?;
     Ok(())
 }
 
@@ -2704,18 +2749,19 @@ pub(crate) fn support_link_url(id: &str) -> Option<&'static str> {
 pub async fn open_support_link(id: String) -> Result<(), String> {
     let url = support_link_url(&id).ok_or_else(|| "Unknown support link".to_string())?;
     #[cfg(target_os = "windows")]
-    let mut command = std::process::Command::new("rundll32.exe");
-    #[cfg(target_os = "windows")]
-    command.args(["url.dll,FileProtocolHandler", url]);
+    let result = std::process::Command::new("rundll32.exe")
+        .args(["url.dll,FileProtocolHandler", url])
+        .spawn();
     #[cfg(target_os = "macos")]
-    let mut command = std::process::Command::new("open");
+    let result = std::process::Command::new("open").arg(url).spawn();
     #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
-    let mut command = std::process::Command::new("xdg-open");
-    #[cfg(not(target_os = "windows"))]
-    command.arg(url);
-    command
-        .spawn()
-        .map_err(|error| format!("Failed to open support link: {error}"))?;
+    let result = {
+        let mut cmd = tokio::process::Command::new("xdg-open");
+        sanitize_appimage_env(cmd.as_std_mut(), std::env::var_os("APPIMAGE").is_some());
+        cmd.arg(url);
+        cmd.spawn()
+    };
+    result.map_err(|error| format!("Failed to open support link: {error}"))?;
     Ok(())
 }
 
@@ -3000,53 +3046,6 @@ pub async fn get_recent_logs(max_lines: Option<usize>) -> Result<Vec<String>, St
     Ok(reversed)
 }
 
-fn fold_diacritics(s: &str) -> String {
-    s.chars()
-        .flat_map(|c| c.to_lowercase())
-        .map(|c| match c {
-            'á' | 'à' | 'ä' | 'â' | 'ã' | 'ā' => 'a',
-            'é' | 'è' | 'ë' | 'ê' | 'ē' => 'e',
-            'í' | 'ì' | 'ï' | 'î' | 'ī' => 'i',
-            'ó' | 'ò' | 'ö' | 'ô' | 'õ' | 'ō' => 'o',
-            'ú' | 'ù' | 'ü' | 'û' | 'ū' => 'u',
-            other => other,
-        })
-        .collect()
-}
-
-/// Checks whether a transcribed text matches any phrase in the blacklist.
-/// Matches case-insensitively, folds diacritics/accents, splits on commas/semicolons/newlines,
-/// trims whitespace, and strips standard and typographical quotes.
-pub fn is_text_blacklisted(text: &str, blacklist_csv: &str) -> bool {
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return false;
-    }
-    let text_folded = fold_diacritics(trimmed);
-    blacklist_csv
-        .split([',', ';', '\n', '\r'])
-        .map(|entry| {
-            entry
-                .trim()
-                .trim_matches(|c| {
-                    c == '"'
-                        || c == '\''
-                        || c == '“'
-                        || c == '”'
-                        || c == '‘'
-                        || c == '’'
-                        || c == '«'
-                        || c == '»'
-                })
-                .trim()
-        })
-        .filter(|entry| !entry.is_empty())
-        .any(|phrase| {
-            let phrase_folded = fold_diacritics(phrase);
-            !phrase_folded.is_empty() && text_folded.contains(&phrase_folded)
-        })
-}
-
 #[derive(Debug, Clone)]
 struct WordToken {
     normalized: String,
@@ -3224,5 +3223,36 @@ mod commands_tests {
         let message = desktop_runtime_preflight_error(&error);
         assert!(!message.contains("Python"));
         assert!(message.contains("ASR runtime"));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn test_install_nvidia_runtime_rejected_off_windows() {
+        let err = ensure_nvidia_runtime_install_supported()
+            .expect_err("NVIDIA runtime install must be rejected on non-Windows");
+        assert!(err.contains("only supported on Windows"), "{err}");
+    }
+
+    #[test]
+    fn test_sanitize_appimage_env_removes_vars_when_appimage() {
+        let mut cmd = std::process::Command::new("xdg-open");
+        sanitize_appimage_env(&mut cmd, true);
+        let removed: Vec<&std::ffi::OsStr> = cmd
+            .get_envs()
+            .filter_map(|(key, value)| value.is_none().then_some(key))
+            .collect();
+        for expected in APPIMAGE_SANITIZED_ENV_VARS {
+            assert!(
+                removed.contains(&std::ffi::OsStr::new(expected)),
+                "expected {expected} to be removed from child env, got {removed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_sanitize_appimage_env_noop_when_not_appimage() {
+        let mut cmd = std::process::Command::new("xdg-open");
+        sanitize_appimage_env(&mut cmd, false);
+        assert_eq!(cmd.get_envs().count(), 0);
     }
 }

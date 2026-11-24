@@ -16,7 +16,7 @@
       <div class="brand" data-tauri-drag-region>
         <img src="assets/logo.png" alt="LiveAudio Fran" class="brand-logo" data-tauri-drag-region>
         <h1>LiveAudio</h1>
-        <button type="button" id="btn-about" class="brand-badge" aria-label="About LiveAudio" data-i18n-aria-label="btn_about" title="About LiveAudio" data-i18n-title="btn_about" aria-haspopup="dialog"><span data-i18n="app_version">v1.6.0</span><span class="brand-badge-more"><span aria-hidden="true">&middot;</span> <span data-i18n="badge_info_label">Info y estadísticas</span></span><svg class="lucide lucide-chevron-right" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></button>
+        <button type="button" id="btn-about" class="brand-badge" aria-label="About LiveAudio" data-i18n-aria-label="btn_about" title="About LiveAudio" data-i18n-title="btn_about" aria-haspopup="dialog"><svg class="lucide lucide-info" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg><span data-i18n="app_version">v1.6.5</span><span class="brand-badge-more"><span aria-hidden="true">&middot;</span> <span data-i18n="badge_info_label">Info y estadísticas</span></span><svg class="lucide lucide-chevron-right" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></button>
         <button type="button" id="badge-header-update" class="badge-header-update" role="status" aria-live="polite" title="Actualización disponible" data-i18n-title="lbl_group_updates" hidden>
           <span class="badge-update-dot"></span>
           <span id="badge-header-update-text">Update</span>
@@ -25,11 +25,6 @@
 
       <div class="header-right">
         <div class="header-status">
-          <div id="pill-status" class="pill state-stopped" role="status" aria-live="polite">
-            <span class="pill-dot"></span>
-            <span id="pill-status-text">Detenido</span>
-          </div>
-
           <div id="pill-vad" class="pill pill-vad" role="status" aria-live="polite">
             <span class="pill-dot"></span>
             <span id="pill-vad-text">VAD: Silencio</span>
@@ -43,14 +38,14 @@
                 <span id="pill-ws-text">WS: 8765 (0 cli)</span>
               </div>
 
-              <div id="pill-hw" class="pill" title="Hardware y modelo ASR activo">
+              <div id="pill-hw" class="pill" title="Hardware y modelo ASR activo" data-i18n-title="title_pill_hw">
                 small | CUDA
               </div>
             </div>
           </details>
 
           <div class="lang-switch-container">
-            <select id="select-ui-lang" class="ui-lang-select" title="Idioma de interfaz / UI Language">
+            <select id="select-ui-lang" class="ui-lang-select" title="Idioma de la interfaz" data-i18n-title="title_ui_language">
               <option value="es">🇪🇸 ES</option>
               <option value="en">🇺🇸 EN</option>
             </select>
@@ -77,7 +72,7 @@
       <!-- Left Pane: Controls & Settings -->
       <div class="left-pane">
         <!-- Master Action Bar -->
-        <div class="master-action-bar">
+        <div class="master-action-bar" role="status" aria-live="polite">
           <button id="btn-toggle-service" class="btn-toggle-service start">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
               <polygon points="5 3 19 12 5 21 5 3"></polygon>
@@ -140,7 +135,7 @@
                 <label for="select-audio-device" data-i18n="lbl_audio_device">Fuente de audio</label>
                 <select id="select-audio-device" class="form-control">
                   <option value="default_microphone" data-i18n="opt_default_mic">Micrófono predeterminado del sistema</option>
-                  <option value="wasapi_loopback" data-i18n="opt_loopback">Audio del sistema (WASAPI Loopback)</option>
+                  <option value="default_loopback" data-i18n="opt_loopback">Audio del sistema (Loopback)</option>
                 </select>
                 <span class="form-hint" data-i18n="hint_audio_device">Elige el micrófono o el audio del sistema que quieres transcribir.</span>
               </div>
@@ -152,6 +147,15 @@
                   <option value="en" data-i18n="opt_asr_en">Inglés (en)</option>
                 </select>
                 <span class="form-hint" data-i18n="hint_asr_lang">Selecciona el idioma que se habla en el audio.</span>
+              </div>
+
+              <div class="form-group">
+                <label class="switch-label">
+                  <span class="switch-track"><input type="checkbox" id="check-follow-opencohost-language" class="switch-input" aria-describedby="hint-follow-opencohost-language status-opencohost-language"><span class="switch-slider"></span></span>
+                  <span data-i18n="lbl_follow_opencohost_language">Seguir el idioma de OpenCohost</span>
+                </label>
+                <span id="hint-follow-opencohost-language" class="form-hint" data-i18n="hint_follow_opencohost_language">Usa el idioma en el que habla Kira en OpenCohost como idioma hablado. Se aplica al iniciar una sesión.</span>
+                <span id="status-opencohost-language" class="form-hint" role="status" aria-live="polite" hidden></span>
               </div>
 
               <div class="form-group">
@@ -225,7 +229,7 @@
               <div class="card style-card" id="card-style-preview">
                 <div class="card-title"><span data-i18n="title_style_card_preview">Vista previa</span></div>
                 <div class="sub-preview-row">
-                  <div id="sub-style-preview" class="sub-style-preview" aria-label="Así se verán tus subtítulos">
+                  <div id="sub-style-preview" class="sub-style-preview" aria-label="Así se verán tus subtítulos" data-i18n-aria-label="sub_style_preview_text">
                     <span id="sub-style-preview-text" class="sub-box visible style-default" data-i18n="sub_style_preview_text">Así se verán tus subtítulos</span>
                   </div>
                   <button type="button" id="btn-sub-preview-play" class="btn-secondary btn-compact" title="Reproducir animación" data-i18n-title="title_sub_preview_play" data-i18n-aria-label="title_sub_preview_play" aria-label="Reproducir animación">
@@ -332,17 +336,24 @@
               </div>
 
               <div class="card adv-card" id="card-adv-engine">
-                <div class="card-title"><span data-i18n="title_adv_engine">Motor y rendimiento</span><span class="badge-restart" data-i18n="badge_restart">Requiere reinicio</span></div>
+                <div class="card-title"><span class="title-with-icon"><svg class="lucide lucide-cpu title-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9" rx="1"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/></svg><span data-i18n="title_adv_engine">Motor y rendimiento</span></span><span class="badge-restart" data-i18n="badge_restart">Requiere reinicio</span></div>
+                <p class="adv-desc" data-i18n="desc_adv_engine">Selecciona el modelo de reconocimiento y el motor que lo ejecuta.</p>
                 <div class="form-row">
                   <div class="form-group">
-                    <label for="select-model-size" data-i18n="lbl_model_size">Tamaño del modelo Whisper</label>
+                    <label for="select-model-size" data-i18n="lbl_model_size">Modelo</label>
                     <select id="select-model-size" class="form-control">
-                      <option value="tiny (Más rápido, baja precisión)" data-i18n="opt_model_tiny">tiny (Más rápido, baja precisión)</option>
-                      <option value="base (Rápido)" data-i18n="opt_model_base">base (Rápido)</option>
-                      <option value="small (Balance CPU)" selected data-i18n="opt_model_small">small (Balance CPU / GPU equilibrado)</option>
-                      <option value="turbo (Máxima precisión GPU)" data-i18n="opt_model_turbo">turbo (Máxima precisión GPU)</option>
+                      <optgroup label="Whisper">
+                        <option value="tiny (Más rápido, baja precisión)" data-i18n="opt_model_tiny">tiny (Más rápido, baja precisión)</option>
+                        <option value="base (Rápido)" data-i18n="opt_model_base">base (Rápido)</option>
+                        <option value="small (Balance CPU)" selected data-i18n="opt_model_small">small (Balance CPU / GPU equilibrado)</option>
+                        <option value="turbo (Máxima precisión GPU)" data-i18n="opt_model_turbo">turbo (Máxima precisión GPU)</option>
+                      </optgroup>
+                      <optgroup label="Parakeet">
+                        <option value="parakeet (Multilingüe ES/EN, CPU)" data-i18n="opt_model_parakeet">parakeet (Multilingüe ES/EN, CPU o GPU)</option>
+                      </optgroup>
                     </select>
                     <span class="form-hint" data-i18n="hint_model_size">Los modelos grandes pueden consumir más memoria de GPU.</span>
+                    <span id="hint-parakeet-engine" class="form-hint" data-i18n="hint_parakeet_engine" hidden>Parakeet usa la GPU si la seleccionas (descarga inicial más grande, de unos 2,5 GB) y int8 en la CPU (unos 0,7 GB). Detecta el idioma automáticamente.</span>
                   </div>
                   <div class="form-group">
                     <label for="select-compute-device" data-i18n="lbl_compute_device">Dispositivo de cómputo</label>
@@ -359,6 +370,10 @@
                     <input type="range" id="slider-cpu-threads" min="1" max="16" step="1" value="8">
                     <span id="val-cpu-threads" class="slider-value">8</span>
                   </div>
+                  <label class="switch-label">
+                    <span class="switch-track"><input type="checkbox" id="check-cpu-threads-auto" class="switch-input"><span class="switch-slider"></span></span>
+                    <span data-i18n="lbl_cpu_threads_auto">Automático</span>
+                  </label>
                   <span class="form-hint" data-i18n="hint_cpu_threads">Número de hilos que se usarán al transcribir con CPU.</span>
                 </div>
                 <div class="form-group engine-summary">
@@ -376,46 +391,33 @@
                   <label for="select-asr-backend" data-i18n="lbl_asr_backend">Motor de transcripción</label>
                   <select id="select-asr-backend" class="form-control">
                     <option value="auto" selected data-i18n="opt_asr_backend_auto">Automático (recomendado)</option>
-                    <option value="ort" data-i18n="opt_asr_backend_ort">Compatible (DirectML / CPU)</option>
-                    <option value="ct2_cuda" data-i18n="opt_asr_backend_ct2">NVIDIA CUDA</option>
+                    <option value="ort" data-i18n="opt_asr_backend_ort">Compatible (GPU / CPU)</option>
+                    <option value="ct2_cuda" id="asr-backend-ct2" data-i18n="opt_asr_backend_ct2">NVIDIA CUDA</option>
                   </select>
                   <span class="form-hint" data-i18n="hint_asr_backend">Automático usa NVIDIA CUDA cuando está disponible; si no, el modo compatible.</span>
                 </div>
-                <div class="form-group">
-                  <details id="engine-technical-details">
-                    <summary data-i18n="engine_technical_details">Detalles técnicos</summary>
-                    <div id="gpu-status-text" class="form-hint" role="status" style="white-space: pre-line;"></div>
-                  </details>
-                </div>
-                <div class="form-group" id="group-runtime-maintenance">
-                  <label data-i18n="lbl_runtime_maintenance">Entorno y Mantenimiento de ASR</label>
-                  <div class="button-row" style="display: flex; gap: 8px; margin-top: 6px;">
-                    <button id="btn-runtime-repair" class="btn-secondary" type="button" data-i18n="btn_runtime_repair">Reparar entorno de ASR</button>
-                    <button id="btn-runtime-cancel" class="btn-secondary" type="button" data-i18n="btn_runtime_cancel" hidden>Cancelar preparación</button>
+                <details id="engine-technical-details" class="adv-more">
+                  <summary data-i18n="engine_technical_details">Detalles técnicos</summary>
+                  <div id="gpu-status-text" class="form-hint" role="status" style="white-space: pre-line;"></div>
+                  <div class="form-group" id="group-runtime-maintenance">
+                    <label data-i18n="lbl_runtime_maintenance">Entorno y Mantenimiento de ASR</label>
+                    <div class="button-row" style="display: flex; gap: 8px; margin-top: 6px;">
+                      <button id="btn-runtime-repair" class="btn-secondary" type="button" data-i18n="btn_runtime_repair">Reparar entorno de ASR</button>
+                      <button id="btn-runtime-cancel" class="btn-secondary" type="button" data-i18n="btn_runtime_cancel" hidden>Cancelar preparación</button>
+                    </div>
+                    <span class="form-hint" data-i18n="hint_runtime_maintenance">Instala o sincroniza el motor nativo de ASR ONNX y modelos para reconocimiento local.</span>
                   </div>
-                  <span class="form-hint" data-i18n="hint_runtime_maintenance">Instala o sincroniza el motor nativo de ASR ONNX y modelos para reconocimiento local.</span>
-                </div>
+                </details>
               </div>
 
               <div class="card adv-card" id="card-adv-voice">
-                <div class="card-title"><span data-i18n="title_adv_voice">Detección de voz</span><span class="badge-restart" data-i18n="badge_restart">Requiere reinicio</span></div>
+                <div class="card-title"><span class="title-with-icon"><svg class="lucide lucide-audio-lines title-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 10v3"/><path d="M6 6v11"/><path d="M10 3v18"/><path d="M14 8v7"/><path d="M18 5v13"/><path d="M22 10v3"/></svg><span data-i18n="title_adv_voice">Detección de voz</span></span><span class="badge-restart" data-i18n="badge_restart">Requiere reinicio</span></div>
+                <p class="adv-desc" data-i18n="desc_adv_voice">Cuándo se detecta la voz y cómo se limpia el audio antes de transcribir.</p>
                 <div class="form-row">
                   <div class="form-group">
                     <label for="slider-silence-timeout" data-i18n="lbl_silence_timeout">Pausa para cerrar una frase</label>
                     <div class="slider-container"><input type="range" id="slider-silence-timeout" min="0.3" max="2.0" step="0.1" value="0.5"><span id="val-silence-timeout" class="slider-value">0.5s</span></div>
                     <span class="form-hint" data-i18n="hint_silence_timeout">Pausa de voz antes de procesar la frase.</span>
-                  </div>
-                  <div class="form-group">
-                    <label for="slider-max-chunk" data-i18n="lbl_max_chunk">Duración máxima del segmento</label>
-                    <div class="slider-container"><input type="range" id="slider-max-chunk" min="1.0" max="30.0" step="0.5" value="3.0"><span id="val-max-chunk" class="slider-value">3.0s</span></div>
-                    <span class="form-hint" data-i18n="hint_max_chunk">Límite antes de procesar un segmento de audio.</span>
-                  </div>
-                </div>
-                <div class="form-row">
-                  <div class="form-group">
-                    <label for="slider-vad-pad" data-i18n="lbl_vad_pad">Audio previo a la voz (VAD)</label>
-                    <div class="slider-container"><input type="range" id="slider-vad-pad" min="0" max="500" step="25" value="200"><span id="val-vad-pad" class="slider-value">200ms</span></div>
-                    <span class="form-hint" data-i18n="hint_vad_pad">Audio previo incluido para evitar cortar el inicio de una palabra.</span>
                   </div>
                   <div class="form-group">
                     <label for="slider-vad-threshold" data-i18n="lbl_vad_threshold">Sensibilidad de voz</label>
@@ -430,10 +432,26 @@
                   </label>
                   <span id="hint-rnnoise-enabled" class="form-hint" data-i18n="hint_rnnoise_enabled">When enabled, local RNNoise runs before VAD after the service restarts.</span>
                 </div>
+                <details class="adv-more">
+                  <summary data-i18n="adv_more_voice">Ajuste fino</summary>
+                  <div class="form-row">
+                    <div class="form-group">
+                      <label for="slider-max-chunk" data-i18n="lbl_max_chunk">Duración máxima del segmento</label>
+                      <div class="slider-container"><input type="range" id="slider-max-chunk" min="1.0" max="30.0" step="0.5" value="3.0"><span id="val-max-chunk" class="slider-value">3.0s</span></div>
+                      <span class="form-hint" data-i18n="hint_max_chunk">Límite antes de procesar un segmento de audio.</span>
+                    </div>
+                    <div class="form-group">
+                      <label for="slider-vad-pad" data-i18n="lbl_vad_pad">Audio previo a la voz (VAD)</label>
+                      <div class="slider-container"><input type="range" id="slider-vad-pad" min="0" max="500" step="25" value="200"><span id="val-vad-pad" class="slider-value">200ms</span></div>
+                      <span class="form-hint" data-i18n="hint_vad_pad">Audio previo incluido para evitar cortar el inicio de una palabra.</span>
+                    </div>
+                  </div>
+                </details>
               </div>
 
               <div class="card adv-card" id="card-adv-subtitles">
-                <div class="card-title"><span data-i18n="title_adv_subtitles">Subtítulos en vivo</span><span class="badge-restart" data-i18n="badge_restart">Requiere reinicio</span></div>
+                <div class="card-title"><span class="title-with-icon"><svg class="lucide lucide-captions title-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="14" x="3" y="5" rx="2" ry="2"/><path d="M7 15h4M15 15h2M7 11h2M13 11h4"/></svg><span data-i18n="title_adv_subtitles">Subtítulos en vivo</span></span><span class="badge-restart" data-i18n="badge_restart">Requiere reinicio</span></div>
+                <p class="adv-desc" data-i18n="desc_adv_subtitles">Texto provisional mientras hablas y entrega de subtítulos atrasados.</p>
                 <div class="form-group">
                   <label class="switch-label">
                     <span class="switch-track"><input type="checkbox" id="check-live-partial-subtitles-enabled" class="switch-input" aria-describedby="hint-live-partial-subtitles"><span class="switch-slider"></span></span>
@@ -441,53 +459,67 @@
                   </label>
                   <span id="hint-live-partial-subtitles" class="form-hint" data-i18n="hint_live_partial_subtitles">Shows provisional text while you speak after restart; adds GPU/CPU load.</span>
                 </div>
-                <div class="form-group">
-                  <label for="select-backlog-policy" data-i18n="lbl_backlog_policy">Entrega de subtítulos atrasados</label>
-                  <select id="select-backlog-policy" class="form-control">
-                    <option value="auto" selected data-i18n="opt_backlog_auto">Automática (Recomendado)</option>
-                    <option value="live_only" data-i18n="opt_backlog_live_only">Solo subtítulos en vivo</option>
-                    <option value="send_all" data-i18n="opt_backlog_send_all">Enviar todos</option>
-                  </select>
-                  <span class="form-hint" data-i18n="hint_backlog_policy">Controla cómo se entregan a OBS los subtítulos que se acumulan.</span>
-                </div>
-                <div class="form-row">
+                <details class="adv-more">
+                  <summary data-i18n="adv_more_subtitles">Retraso y acumulación</summary>
                   <div class="form-group">
-                    <label for="slider-max-live-delay" data-i18n="lbl_max_live_delay">Retraso máximo</label>
-                    <div class="slider-container"><input type="range" id="slider-max-live-delay" min="1.0" max="60.0" step="1.0" value="10.0"><span id="val-max-live-delay" class="slider-value">10.0s</span></div>
-                    <span class="form-hint" data-i18n="hint_max_live_delay">Retraso permitido antes de descartar subtítulos acumulados.</span>
+                    <label for="select-backlog-policy" data-i18n="lbl_backlog_policy">Entrega de subtítulos atrasados</label>
+                    <select id="select-backlog-policy" class="form-control">
+                      <option value="auto" selected data-i18n="opt_backlog_auto">Automática (Recomendado)</option>
+                      <option value="live_only" data-i18n="opt_backlog_live_only">Solo subtítulos en vivo</option>
+                      <option value="send_all" data-i18n="opt_backlog_send_all">Enviar todos</option>
+                    </select>
+                    <span class="form-hint" data-i18n="hint_backlog_policy">Controla cómo se entregan a OBS los subtítulos que se acumulan.</span>
                   </div>
-                  <div class="form-group">
-                    <label for="slider-catchup-interval" data-i18n="lbl_catchup_interval">Pausa entre subtítulos atrasados</label>
-                    <div class="slider-container"><input type="range" id="slider-catchup-interval" min="0.1" max="5.0" step="0.1" value="1.5"><span id="val-catchup-interval" class="slider-value">1.5s</span></div>
-                    <span class="form-hint" data-i18n="hint_catchup_interval">Pausa entre elementos históricos enviados a OBS.</span>
+                  <div class="form-row">
+                    <div class="form-group">
+                      <label for="slider-max-live-delay" data-i18n="lbl_max_live_delay">Retraso máximo</label>
+                      <div class="slider-container"><input type="range" id="slider-max-live-delay" min="1.0" max="120.0" step="1.0" value="10.0"><span id="val-max-live-delay" class="slider-value">10.0s</span></div>
+                      <span class="form-hint" data-i18n="hint_max_live_delay">Retraso permitido antes de descartar subtítulos acumulados.</span>
+                    </div>
+                    <div class="form-group">
+                      <label for="slider-catchup-interval" data-i18n="lbl_catchup_interval">Pausa entre subtítulos atrasados</label>
+                      <div class="slider-container"><input type="range" id="slider-catchup-interval" min="0" max="10" step="0.1" value="1.5"><span id="val-catchup-interval" class="slider-value">1.5s</span></div>
+                      <span class="form-hint" data-i18n="hint_catchup_interval">Pausa entre elementos históricos enviados a OBS.</span>
+                    </div>
                   </div>
-                </div>
+                </details>
               </div>
 
               <div class="card adv-card" id="card-adv-vocab">
-                <div class="card-title"><span data-i18n="title_adv_vocab">Vocabulario y filtros</span></div>
+                <div class="card-title"><span class="title-with-icon"><svg class="lucide lucide-book-a title-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H19a1 1 0 0 1 1 1v18a1 1 0 0 1-1 1H6.5a1 1 0 0 1 0-5H20"/><path d="m8 13 4-7 4 7"/><path d="M9.1 11h5.7"/></svg><span data-i18n="title_adv_vocab">Vocabulario y filtros</span></span></div>
+                <p class="adv-desc" data-i18n="desc_adv_vocab">Términos que ayudan al reconocimiento y frases que se descartan.</p>
                 <div class="form-group" id="group-prompt">
+                  <label class="switch-label">
+                    <span class="switch-track"><input type="checkbox" id="check-context-prompt-enabled" class="switch-input" aria-describedby="hint-prompt-whisper-only"><span class="switch-slider"></span></span>
+                    <span data-i18n="lbl_context_prompt_enabled">Use context prompt</span>
+                  </label>
+                  <span id="hint-prompt-whisper-only" class="form-hint" data-i18n="hint_prompt_whisper_only">The prompt only affects Whisper models; Parakeet ignores it.</span>
                   <div class="lang-header-row">
                     <div class="lang-field-title"><label for="prompt-es" id="lbl-prompt-title" data-i18n="lbl_prompt">Vocabulario y contexto</label><span id="badge-prompt-lang" class="badge-lang-indicator">🇪🇸 ES</span><span class="badge-restart" data-i18n="badge_restart">Requiere reinicio</span></div>
                     <button type="button" id="btn-suggest-prompt-es" class="btn-link" data-i18n="btn_use_preset_prompt">Cargar sugerencia</button>
                   </div>
                   <textarea id="prompt-es" class="form-control" rows="3" placeholder="Términos técnicos, jerga de juego, nombres propios..." data-i18n-placeholder="ph_prompt_es"></textarea>
-                  <span id="hint-prompt" class="form-hint" data-i18n="hint_prompt_es">Añade vocabulario que ayude al reconocimiento en el idioma seleccionado.</span>
+                  <span id="hint-prompt" class="form-hint">Añade vocabulario que ayude al reconocimiento en el idioma seleccionado.</span>
                 </div>
                 <div class="form-group" id="group-blacklist">
+                  <label class="switch-label">
+                    <span class="switch-track"><input type="checkbox" id="check-blacklist-enabled" class="switch-input"><span class="switch-slider"></span></span>
+                    <span data-i18n="lbl_blacklist_enabled">Filter blacklisted phrases</span>
+                  </label>
                   <div class="lang-header-row" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
                     <div style="display: flex; align-items: center; gap: 8px;">
                       <label for="input-blacklist" id="lbl-blacklist" data-i18n="lbl_blacklist">Filtro de Frases Alucinadas (Blacklist)</label>
                       <span id="badge-blacklist-lang" class="badge-lang-indicator">🇪🇸 ES</span>
                     </div>
                   </div>
-                  <textarea id="input-blacklist" class="form-control" rows="2" placeholder="Palabras separadas por comas que se omitirán si Whisper las genera en silencio..."></textarea>
-                  <span id="hint-blacklist" class="form-hint" data-i18n="hint_blacklist">Palabras separadas por comas que se omitirán si Whisper las genera en silencio.</span>
+                  <textarea id="input-blacklist" class="form-control" rows="2" placeholder="Frases separadas por comas que se quitan si Whisper las inventa en silencio..." data-i18n-placeholder="ph_blacklist"></textarea>
+                  <span id="hint-blacklist" class="form-hint" data-i18n="hint_blacklist">Frases separadas por comas. Se quitan cuando son toda la transcripción o están al inicio o al final; las que quedan en medio del texto se conservan.</span>
                 </div>
               </div>
 
               <div class="card adv-card" id="card-adv-network">
-                <div class="card-title"><span data-i18n="title_adv_network">OBS e integraciones</span></div>
+                <div class="card-title"><span class="title-with-icon"><svg class="lucide lucide-plug title-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22v-5"/><path d="M9 8V2"/><path d="M15 8V2"/><path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z"/></svg><span data-i18n="title_adv_network">OBS e integraciones</span></span></div>
+                <p class="adv-desc" data-i18n="desc_adv_network">Puerto de OBS, eventos y quién puede conectarse a LiveAudio.</p>
                 <div class="form-group">
                   <div class="field-label-row"><label for="input-ws-port" data-i18n="lbl_ws_port">Puerto local de OBS</label><span class="badge-restart" data-i18n="badge_restart">Requiere reinicio</span></div>
                   <input type="number" id="input-ws-port" class="form-control" value="8765" min="1024" max="65535">
@@ -501,48 +533,51 @@
                   </label>
                   <span id="hint-acoustic-events-enabled" class="form-hint" data-i18n="hint_acoustic_events_enabled">VAD start/end events containing metadata only are sent to connected WebSocket clients after restart.</span>
                 </div>
-                <div class="form-group">
-                  <label class="switch-label">
-                    <span class="switch-track"><input type="checkbox" id="check-mcp-style-enabled" class="switch-input" aria-describedby="hint-mcp-style-enabled"><span class="switch-slider"></span></span>
-                    <span data-i18n="lbl_mcp_style_enabled">Permitir control de estilos a agentes de IA (MCP - Bajo riesgo)</span>
-                  </label>
-                  <span id="hint-mcp-style-enabled" class="form-hint" data-i18n="hint_mcp_style_enabled">Permite que un asistente de IA local lea y cambie únicamente colores, temas, presets y modo de subtítulos. Desactivado por defecto.</span>
-                </div>
-                <div class="form-group">
-                  <label class="switch-label">
-                    <span class="switch-track"><input type="checkbox" id="check-mcp-system-enabled" class="switch-input" aria-describedby="hint-mcp-system-enabled"><span class="switch-slider"></span></span>
-                    <span data-i18n="lbl_mcp_system_enabled">Permitir control del sistema a agentes de IA (MCP - Riesgo medio)</span>
-                  </label>
-                  <span id="hint-mcp-system-enabled" class="form-hint" data-i18n="hint_mcp_system_enabled">Permite que un asistente de IA local lea y cambie modelo, VAD, dispositivo, prompts y red. La lista de puertos permitidos y rutas nunca son modificables por MCP. Desactivado por defecto.</span>
-                </div>
-              </div>
-
-              <div class="card adv-card" id="card-adv-allowed-origins">
-                <div class="card-title"><span data-i18n="title_allowed_connections">Conexiones locales permitidas</span></div>
-                <span class="form-hint" data-i18n="hint_allowed_connections">Solo para aplicaciones en esta PC. Permitir un puerto deja que cualquier página o app en ese puerto lea los subtítulos en vivo.</span>
-
-                <div class="form-group" style="margin-top: 12px;">
-                  <label data-i18n="lbl_allowed_ports">Puertos permitidos</label>
-                  <div id="allowed-ports-list" class="ports-list" role="list"></div>
-                </div>
-
-                <div class="form-group" style="margin-top: 12px;">
-                  <label for="input-add-allowed-port" data-i18n="lbl_add_port">Añadir puerto</label>
-                  <div style="display: flex; gap: 8px; margin-top: 4px;">
-                    <input type="number" id="input-add-allowed-port" class="form-control" min="1" max="65535" placeholder="5173" aria-describedby="error-add-allowed-port" style="max-width: 140px;">
-                    <button type="button" id="btn-add-allowed-port" class="btn-secondary" data-i18n="btn_add_port">Permitir</button>
+                <details class="adv-more">
+                  <summary data-i18n="adv_more_network">Acceso y permisos</summary>
+                  <div class="form-group">
+                    <label class="switch-label">
+                      <span class="switch-track"><input type="checkbox" id="check-mcp-style-enabled" class="switch-input" aria-describedby="hint-mcp-style-enabled"><span class="switch-slider"></span></span>
+                      <span data-i18n="lbl_mcp_style_enabled">Permitir control de estilos a agentes de IA (MCP - Bajo riesgo)</span>
+                    </label>
+                    <span id="hint-mcp-style-enabled" class="form-hint" data-i18n="hint_mcp_style_enabled">Permite que un asistente de IA local lea y cambie únicamente colores, temas, presets y modo de subtítulos. Desactivado por defecto.</span>
                   </div>
-                  <span id="error-add-allowed-port" class="form-error" role="alert" aria-live="polite" hidden></span>
-                </div>
+                  <div class="form-group">
+                    <label class="switch-label">
+                      <span class="switch-track"><input type="checkbox" id="check-mcp-system-enabled" class="switch-input" aria-describedby="hint-mcp-system-enabled"><span class="switch-slider"></span></span>
+                      <span data-i18n="lbl_mcp_system_enabled">Permitir control del sistema a agentes de IA (MCP - Riesgo medio)</span>
+                    </label>
+                    <span id="hint-mcp-system-enabled" class="form-hint" data-i18n="hint_mcp_system_enabled">Permite que un asistente de IA local lea y cambie modelo, VAD, dispositivo, prompts y red. La lista de puertos permitidos y rutas nunca son modificables por MCP. Desactivado por defecto.</span>
+                  </div>
+                  <div id="card-adv-allowed-origins">
+                    <label data-i18n="title_allowed_connections">Conexiones locales permitidas</label>
+                  <span class="form-hint" data-i18n="hint_allowed_connections">Solo para aplicaciones en esta PC. Permitir un puerto deja que cualquier página o app en ese puerto lea los subtítulos en vivo.</span>
 
-                <div class="form-group" style="margin-top: 14px;">
-                  <label data-i18n="lbl_recent_blocked">Intentos bloqueados recientes</label>
-                  <div id="recent-blocked-list" class="blocked-list" role="list"></div>
-                </div>
+                  <div class="form-group" style="margin-top: 12px;">
+                    <label data-i18n="lbl_allowed_ports">Puertos permitidos</label>
+                    <div id="allowed-ports-list" class="ports-list" role="list"></div>
+                  </div>
+
+                  <div class="form-group" style="margin-top: 12px;">
+                    <label for="input-add-allowed-port" data-i18n="lbl_add_port">Añadir puerto</label>
+                    <div style="display: flex; gap: 8px; margin-top: 4px;">
+                      <input type="number" id="input-add-allowed-port" class="form-control" min="1" max="65535" placeholder="5173" aria-describedby="error-add-allowed-port" style="max-width: 140px;">
+                      <button type="button" id="btn-add-allowed-port" class="btn-secondary" data-i18n="btn_add_port">Permitir</button>
+                    </div>
+                    <span id="error-add-allowed-port" class="form-error" role="alert" aria-live="polite" hidden></span>
+                  </div>
+
+                  <div class="form-group" style="margin-top: 14px;">
+                    <label data-i18n="lbl_recent_blocked">Intentos bloqueados recientes</label>
+                    <div id="recent-blocked-list" class="blocked-list" role="list"></div>
+                  </div>
+                  </div>
+                </details>
               </div>
 
               <div class="card adv-card" id="card-adv-updates">
-                <div class="card-title"><span data-i18n="title_adv_updates">Actualizaciones</span></div>
+                <div class="card-title"><span class="title-with-icon"><svg class="lucide lucide-refresh-cw title-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg><span data-i18n="title_adv_updates">Actualizaciones</span></span></div>
+                <p class="adv-desc" data-i18n="desc_adv_updates">Busca versiones nuevas de LiveAudio.</p>
                 <div class="form-group" id="group-updates">
                   <label class="switch-label">
                     <span class="switch-track">
@@ -647,9 +682,9 @@
         <div class="card feed-card" id="card-subtitles-feed">
           <div class="card-title">
             <div class="feed-title-group">
+              <svg class="lucide lucide-message-square-text title-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z"/><path d="M7 11h10"/><path d="M7 15h6"/><path d="M7 7h8"/></svg>
               <span data-i18n="title_subtitles_feed">Feed de Subtítulos en Vivo</span>
               <span id="feed-count-badge" class="badge-counter" title="Subtítulos en búfer" data-i18n-title="title_feed_count">0</span>
-              <span id="feed-live-badge" class="badge badge-feed-idle" data-i18n="feed_badge_idle">Inactivo</span>
             </div>
             <div class="feed-controls">
               <button id="btn-test-subtitle" class="btn-secondary btn-compact" type="button" data-i18n="btn_test_subtitle" title="Enviar subtítulo de prueba" data-i18n-title="title_test_subtitle">
@@ -672,7 +707,7 @@
         <!-- OBS Studio Integration Card -->
         <div class="card obs-card">
           <div class="card-title">
-            <span data-i18n="title_obs">Integración con OBS Studio</span>
+            <span class="title-with-icon"><svg class="lucide lucide-monitor-play title-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15.033 9.44a.647.647 0 0 1 0 1.12l-4.065 2.352a.645.645 0 0 1-.968-.56V7.648a.645.645 0 0 1 .968-.56z"/><path d="M12 17v4"/><path d="M8 21h8"/><rect width="20" height="14" x="2" y="3" rx="2"/></svg><span data-i18n="title_obs">Integración con OBS Studio</span></span>
           </div>
 
           <div class="form-group">
@@ -700,6 +735,7 @@
         <div class="card logger-card collapsed" id="card-logger">
           <div class="card-title">
             <div class="logger-title-group">
+              <svg class="lucide lucide-scroll-text title-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 12h-5"/><path d="M15 8h-5"/><path d="M19 17V5a2 2 0 0 0-2-2H4"/><path d="M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3"/></svg>
               <span data-i18n="title_event_logger">Registro de Eventos</span>
               <span id="logger-count-badge" class="badge-counter">0</span>
             </div>
@@ -724,7 +760,7 @@
             <span id="modal-icon" class="modal-icon"><svg class="lucide lucide-triangle-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg></span>
             <h3 id="modal-title" class="modal-title">Confirmar Acción</h3>
           </div>
-          <button id="modal-btn-close" class="modal-btn-close" type="button" aria-label="Cerrar modal">×</button>
+          <button id="modal-btn-close" class="modal-btn-close" type="button" aria-label="Cerrar ventana" data-i18n-aria-label="aria_modal_close">×</button>
         </div>
         <div class="modal-body">
           <p id="modal-message" class="modal-message">¿Estás seguro de continuar?</p>
@@ -741,7 +777,7 @@
     <div id="about-modal" class="modal-backdrop" hidden>
       <div class="modal-card about-card" role="dialog" aria-modal="true" aria-labelledby="about-title">
         <div class="modal-header">
-          <h3 id="about-title" class="modal-title"><span data-i18n="about_title">Acerca de LiveAudio</span> <span class="about-version" data-i18n="app_version">v1.6.0</span></h3>
+          <h3 id="about-title" class="modal-title"><span data-i18n="about_title">Acerca de LiveAudio</span> <span class="about-version" data-i18n="app_version">v1.6.5</span></h3>
           <button id="btn-about-close" class="modal-btn-close" type="button" aria-label="Cerrar" data-i18n-aria-label="about_close">×</button>
         </div>
         <div class="modal-body about-body">

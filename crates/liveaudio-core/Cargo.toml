@@ -10,6 +10,7 @@ publish = false
 liveaudio-ipc = { path = "../liveaudio-ipc" }
 liveaudio-audio = { path = "../liveaudio-audio" }
 liveaudio-vad = { path = "../liveaudio-vad" }
+liveaudio-worker-protocol = { path = "../liveaudio-worker-protocol" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

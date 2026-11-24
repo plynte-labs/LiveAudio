@@ -3,5 +3,6 @@
 pub mod download;
 pub mod mel;
 pub mod model;
+pub mod parakeet;
 pub use liveaudio_worker_protocol::protocol;
 pub mod tokenizer;

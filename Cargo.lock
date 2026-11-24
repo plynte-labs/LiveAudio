@@ -2400,7 +2400,7 @@ checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 
 [[package]]
 name = "liveaudio-asr-worker"
-version = "1.6.0"
+version = "1.6.5"
 dependencies = [
  "dirs",
  "embed-resource",
@@ -2420,10 +2420,11 @@ dependencies = [
 
 [[package]]
 name = "liveaudio-audio"
-version = "1.6.0"
+version = "1.6.5"
 dependencies = [
  "cpal",
  "crossbeam-channel",
+ "libc",
  "liveaudio-ipc",
  "nnnoiseless",
  "ringbuf",
@@ -2436,7 +2437,7 @@ dependencies = [
 
 [[package]]
 name = "liveaudio-cli"
-version = "1.6.0"
+version = "1.6.5"
 dependencies = [
  "embed-resource",
  "liveaudio-audio",
@@ -2453,13 +2454,14 @@ dependencies = [
 
 [[package]]
 name = "liveaudio-core"
-version = "1.6.0"
+version = "1.6.5"
 dependencies = [
  "crossbeam-channel",
  "libc",
  "liveaudio-audio",
  "liveaudio-ipc",
  "liveaudio-vad",
+ "liveaudio-worker-protocol",
  "reqwest",
  "serde",
  "serde_json",
@@ -2475,7 +2477,7 @@ dependencies = [
 
 [[package]]
 name = "liveaudio-desktop"
-version = "1.6.0"
+version = "1.6.5"
 dependencies = [
  "cpal",
  "liveaudio-audio",
@@ -2499,7 +2501,7 @@ dependencies = [
 
 [[package]]
 name = "liveaudio-ipc"
-version = "1.6.0"
+version = "1.6.5"
 dependencies = [
  "serde",
  "serde_json",
@@ -2508,7 +2510,7 @@ dependencies = [
 
 [[package]]
 name = "liveaudio-network"
-version = "1.6.0"
+version = "1.6.5"
 dependencies = [
  "futures-util",
  "liveaudio-core",
@@ -2524,7 +2526,7 @@ dependencies = [
 
 [[package]]
 name = "liveaudio-vad"
-version = "1.6.0"
+version = "1.6.5"
 dependencies = [
  "liveaudio-audio",
  "liveaudio-ipc",
@@ -2535,7 +2537,7 @@ dependencies = [
 
 [[package]]
 name = "liveaudio-worker-protocol"
-version = "1.6.0"
+version = "1.6.5"
 dependencies = [
  "base64 0.22.1",
  "serde",

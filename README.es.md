@@ -24,7 +24,7 @@ Micrófono / Loopback ──► Rust (Captura CPAL) ──► Rust (Silero VAD, 
 
 - **Núcleo y Pipeline 100% Rust Nativo:** Captura de audio (CPAL), detección de actividad de voz (Silero VAD en ONNX Runtime), motor de transcripción Whisper ASR en Rust nativo con aceleración DirectX 12 mediante ONNX Runtime DirectML (NVIDIA, AMD e Intel) y CPU multi-hilo, motor NVIDIA CUDA opcional sobre CTranslate2, servidor WebSocket y persistencia de configuración.
 - **Cero Requisito de Python:** No requiere instalar Python, crear entornos virtuales (`.venv`) ni configurar CUDA. La versión de Windows incluye `DirectML.dll` y `onnxruntime.dll` (`1.24.4-directml`) listos para usar con cualquier tarjeta gráfica compatible con DirectX 12.
-- **Supervisión y Seguridad de Procesos:** Win32 Job Objects en Windows garantizan un apagado limpio con 0 procesos huérfanos o zombies.
+- **Supervisión y Seguridad de Procesos:** Win32 Job Objects en Windows y `PR_SET_PDEATHSIG` en Linux garantizan un apagado limpio con 0 procesos huérfanos o zombies.
 - **Canales de Alta Velocidad:** El flujo de audio, VAD, fragmentos ASR y emisión a OBS se comunican mediante canales asíncronos sin bloqueos.
 
 ## Resultados comparativos (Rust ORT vs Python Legacy)
@@ -44,14 +44,14 @@ Medido en: Windows 11, RTX 3060, AMD Ryzen 7 3700G, 32 GB RAM.
 ## Guía de Inicio Rápido (Streamers y Creadores)
 
 ### 1. Descarga y Ejecución
-1. Descarga **`LiveAudio-Setup-1.6.0.exe`** (o la versión portable en `.zip`) desde [GitHub Releases](https://github.com/plynte-labs/LiveAudio/releases/latest).
-2. Ejecuta la aplicación. LiveAudio funciona de inmediato con su motor embebido ONNX Runtime DirectML y Silero VAD. No es necesario instalar Python ni controladores CUDA adicionales.
+1. Descarga **`LiveAudio-Setup-1.6.5.exe`** (Windows) o el paquete **`.AppImage` / `.deb`** (Linux) desde [GitHub Releases](https://github.com/plynte-labs/LiveAudio/releases/latest). Los archivos portables (`liveaudio-cli-*-windows-x64.zip` / `liveaudio-cli-*-linux-x64.tar.gz`) contienen solo la CLI y el worker ASR, no la app de escritorio.
+2. Ejecuta la aplicación. LiveAudio funciona de inmediato con su motor embebido ONNX Runtime (DirectML en Windows, CPU en Linux) y Silero VAD. No es necesario instalar Python ni controladores CUDA adicionales.
 
-> **Actualización desde v1.5.1 o anterior:** Los usuarios en la versión 1.5.1 o anterior deben instalar la versión 1.6.0 manualmente una vez. Las versiones previas no cuentan con soporte de actualización integrada ni con la clave pública de firma. A partir de 1.6.0, las actualizaciones se gestionan directamente desde la aplicación.
+> **Actualización desde v1.5.1 o anterior:** Los usuarios en la versión 1.5.1 o anterior deben instalar la versión 1.6.0 manualmente una vez. Las versiones previas no cuentan con soporte de actualización integrada ni con la clave pública de firma. A partir de 1.6.0, las actualizaciones se gestionan directamente desde la aplicación en Windows (NSIS) y Linux (`.AppImage`); los paquetes `.deb` en Linux se actualizan desde GitHub Releases.
 
 ### 2. Configuración en 3 Clics
 En la pestaña **Inicio (Setup)**:
-1. **Fuente de audio:** Elige tu micrófono físico o **Audio del sistema (WASAPI Loopback)** para transcribir el juego o sonido de la PC.
+1. **Fuente de audio:** Elige tu micrófono físico o **Audio del sistema (Loopback)** (WASAPI en Windows; monitor de PipeWire/PulseAudio con respaldo ALSA en Linux) para transcribir el juego o sonido de la PC.
 2. **Idioma hablado:** Selecciona `es` (Español) o `en` (Inglés).
 3. **Perfil recomendado:** Escoge `Balanceado` (por defecto) o el que mejor se ajuste a tu hardware.
 4. Presiona **Iniciar Transcripción**.
@@ -104,8 +104,8 @@ Elige el estilo visual desde la pestaña **Subtítulos** sin reiniciar la aplica
 - Selector rápido entre **Español (🇪🇸)** e **Inglés (🇺🇸)**.
 - Navegación clara en cuatro secciones: **Inicio**, **Subtítulos**, **Avanzado** y **Archivos**.
 
-### 3. Captura Nativa de Audio y WASAPI Loopback
-- Captura de micrófonos y audio interno de Windows vía CPAL con remuestreo automático a 16 kHz mono.
+### 3. Captura Nativa de Audio y Loopback del Sistema
+- Captura de micrófonos y audio del sistema vía CPAL (WASAPI Loopback en Windows; PipeWire/PulseAudio con respaldo ALSA en Linux) con remuestreo automático a 16 kHz mono.
 
 ### 4. Detección de Actividad de Voz con Silero VAD v6
 - Inferencia nativa ultrarrápida evaluando frames de 32 ms en ~0.11 ms sin fugas de memoria.
@@ -166,10 +166,13 @@ node --test tests-js/test_updater_manifest.mjs
 ### Compilación para Producción (Release)
 
 ```bash
-# 1. Compilar el sidecar CLI en release
+# 1. Descargar binarios fijados de ONNX Runtime 1.24.4 desde paquetes oficiales de NuGet (verificados por SHA-256)
+node packaging/fetch_onnxruntime.mjs
+
+# 2. Compilar el sidecar CLI en release
 cargo build --release -p liveaudio-cli
 
-# 2. Empaquetar la aplicación de escritorio con Tauri 2 (instalador NSIS y bundle de actualización)
+# 3. Empaquetar la aplicación de escritorio con Tauri 2 (NSIS en Windows; .AppImage y .deb en Linux)
 cd desktop
 npx @tauri-apps/cli@2.12.1 build --config src-tauri/tauri.release.conf.json
 ```

@@ -3,6 +3,8 @@
 pub mod cpal_source;
 pub mod device;
 pub mod error;
+#[cfg(any(target_os = "linux", test))]
+pub(crate) mod linux_pulse;
 pub mod mock;
 pub mod resampler;
 pub mod resilient;
@@ -12,6 +14,8 @@ pub mod traits;
 pub mod types;
 
 pub use cpal_source::CpalAudioSource;
+#[cfg(target_os = "linux")]
+pub use linux_pulse::configure_linux_parent_death_signal;
 pub use device::{
     enumerate_cpal_devices, get_input_device_count, normalize_device_name, with_clean_audio_thread,
 };

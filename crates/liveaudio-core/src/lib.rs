@@ -3,12 +3,14 @@
 pub mod acoustic_events;
 pub mod asr;
 pub mod backend;
+pub mod blacklist;
 pub mod config;
 pub mod download;
 pub mod event;
 pub mod gpu;
 pub mod job_object;
 pub mod nvidia_runtime;
+pub mod opencohost;
 pub mod pipeline;
 pub mod runtime;
 pub mod service_lock;
@@ -22,9 +24,9 @@ pub use asr::{
     AsrTranscriptionResponse, TranscriptionSegment,
 };
 pub use config::{
-    audio_queue_capacity, get_data_home, get_hf_home, get_models_home, load_config,
-    load_config_readonly, load_from_path, save_config, save_to_path, ConfigReadonlyInfo,
-    LiveAudioConfig,
+    audio_queue_capacity, default_cpu_threads, get_data_home, get_hf_home, get_models_home,
+    load_config, load_config_readonly, load_from_path, max_cpu_threads, save_config, save_to_path,
+    ConfigReadonlyInfo, LiveAudioConfig,
 };
 pub use download::{download_verified, extract_zip_members, DownloadError};
 pub use gpu::{
@@ -33,6 +35,7 @@ pub use gpu::{
 };
 pub use nvidia_runtime::{
     install_nvidia_runtime, license_urls, nvidia_runtime_status, runtime_dir as nvidia_runtime_dir,
+    worker_published as nvidia_worker_published,
     NvidiaRuntimeStatus,
 };
 pub use event::{EventBus, HealthState, HealthStateMachine};

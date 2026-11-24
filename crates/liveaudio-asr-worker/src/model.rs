@@ -20,6 +20,7 @@ pub fn init_ort_runtime() -> Result<(), String> {
     ORT_INITIALIZATION
         .get_or_init(|| {
             let dylib_path = find_ort_dylib()?;
+            #[cfg(windows)]
             if let Some(parent) = dylib_path.parent() {
                 let current_path = std::env::var_os("PATH").unwrap_or_default();
                 let mut paths: Vec<std::path::PathBuf> = std::env::split_paths(&current_path).collect();
@@ -85,6 +86,43 @@ pub fn resolve_effective_device(
     }
 }
 
+fn ort_dylib_rel() -> &'static Path {
+    #[cfg(target_os = "windows")]
+    {
+        Path::new("onnxruntime/windows-x64/onnxruntime.dll")
+    }
+    #[cfg(target_os = "linux")]
+    {
+        Path::new("onnxruntime/linux-x64/libonnxruntime.so.1.24.4")
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    {
+        Path::new("onnxruntime/onnxruntime.dll")
+    }
+}
+
+fn find_ort_dylib_from_exe_dir(exe_dir: &Path) -> Option<PathBuf> {
+    let rel_target = ort_dylib_rel();
+    let mut candidates = vec![
+        exe_dir.join(rel_target),
+        exe_dir.join("resources").join(rel_target),
+        exe_dir.join("../lib/LiveAudio").join(rel_target),
+        exe_dir.join("packaging").join(rel_target),
+    ];
+
+    for ancestor in ["..", "../..", "../../.."] {
+        let base = exe_dir.join(ancestor);
+        candidates.push(base.join(rel_target));
+        candidates.push(base.join("resources").join(rel_target));
+        candidates.push(base.join("packaging").join(rel_target));
+    }
+
+    candidates
+        .into_iter()
+        .find(|cand| cand.is_file())
+        .map(|cand| std::fs::canonicalize(&cand).unwrap_or(cand))
+}
+
 fn find_ort_dylib() -> Result<PathBuf, String> {
     if let Ok(env_path) = std::env::var("LIVEAUDIO_ORT_DYLIB_PATH") {
         let p = PathBuf::from(env_path);
@@ -93,57 +131,26 @@ fn find_ort_dylib() -> Result<PathBuf, String> {
         }
     }
 
-    #[cfg(target_os = "windows")]
-    let rel_target = Path::new("onnxruntime/windows-x64/onnxruntime.dll");
-    #[cfg(target_os = "linux")]
-    let rel_target = Path::new("onnxruntime/linux-x64/libonnxruntime.so.1.24.4");
-    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-    let rel_target = Path::new("onnxruntime/onnxruntime.dll");
-
-    if let Ok(current_exe) = std::env::current_exe() {
-        if let Some(exe_dir) = current_exe.parent() {
-            let mut candidates = Vec::new();
-            candidates.push(exe_dir.join(rel_target));
-            candidates.push(exe_dir.join("resources").join(rel_target));
-            candidates.push(exe_dir.join("packaging").join(rel_target));
-
-            for ancestor in ["..", "../..", "../../.."] {
-                let base = exe_dir.join(ancestor);
-                candidates.push(base.join(rel_target));
-                candidates.push(base.join("resources").join(rel_target));
-                candidates.push(base.join("packaging").join(rel_target));
-            }
-
-            for cand in candidates {
-                if cand.is_file() {
-                    if let Ok(canon) = std::fs::canonicalize(&cand) {
-                        return Ok(canon);
-                    }
-                    return Ok(cand);
-                }
-            }
-        }
+    if let Some(found) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().and_then(find_ort_dylib_from_exe_dir))
+    {
+        return Ok(found);
     }
 
-    #[cfg(target_os = "windows")]
-    let local_dev = PathBuf::from("packaging/onnxruntime/windows-x64/onnxruntime.dll");
-    #[cfg(target_os = "linux")]
-    let local_dev = PathBuf::from("packaging/onnxruntime/linux-x64/libonnxruntime.so.1.24.4");
-    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-    let local_dev = PathBuf::from("packaging/onnxruntime/onnxruntime.dll");
-
+    let rel_target = ort_dylib_rel();
+    let local_dev = PathBuf::from("packaging").join(rel_target);
     if local_dev.is_file() {
-        if let Ok(canon) = std::fs::canonicalize(&local_dev) {
-            return Ok(canon);
-        }
-        return Ok(local_dev);
+        return Ok(std::fs::canonicalize(&local_dev).unwrap_or(local_dev));
     }
 
     // Debug builds and tests: newer cargo layouts run test binaries outside target/<profile>/deps,
     // so resolve the checkout's packaging dir from the crate location instead of the exe path.
     #[cfg(debug_assertions)]
     {
-        let checkout = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packaging").join(rel_target);
+        let checkout = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../packaging")
+            .join(rel_target);
         if checkout.is_file() {
             return Ok(std::fs::canonicalize(&checkout).unwrap_or(checkout));
         }
@@ -741,7 +748,7 @@ impl WhisperOrtEngine {
         Ok((encoder, decoder, decoder_with_past))
     }
 
-    fn make_session_builder(
+    pub(crate) fn make_session_builder(
         device: &str,
         cpu_threads: Option<usize>,
     ) -> Result<SessionBuilder, String> {
@@ -1554,5 +1561,26 @@ mod tests {
         let prob_orig = calculate_token_softmax_prob(&float_values, 2);
         let prob_rec = calculate_token_softmax_prob(&recovered, 2);
         assert!((prob_orig - prob_rec).abs() < 1e-4);
+    }
+
+    #[test]
+    fn find_ort_dylib_from_exe_dir_finds_tauri_linux_resource_path() {
+        let root = std::env::temp_dir().join(format!(
+            "liveaudio-worker-ort-res-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let exe_dir = root.join("usr").join("bin");
+        std::fs::create_dir_all(&exe_dir).unwrap();
+        assert_eq!(find_ort_dylib_from_exe_dir(&exe_dir), None);
+
+        let lib = root.join("usr/lib/LiveAudio").join(ort_dylib_rel());
+        std::fs::create_dir_all(lib.parent().unwrap()).unwrap();
+        std::fs::write(&lib, b"x").unwrap();
+
+        let found = find_ort_dylib_from_exe_dir(&exe_dir)
+            .expect("worker should locate ORT in ../lib/LiveAudio");
+        assert_eq!(found, std::fs::canonicalize(&lib).unwrap());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

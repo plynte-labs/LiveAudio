@@ -4,8 +4,8 @@
 
 use crate::commands::{
     acquire_service_lock, admit_worker_event_generation, asr_progress_from_worker_event,
-    asr_progress_update_for_worker_event, desktop_runtime_preflight_error,
-    ensure_startup_websocket, get_service_status_internal, is_text_blacklisted,
+    asr_language_and_prompt, asr_progress_update_for_worker_event, desktop_runtime_preflight_error,
+    ensure_startup_websocket, get_service_status_internal,
     persist_config_and_apply, poll_foreign_service, profile_presets, refresh_foreign_service,
     retry_once_if_already_running, shutdown_service_resources, stop_active_websocket,
     partial_due, trim_boundary_overlap, trim_boundary_overlap_with_max, with_subtitle_style,
@@ -567,7 +567,7 @@ async fn enumerated_audio_device_ids_match_cpal_resolver_ids() {
             device.name
         );
     }
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
     assert!(desktop_devices
         .iter()
         .any(|device| device.id == "default_loopback"));
@@ -1330,66 +1330,6 @@ fn test_encode_f32_le_base64_codec() {
     let b64 = crate::commands::encode_f32_le_base64(&samples);
     assert!(!b64.is_empty());
     assert_eq!(b64.len() % 4, 0);
-}
-
-#[test]
-fn test_is_text_blacklisted_cases() {
-    let blacklist = "amara.org, subtítulos por, suscríbete, dale like, \"gracias por ver\"";
-
-    // Matches exact and substring
-    assert!(is_text_blacklisted(
-        "Subtítulos realizados por la comunidad de amara.org",
-        blacklist
-    ));
-    assert!(is_text_blacklisted("subtítulos por favor", blacklist));
-    assert!(is_text_blacklisted("SUSCRÍBETE a mi canal", blacklist));
-    assert!(is_text_blacklisted(
-        "No olvides dale like y comentar",
-        blacklist
-    ));
-    assert!(is_text_blacklisted(
-        "Muchas gracias por ver este video",
-        blacklist
-    ));
-
-    // Accent and diacritic folding: matches even if transcript has no accent or blacklist has no accent
-    assert!(is_text_blacklisted("Suscribete a mi canal", blacklist)); // unaccented text matches accented blacklist
-    assert!(is_text_blacklisted("¡SUSCRIBETE!", blacklist));
-    let unaccented_bl = "suscribete, subtitulos por";
-    assert!(is_text_blacklisted(
-        "¡Suscríbete a mi canal!",
-        unaccented_bl
-    )); // accented text matches unaccented blacklist
-    assert!(is_text_blacklisted("Subtítulos por favor", unaccented_bl));
-
-    // Multiline and semicolon delimiters
-    let multiline_bl = "amara.org\nsuscribete;gracias por ver";
-    assert!(is_text_blacklisted("amara.org", multiline_bl));
-    assert!(is_text_blacklisted("suscríbete ya", multiline_bl));
-    assert!(is_text_blacklisted("muchas gracias por ver", multiline_bl));
-
-    // Smart and typographical quotes
-    let smart_quotes_bl = "“amara.org”, ‘suscríbete’, «dale like»";
-    assert!(is_text_blacklisted("amara.org", smart_quotes_bl));
-    assert!(is_text_blacklisted("suscribete", smart_quotes_bl));
-    assert!(is_text_blacklisted("dale like", smart_quotes_bl));
-
-    // Clean text does not match
-    assert!(!is_text_blacklisted(
-        "Hola a todos, hoy vamos a programar en Rust",
-        blacklist
-    ));
-    assert!(!is_text_blacklisted(
-        "Este es un audio completamente normal",
-        blacklist
-    ));
-
-    // Empty blacklist passes everything
-    assert!(!is_text_blacklisted("amara.org", ""));
-    assert!(!is_text_blacklisted("amara.org", "   ,   "));
-
-    // Empty text returns false
-    assert!(!is_text_blacklisted("", blacklist));
 }
 
 #[test]
@@ -2184,16 +2124,21 @@ fn test_gpu_backend_status_dto() {
     use liveaudio_core::{GpuAdapter, GpuVendor, NvidiaRuntimeStatus};
     let adapters = vec![GpuAdapter { vendor: GpuVendor::Nvidia, name: "RTX".into(), dedicated_vram_mb: 12115 }];
     let missing = NvidiaRuntimeStatus { installed: false, missing: vec!["cudnn64_9.dll".into()] };
-    let dto = crate::commands::build_gpu_backend_status("auto", &adapters, Some(13040), missing, None);
+    let dto = crate::commands::build_gpu_backend_status("auto", &adapters, Some(13040), missing, None, false);
+    assert!(!dto.worker_published);
     assert_eq!(dto.selected_backend, "ort");
     assert_eq!(dto.adapters[0].vendor, "nvidia");
     assert_eq!(dto.license_urls.len(), 2);
+    assert_eq!(dto.default_cpu_threads, LiveAudioConfig::default().effective_cpu_threads());
+    assert_eq!(dto.max_cpu_threads, liveaudio_core::max_cpu_threads());
     let json = serde_json::to_string(&dto).unwrap();
     assert!(json.contains("\"cuda_driver_version\":13040"));
     assert!(json.contains("\"installed\":false"));
+    assert!(json.contains("\"worker_published\":false"));
+    assert!(json.contains(&format!("\"max_cpu_threads\":{}", liveaudio_core::max_cpu_threads())));
     let ready = NvidiaRuntimeStatus { installed: true, missing: vec![] };
     let worker = std::path::Path::new("liveaudio-asr-worker-cuda.exe");
-    let pick = |pref, w| crate::commands::build_gpu_backend_status(pref, &adapters, Some(13040), ready.clone(), w);
+    let pick = |pref, w| crate::commands::build_gpu_backend_status(pref, &adapters, Some(13040), ready.clone(), w, true);
     assert_eq!(pick("auto", Some(worker)).selected_backend, "ct2_cuda");
     let no_worker = pick("auto", None);
     assert_eq!((no_worker.selected_backend.as_str(), no_worker.reason.as_str()), ("ort", "nvidia_runtime_not_installed"));
@@ -2319,4 +2264,16 @@ async fn shutdown_lets_pending_finals_finish_before_stopping_the_event_task() {
         !pending_at_stop.load(Ordering::SeqCst),
         "event task must keep running until the pending final was delivered"
     );
+}
+
+#[test]
+fn context_prompt_is_only_sent_while_its_switch_is_on() {
+    let mut cfg = LiveAudioConfig {
+        asr_language: "en".to_string(),
+        whisper_context_prompt_en: "Rust stream".to_string(),
+        ..LiveAudioConfig::default()
+    };
+    assert_eq!(asr_language_and_prompt(&cfg).1.as_deref(), Some("Rust stream"));
+    cfg.context_prompt_enabled = false;
+    assert_eq!(asr_language_and_prompt(&cfg).1, None);
 }

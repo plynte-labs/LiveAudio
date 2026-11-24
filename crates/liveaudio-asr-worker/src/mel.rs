@@ -163,7 +163,7 @@ fn apply_reflect_padding(input: &[f32], padded: &mut [f32]) {
     }
 }
 
-fn resample_linear(input: &[f32], src_rate: u32, dst_rate: u32, out: &mut Vec<f32>) {
+pub(crate) fn resample_linear(input: &[f32], src_rate: u32, dst_rate: u32, out: &mut Vec<f32>) {
     out.clear();
     if input.is_empty() || src_rate == 0 || dst_rate == 0 {
         return;

@@ -13,12 +13,11 @@ members = [
 ]
 
 [workspace.package]
-version = "1.6.0"
+version = "1.6.5"
 edition = "2021"
 authors = ["Plynte Labs / FranGuh"]
 license = "MIT"
 repository = "https://github.com/plynte-labs/LiveAudio"
-homepage = "https://github.com/plynte-labs/LiveAudio"
 
 [workspace.dependencies]
 serde = { version = "1.0", features = ["derive"] }

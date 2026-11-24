@@ -82,10 +82,14 @@ fn cli_stream_config(config: &LiveAudioConfig) -> AudioStreamConfig {
 /// `devices` output: the ids `audio_device.id` accepts, as the desktop lists them.
 fn device_list_lines(enumerated: &[AudioDeviceInfo]) -> Vec<String> {
     let mut entries = vec![("default_microphone", "Default system microphone", true)];
-    if cfg!(windows) {
+    if cfg!(any(target_os = "windows", target_os = "linux")) {
         entries.push((
             "default_loopback",
-            "System audio / speakers (WASAPI loopback)",
+            if cfg!(target_os = "windows") {
+                "System audio / speakers (WASAPI loopback)"
+            } else {
+                "System audio / speakers (Loopback)"
+            },
             false,
         ));
     }
@@ -763,7 +767,7 @@ async fn run_service(
     let effective_base_port = port_override.unwrap_or(config.ws_port);
 
     // Validate native worker binary and ONNX Runtime library before opening listeners or audio resources.
-    let mut selected = prepare_worker(liveaudio_core::backend::effective_backend_pref(&config.asr_backend, &config.device)).await?;
+    let mut selected = prepare_worker(liveaudio_core::backend::effective_backend_pref(&config.asr_backend, &config.device, &config.model_size)).await?;
     eprintln!(
         "ASR backend: {} ({})",
         backend_name(selected.kind),
@@ -837,24 +841,20 @@ async fn run_service(
         .unwrap_or("small")
         .to_string();
 
-    let clean_lang = config
-        .language
-        .as_deref()
-        .filter(|l| !l.is_empty() && *l != "auto")
-        .unwrap_or("es")
-        .to_string();
-
-    let prompt = if clean_lang == "en" {
-        &config.whisper_context_prompt_en
-    } else {
-        &config.whisper_context_prompt_es
-    };
+    let clean_lang = liveaudio_core::opencohost::language_override(&config).unwrap_or_else(|| {
+        config
+            .language
+            .as_deref()
+            .filter(|l| !l.is_empty() && *l != "auto")
+            .unwrap_or("es")
+            .to_string()
+    });
 
     selected.config.init_payload = Some(worker_init_payload(
         &config,
         &clean_model_name,
         &clean_lang,
-        Some(prompt.as_str()).filter(|prompt| !prompt.is_empty()),
+        config.context_prompt(&clean_lang),
     ));
     selected.config.decode_timeout =
         Some(Duration::from_secs(config.asr_decode_timeout_sec.into()));
@@ -1293,7 +1293,7 @@ mod headless_parity_tests {
         assert!(lines.iter().any(|l| l.contains("[default_microphone]")));
         assert_eq!(
             lines.iter().any(|l| l.contains("[default_loopback]")),
-            cfg!(windows)
+            cfg!(any(target_os = "windows", target_os = "linux"))
         );
         assert!(lines
             .iter()

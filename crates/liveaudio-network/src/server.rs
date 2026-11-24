@@ -131,7 +131,7 @@ const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(100);
 fn decrement_client_count(metrics: &NetworkMetrics) {
     let _ = metrics
         .client_count
-        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+        .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
             Some(n.saturating_sub(1))
         });
 }

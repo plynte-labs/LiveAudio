@@ -4,7 +4,7 @@
  * LiveAudio Tauri Desktop Frontend Application Logic
  */
 
-import { adoptSavedStyle, audioStateKey, bindProfileSelection, bindTabNavigation, externalConfigUpdate, generalFields, hardwareStatusLabel, mergeSavedConfigIntoForm, monitorBannerText, monitorFeedAction, monitorFeedText, persistAndApplyRuntimeConfig, sessionFailureLabel, STYLE_CONFIG_KEYS, styleFields, engineKind, gpuReasonKey, nvidiaOfferVisible, nvidiaCardView, nvidiaInstallConfig, advancedView, TAB_RESETS } from './runtime-settings.js';
+import { setupLogLine, statusLogLine, adoptSavedStyle, audioStateKey, bindProfileSelection, bindTabNavigation, externalConfigUpdate, generalFields, hardwareStatusLabel, mergeSavedConfigIntoForm, monitorBannerText, opencohostStatusText, monitorFeedAction, monitorFeedText, persistAndApplyRuntimeConfig, sessionFailureLabel, STYLE_CONFIG_KEYS, styleFields, engineKind, isParakeetModel, gpuReasonKey, nvidiaOfferVisible, nvidiaCardView, nvidiaInstallConfig, advancedView, TAB_RESETS } from './runtime-settings.js';
 import { initLanguage, setLanguage, getLanguage, t, applyTranslations, getProfilePresetData, PROFILE_I18N } from './i18n.js';
 import { controlsFromTheme, deletePreset, fontChoices, fontFamiliesForPlatform, loadPresetTheme, presetNameFromOption, presetOptionValue, previewHoldMs, previewProperties, previewWordDelays, savePreset, themeFromControls } from './subtitle-style.js';
 
@@ -27,6 +27,7 @@ async function listen(eventName, callback) {
 }
 
 // In-browser mock handler for isolated preview & testing
+// i18n-allow-begin: browser-only mock backend returns Spanish sample data
 function mockInvoke(cmd, args) {
   console.log(`[Mock Tauri IPC] ${cmd}`, args);
   switch (cmd) {
@@ -64,6 +65,7 @@ function mockInvoke(cmd, args) {
         whisper_context_prompt_es: '',
         whisper_context_prompt_en: '',
         asr_language: 'es',
+        follow_opencohost_language: false,
         settings_navigation_mode: 'tabs',
         language: 'es',
         diagnostics_enabled: false,
@@ -95,7 +97,7 @@ function mockInvoke(cmd, args) {
 
     case 'get_updater_status':
       return Promise.resolve({
-        current_version: '1.6.0',
+        current_version: '1.6.5',
         available_update: null,
         install_on_close: false,
         is_checking: false,
@@ -150,9 +152,12 @@ function mockInvoke(cmd, args) {
         adapters: [{ vendor: 'nvidia', name: 'NVIDIA GeForce RTX 3060', dedicated_vram_mb: 12115 }],
         cuda_driver_version: 12080,
         nvidia_runtime: { installed: false, missing: ['cublas64_12.dll'] },
+        worker_published: true,
         license_urls: ['https://developer.download.nvidia.com/compute/cudnn/redist/cudnn/LICENSE.txt'],
         selected_backend: 'ort',
         reason: 'nvidia_runtime_not_installed',
+        default_cpu_threads: 4,
+        max_cpu_threads: 8,
       });
 
     case 'install_nvidia_runtime':
@@ -164,7 +169,7 @@ function mockInvoke(cmd, args) {
     case 'get_audio_devices':
       return Promise.resolve([
         { id: 'default_microphone', name: 'Micrófono predeterminado del sistema', is_default: true, kind: 'input' },
-        { id: 'wasapi_loopback', name: 'Audio del sistema / Altavoces (WASAPI Loopback)', is_default: false, kind: 'loopback' },
+        { id: 'default_loopback', name: 'Audio del sistema / Altavoces (Loopback)', is_default: false, kind: 'loopback' },
         { id: 'input_usb_mic', name: 'Micrófono USB HyperX SoloCast', is_default: false, kind: 'input' },
       ]);
 
@@ -252,6 +257,7 @@ function mockInvoke(cmd, args) {
       return Promise.reject(`Command not found: ${cmd}`);
   }
 }
+// i18n-allow-end
 
 // Global App State
 let currentConfig = null;
@@ -271,8 +277,8 @@ let drafts = {
     en: '',
   },
   blacklists: {
-    es: 'amara.org, subtítulos por, suscríbete, dale like, gracias por ver, memos, gracias, activar la campanita',
-    en: 'amara.org, subtitles by, subscribe, like, thank you for watching, thanks for watching, please subscribe',
+    es: 'amara.org, subtítulos por, suscríbete, dale like, gracias por ver, activar la campanita', // i18n-allow: blacklist preset data
+    en: 'amara.org, subtitles by, subscribe, thank you for watching, thanks for watching, please subscribe',
   },
 };
 let currentAsrLang = 'es';
@@ -304,8 +310,6 @@ const elements = {
   aboutSince: document.getElementById('about-since'),
   aboutEmpty: document.getElementById('about-empty'),
   selectUiLang: document.getElementById('select-ui-lang'),
-  pillStatus: document.getElementById('pill-status'),
-  pillStatusText: document.getElementById('pill-status-text'),
   pillVad: document.getElementById('pill-vad'),
   pillVadText: document.getElementById('pill-vad-text'),
   pillWs: document.getElementById('pill-ws'),
@@ -328,11 +332,13 @@ const elements = {
   sliderCpuThreads: document.getElementById('slider-cpu-threads'),
   groupCpuThreads: document.getElementById('group-cpu-threads'),
   valCpuThreads: document.getElementById('val-cpu-threads'),
+  checkCpuThreadsAuto: document.getElementById('check-cpu-threads-auto'),
   sliderSilenceTimeout: document.getElementById('slider-silence-timeout'),
   valSilenceTimeout: document.getElementById('val-silence-timeout'),
   sliderMaxChunk: document.getElementById('slider-max-chunk'),
   valMaxChunk: document.getElementById('val-max-chunk'),
   selectModelSize: document.getElementById('select-model-size'),
+  hintParakeetEngine: document.getElementById('hint-parakeet-engine'),
   selectAsrLang: document.getElementById('select-asr-lang'),
   promptEs: document.getElementById('prompt-es'),
   btnSuggestPromptEs: document.getElementById('btn-suggest-prompt-es'),
@@ -369,6 +375,7 @@ const elements = {
   valRibbonLines: document.getElementById('val-ribbon-lines'),
   selectBacklogPolicy: document.getElementById('select-backlog-policy'),
   selectAsrBackend: document.getElementById('select-asr-backend'),
+  optAsrBackendCt2: document.getElementById('asr-backend-ct2'),
   tabSetupTab: document.getElementById('tab-setup-tab'),
   enginePill: document.getElementById('engine-status-pill'),
   engineStatusText: document.getElementById('engine-status-text'),
@@ -409,6 +416,10 @@ const elements = {
   checkSaveTranscript: document.getElementById('check-save-transcript'),
   checkSaveVtt: document.getElementById('check-save-vtt'),
   checkRnnoiseEnabled: document.getElementById('check-rnnoise-enabled'),
+  checkContextPromptEnabled: document.getElementById('check-context-prompt-enabled'),
+  checkBlacklistEnabled: document.getElementById('check-blacklist-enabled'),
+  checkFollowOpencohostLanguage: document.getElementById('check-follow-opencohost-language'),
+  statusOpencohostLanguage: document.getElementById('status-opencohost-language'),
   checkMcpStyleEnabled: document.getElementById('check-mcp-style-enabled'),
   checkMcpSystemEnabled: document.getElementById('check-mcp-system-enabled'),
   checkAcousticEventsEnabled: document.getElementById('check-acoustic-events-enabled'),
@@ -422,7 +433,6 @@ const elements = {
   subtitlesFeedContainer: document.getElementById('subtitles-feed-container'),
   feedEmptyState: document.getElementById('feed-empty-state'),
   feedCountBadge: document.getElementById('feed-count-badge'),
-  feedLiveBadge: document.getElementById('feed-live-badge'),
   btnTestSubtitle: document.getElementById('btn-test-subtitle'),
   btnClearFeed: document.getElementById('btn-clear-feed'),
   feedActionMenu: document.getElementById('feed-action-menu'),
@@ -519,9 +529,9 @@ async function copyLogs() {
   });
   try {
     await navigator.clipboard.writeText(lines.join('\n'));
-    showToast(t('toast_logs_copied') || 'Registro copiado');
+    showToast(t('toast_logs_copied'));
   } catch (err) {
-    showToast(`Error: ${err}`, true);
+    showToast(`${t('status_error')}: ${err}`, true);
   }
 }
 
@@ -543,20 +553,71 @@ function toggleLoggerCollapse() {
   }
 }
 
+// Parakeet honors the compute device but always uses the ORT worker: lock the engine choice and say so.
+function syncEngineControls() {
+  const parakeet = isParakeetModel(elements.selectModelSize.value);
+  elements.selectAsrBackend.disabled = parakeet;
+  elements.hintParakeetEngine.hidden = !parakeet;
+  syncHardwareOptions();
+  updateComputeDeviceReactivity();
+  renderEngineSummary();
+}
+
+// Manual CPU threads (the saved value) and the backend's automatic count. The slider shows the automatic
+// count while Automatic is on; collectFormData always saves the manual one.
+let manualCpuThreads = 1;
+let autoCpuThreads = null;
+let maxCpuThreads = null;
+function clampCpuThreads(value) {
+  const num = Number.isFinite(value) ? Math.trunc(value) : 1;
+  return maxCpuThreads ? Math.min(maxCpuThreads, Math.max(1, num)) : Math.max(1, num);
+}
+function syncHardwareOptions() {
+  if (!gpuStatus) return;
+  const adapters = Array.isArray(gpuStatus.adapters) ? gpuStatus.adapters : [];
+  const hasGpu = adapters.length > 0;
+  const hasNvidia = adapters.some((a) => a.vendor === 'nvidia');
+  const ct2Available = hasNvidia && (gpuStatus.worker_published !== false || Boolean(gpuStatus.nvidia_runtime?.installed));
+
+  if (elements.deviceRadioCuda) {
+    elements.deviceRadioCuda.disabled = !hasGpu;
+  }
+  if (!hasGpu && elements.selectComputeDevice && elements.selectComputeDevice.value === 'cuda') {
+    elements.selectComputeDevice.value = 'cpu';
+  }
+  if (elements.optAsrBackendCt2) {
+    elements.optAsrBackendCt2.disabled = !ct2Available;
+  }
+  if (!ct2Available && elements.selectAsrBackend && elements.selectAsrBackend.value === 'ct2_cuda') {
+    elements.selectAsrBackend.value = 'auto';
+  }
+}
+function renderCpuThreads() {
+  if (maxCpuThreads && elements.sliderCpuThreads) {
+    elements.sliderCpuThreads.max = String(maxCpuThreads);
+  }
+  const shown = clampCpuThreads(elements.checkCpuThreadsAuto.checked && autoCpuThreads ? autoCpuThreads : manualCpuThreads);
+  elements.sliderCpuThreads.value = shown;
+  elements.valCpuThreads.textContent = shown;
+}
+
 function updateComputeDeviceReactivity(device) {
   const currentDevice = device || (elements.selectComputeDevice ? elements.selectComputeDevice.value : 'cpu');
-  const isCuda = currentDevice === 'cuda';
+  // On a GPU the threads control is off for every model; Parakeet's small CPU-side sessions keep the saved value.
+  const disableCpuThreads = currentDevice === 'cuda';
   const group = elements.groupCpuThreads || elements.sliderCpuThreads?.closest('.form-group');
 
   if (elements.sliderCpuThreads) {
-    elements.sliderCpuThreads.disabled = isCuda;
+    elements.sliderCpuThreads.disabled = disableCpuThreads || elements.checkCpuThreadsAuto.checked;
   }
+  elements.checkCpuThreadsAuto.disabled = disableCpuThreads;
+  renderCpuThreads();
 
   if (group) {
-    group.classList.toggle('device-dimmed', isCuda);
+    group.classList.toggle('device-dimmed', disableCpuThreads);
     const hint = group.querySelector('.form-hint');
     if (hint) {
-      const hintKey = isCuda ? 'hint_cpu_threads_cuda' : 'hint_cpu_threads';
+      const hintKey = disableCpuThreads ? 'hint_cpu_threads_cuda' : 'hint_cpu_threads';
       hint.setAttribute('data-i18n', hintKey);
       hint.textContent = t(hintKey);
     }
@@ -568,9 +629,9 @@ function updateComputeDeviceReactivity(device) {
 let closeConfirmed = false;
 let closePromptOpen = false;
 let saveGeneralConfig = async () => {};
-const ADVANCED_FIELD_IDS = ['select-model-size', 'select-compute-device', 'slider-cpu-threads', 'select-asr-backend', 'slider-silence-timeout', 'slider-max-chunk',
+const ADVANCED_FIELD_IDS = ['select-model-size', 'select-compute-device', 'slider-cpu-threads', 'check-cpu-threads-auto', 'select-asr-backend', 'slider-silence-timeout', 'slider-max-chunk',
   'slider-vad-pad', 'slider-vad-threshold', 'check-rnnoise-enabled', 'check-live-partial-subtitles-enabled', 'select-backlog-policy', 'slider-max-live-delay',
-  'slider-catchup-interval', 'prompt-es', 'input-blacklist', 'input-ws-port', 'check-acoustic-events-enabled', 'check-mcp-style-enabled', 'check-mcp-system-enabled', 'check-updates-enabled'];
+  'slider-catchup-interval', 'check-context-prompt-enabled', 'prompt-es', 'check-blacklist-enabled', 'input-blacklist', 'input-ws-port', 'check-acoustic-events-enabled', 'check-mcp-style-enabled', 'check-mcp-system-enabled', 'check-updates-enabled'];
 function setupCloseGuard(appWindow) {
   if (!appWindow || typeof appWindow.onCloseRequested !== 'function') return;
   appWindow.onCloseRequested(async (event) => {
@@ -746,7 +807,7 @@ function renderReleaseNotes(update) {
 
   if (elements.updateReleaseNotes) {
     const notes = (update.notes || '').trim();
-    elements.updateReleaseNotes.textContent = notes || (getLanguage() === 'es' ? 'Sin notas de la versión.' : 'No release notes provided.');
+    elements.updateReleaseNotes.textContent = notes || t('update_no_release_notes');
   }
 
   syncUpdaterUI();
@@ -780,7 +841,9 @@ async function checkForUpdatesManual() {
   } catch (err) {
     console.error('Update check failed:', err);
     if (elements.updaterStatus) {
-      elements.updaterStatus.textContent = t('err_update_offline');
+      const errMsg = String(err?.message ?? err ?? '');
+      const isLinuxDebNotice = /AppImage|\.deb/i.test(errMsg);
+      elements.updaterStatus.textContent = t(isLinuxDebNotice ? 'err_update_linux_deb' : 'err_update_offline');
       elements.updaterStatus.className = 'updater-status-text status-error';
     }
   } finally {
@@ -924,40 +987,6 @@ function updateStatusUI(status) {
     `;
   }
 
-  // ASR State Pill
-  const state = status.monitor_mode ? 'monitor' : (status.asr_state || (status.is_running ? 'listening' : 'stopped'));
-  const isAudioStandbyOrReconnecting = Boolean(
-    status.is_running && (status.audio_state === 'standby' || status.audio_state === 'reconnecting')
-  );
-  const cssState = state === 'monitor'
-    ? 'listening'
-    : state.startsWith('error')
-    ? 'failed'
-    : isAudioStandbyOrReconnecting
-    ? 'degraded'
-    : (state.startsWith('Descargando') || state === 'downloading' || state === 'loading')
-    ? 'starting'
-    : state;
-  elements.pillStatus.className = `pill state-${cssState}`;
-  const stateLabels = {
-    stopped: t('status_stopped'),
-    starting: t('status_starting'),
-    loading: t('status_loading'),
-    downloading: t('status_downloading'),
-    ready: t('status_ready'),
-    listening: t('status_listening'),
-    transcribing: t('status_transcribing'),
-    degraded: t('status_degraded'),
-    failed: t('status_failed'),
-    monitor: t('status_monitor'),
-  };
-  let pillText = stateLabels[state] || state;
-  if (isAudioStandbyOrReconnecting) {
-    const audioLabel = t(`audio_${status.audio_state}`) || status.audio_state;
-    pillText += ` | Audio: ${audioLabel}`;
-  }
-  elements.pillStatusText.textContent = pillText;
-
   // VAD Pill
   if (status.vad_onset) {
     elements.pillVad.classList.add('active');
@@ -981,13 +1010,13 @@ function updateStatusUI(status) {
   elements.pillHw.classList.toggle('hw-fallback', isFallback);
 
   if (isFallback) {
-    elements.pillHw.title = status.fallback_reason || t('hw_fallback_warning') || 'GPU fallback occurred';
+    elements.pillHw.title = status.fallback_reason || t('hw_fallback_warning');
   } else if (status.is_running && status.effective_device) {
     const eff = String(status.effective_device).toLowerCase();
     if (eff === 'cuda') {
-      elements.pillHw.title = t('hw_active_cuda') || 'GPU activa (CUDA)';
+      elements.pillHw.title = t('hw_active_cuda');
     } else if (eff === 'directml' || eff === 'dml') {
-      elements.pillHw.title = t('hw_active_directml') || 'GPU activa (DirectML)';
+      elements.pillHw.title = t('hw_active_directml');
     } else {
       elements.pillHw.title = hwLabel;
     }
@@ -999,8 +1028,8 @@ function updateStatusUI(status) {
     hasNotifiedHardwareFallback = false;
   } else if (status.fallback_occurred && !hasNotifiedHardwareFallback) {
     hasNotifiedHardwareFallback = true;
-    const reason = status.fallback_reason || t('hw_fallback_warning') || 'GPU no disponible; usando CPU como respaldo';
-    appendLogEntry('warn', `Fallback de hardware: ${reason}`, 'ASR');
+    const reason = status.fallback_reason || t('hw_fallback_warning');
+    appendLogEntry('warn', t('log_hw_fallback').replace('{reason}', reason), 'ASR');
     showToast(reason, 'warning');
   }
 
@@ -1022,15 +1051,10 @@ function updateStatusUI(status) {
   if (elements.cardSubtitlesFeed) {
     elements.cardSubtitlesFeed.classList.toggle('feed-active', isFeedLive);
   }
-  if (elements.feedLiveBadge) {
-    elements.feedLiveBadge.className = isFeedLive ? 'badge badge-feed-live' : 'badge badge-feed-idle';
-    elements.feedLiveBadge.textContent = isFeedLive ? t('feed_badge_live') : t('feed_badge_idle');
-    elements.feedLiveBadge.setAttribute('data-i18n', isFeedLive ? 'feed_badge_live' : 'feed_badge_idle');
-  }
   if (elements.feedEmptyState && elements.subtitlesFeedContainer && !elements.subtitlesFeedContainer.querySelector('.feed-item')) {
     elements.feedEmptyState.textContent = isFeedLive
-      ? (t('feed_listening_live') || 'Escuchando audio en vivo — habla para ver los subtítulos en tiempo real...')
-      : (t('feed_empty') || 'Los subtítulos transcritos aparecerán aquí...');
+      ? (t('feed_listening_live'))
+      : t('feed_empty_hint');
     elements.feedEmptyState.hidden = false;
   }
 
@@ -1126,7 +1150,7 @@ function addSubtitleToFeed(text, cue = null) {
   menuBtn.type = 'button';
   menuBtn.setAttribute('aria-haspopup', 'true');
   menuBtn.setAttribute('aria-expanded', 'false');
-  const menuLabel = t('feed_item_menu_title') || 'Opciones de subtítulo';
+  const menuLabel = t('feed_item_menu_title');
   menuBtn.setAttribute('aria-label', menuLabel);
   menuBtn.title = menuLabel;
   menuBtn.setAttribute('data-i18n-aria-label', 'feed_item_menu_title');
@@ -1261,7 +1285,7 @@ function markFeedItemsBlocked(phrase) {
         const badge = document.createElement('span');
         badge.className = 'feed-item-badge-blocked';
         badge.setAttribute('data-i18n', 'badge_blocked');
-        badge.textContent = t('badge_blocked') || 'Baneado';
+        badge.textContent = t('badge_blocked');
         body.appendChild(badge);
       }
     }
@@ -1300,10 +1324,10 @@ async function addPhraseToBlacklist(text, itemElement) {
     try {
       const saved = await invoke('save_config', { config: newConfig, base: savedConfig });
       adoptSavedConfig(newConfig, saved);
-      appendLogEntry('info', `Frase añadida a lista negra: "${trimmed}"`, 'BLACKLIST');
+      appendLogEntry('info', t('log_blacklist_added').replace('{text}', trimmed), 'BLACKLIST');
       showToast(t('toast_added_to_blacklist'));
     } catch (err) {
-      appendLogEntry('error', `Error guardando lista negra: ${err}`, 'BLACKLIST');
+      appendLogEntry('error', t('log_blacklist_error').replace('{error}', err), 'BLACKLIST');
       showToast(`${t('status_error')}: ${err}`, true);
     }
   });
@@ -1336,10 +1360,10 @@ async function addTermToInitialPrompt(text) {
     try {
       const saved = await invoke('save_config', { config: newConfig, base: savedConfig });
       adoptSavedConfig(newConfig, saved);
-      appendLogEntry('info', `Término añadido a vocabulario/prompt: "${trimmed}"`, 'PROMPT');
+      appendLogEntry('info', t('log_prompt_added').replace('{text}', trimmed), 'PROMPT');
       showToast(t('toast_added_to_prompt'));
     } catch (err) {
-      appendLogEntry('error', `Error guardando vocabulario/prompt: ${err}`, 'PROMPT');
+      appendLogEntry('error', t('log_prompt_error').replace('{error}', err), 'PROMPT');
       showToast(`${t('status_error')}: ${err}`, true);
     }
   });
@@ -1374,7 +1398,7 @@ async function copyTextToClipboard(text, toastKey = 'toast_text_copied') {
       copyTextFallback(trimmed);
       showToast(t(toastKey));
     } catch (fallbackErr) {
-      showToast(`Error al copiar: ${err}`, true);
+      showToast(`${t('err_copy_failed')}: ${err}`, true);
     }
   }
 }
@@ -1387,8 +1411,8 @@ function clearSubtitleFeed() {
   if (elements.feedEmptyState) {
     const isLive = Boolean(currentStatus?.is_running || currentStatus?.monitor_mode || (monitorFeed && monitorFeed.socket));
     elements.feedEmptyState.textContent = isLive
-      ? (t('feed_listening_live') || 'Escuchando audio en vivo — habla para ver los subtítulos en tiempo real...')
-      : (t('feed_empty') || 'Los subtítulos transcritos aparecerán aquí...');
+      ? (t('feed_listening_live'))
+      : t('feed_empty_hint');
     elements.feedEmptyState.hidden = false;
   }
   if (elements.feedCountBadge) {
@@ -1877,7 +1901,10 @@ async function resetActiveTab() {
     icon: 'refresh',
   });
   if (!ok) return;
-  const d = tab.defaults(navigator.hardwareConcurrency || 8);
+  const d = tab.defaults(maxCpuThreads || navigator.hardwareConcurrency || 8);
+  if (activeTabId === 'tab-advanced' && autoCpuThreads) {
+    d.cpu_threads = autoCpuThreads;
+  }
   if (activeTabId === 'tab-advanced') {
     populateAdvancedControls({ ...currentConfig, ...d });
     syncAdvancedUnsaved();
@@ -1921,7 +1948,7 @@ function renderSubtitlePreview() {
   elements.subStylePreview.dataset.font = font;
 
   const style = baseStyle();
-  const rawText = t('sub_style_preview_text') || 'Así se verán tus subtítulos';
+  const rawText = t('sub_style_preview_text');
   const cleanText = String(rawText).replace(/\s+/g, ' ').trim();
   if (style === 'karaoke' || style === 'rgb' || style === 'typewriter') {
     elements.subStylePreviewText.textContent = '';
@@ -2013,10 +2040,10 @@ function populateAdvancedControls(config) {
   } else {
     if (elements.deviceRadioCpu) elements.deviceRadioCpu.checked = true;
   }
+  elements.checkCpuThreadsAuto.checked = config.cpu_threads_auto !== false;
+  manualCpuThreads = config.cpu_threads;
   updateComputeDeviceReactivity(config.device || 'cpu');
 
-  elements.sliderCpuThreads.value = config.cpu_threads;
-  elements.valCpuThreads.textContent = config.cpu_threads;
 
   elements.sliderSilenceTimeout.value = config.silence_timeout;
   elements.valSilenceTimeout.textContent = `${config.silence_timeout}s`;
@@ -2034,25 +2061,35 @@ function populateAdvancedControls(config) {
 
   elements.selectBacklogPolicy.value = config.subtitle_backlog_policy || 'auto';
   elements.selectAsrBackend.value = config.asr_backend || 'auto';
+  syncEngineControls();
 
-  elements.sliderMaxLiveDelay.value = config.subtitle_max_live_delay_sec || 10.0;
-  elements.valMaxLiveDelay.textContent = `${config.subtitle_max_live_delay_sec || 10.0}s`;
+  const maxLiveDelay = config.subtitle_max_live_delay_sec ?? 10.0;
+  elements.sliderMaxLiveDelay.value = maxLiveDelay;
+  elements.valMaxLiveDelay.textContent = `${maxLiveDelay}s`;
 
   elements.inputWsPort.value = config.ws_port || 8765;
-  elements.sliderVadPad.value = config.vad_speech_pad_ms || 200;
-  elements.valVadPad.textContent = `${config.vad_speech_pad_ms || 200}ms`;
+  const vadPad = config.vad_speech_pad_ms ?? 200;
+  elements.sliderVadPad.value = vadPad;
+  elements.valVadPad.textContent = `${vadPad}ms`;
 
-  elements.sliderVadThreshold.value = config.vad_threshold || 0.5;
-  elements.valVadThreshold.textContent = `${config.vad_threshold || 0.5}`;
+  const vadThreshold = config.vad_threshold ?? 0.5;
+  elements.sliderVadThreshold.value = vadThreshold;
+  elements.valVadThreshold.textContent = `${vadThreshold}`;
 
   elements.checkRnnoiseEnabled.checked = Boolean(config.rnnoise_enabled);
+  elements.checkContextPromptEnabled.checked = config.context_prompt_enabled !== false;
+  elements.checkBlacklistEnabled.checked = config.blacklist_enabled !== false;
+  dimVocabularyEditors();
+  elements.checkFollowOpencohostLanguage.checked = Boolean(config.follow_opencohost_language);
+  refreshOpencohostStatus();
   if (elements.checkMcpStyleEnabled) elements.checkMcpStyleEnabled.checked = config.mcp_style_enabled === true;
   if (elements.checkMcpSystemEnabled) elements.checkMcpSystemEnabled.checked = config.mcp_system_enabled === true;
   if (elements.checkUpdatesEnabled) elements.checkUpdatesEnabled.checked = config.check_updates_enabled !== false;
   elements.checkAcousticEventsEnabled.checked = Boolean(config.acoustic_events_enabled);
   if (elements.checkLivePartialSubtitles) elements.checkLivePartialSubtitles.checked = Boolean(config.live_partial_subtitles_enabled);
-  elements.sliderCatchupInterval.value = config.subtitle_catchup_interval_sec || 1.5;
-  elements.valCatchupInterval.textContent = `${config.subtitle_catchup_interval_sec || 1.5}s`;
+  const catchupInterval = config.subtitle_catchup_interval_sec ?? 1.5;
+  elements.sliderCatchupInterval.value = catchupInterval;
+  elements.valCatchupInterval.textContent = `${catchupInterval}s`;
 }
 
 // Populate Settings Form from Config
@@ -2096,6 +2133,12 @@ function populateForm(config, updateSavedBaseline = true) {
   syncAdvancedUnsaved();
 }
 
+// The editors stay editable while their switch is off, but look dimmed.
+function dimVocabularyEditors() {
+  elements.promptEs?.classList.toggle('is-dimmed', !elements.checkContextPromptEnabled.checked);
+  elements.inputBlacklist?.classList.toggle('is-dimmed', !elements.checkBlacklistEnabled.checked);
+}
+
 // Synchronize dynamic prompt and blacklist content based on active spoken language
 function syncAsrLanguageUi(newLang) {
   if (newLang !== currentAsrLang) {
@@ -2117,23 +2160,17 @@ function syncAsrLanguageUi(newLang) {
 
   if (elements.promptEs) {
     elements.promptEs.value = drafts.prompts[newLang] || '';
-    elements.promptEs.placeholder = newLang === 'en'
-      ? 'Custom gaming terms, names, slang...'
-      : 'Términos técnicos, jerga de juego, nombres propios...';
+    elements.promptEs.placeholder = t(newLang === 'en' ? 'ph_prompt_en' : 'ph_prompt_es');
   }
   if (elements.hintPrompt) {
-    elements.hintPrompt.textContent = newLang === 'en'
-      ? "Ayuda a reducir alucinaciones en inglés. Ej: 'Coding stream, Python tutorials, backend development'."
-      : "Ayuda a reducir alucinaciones en español. Ej: 'Stream de gaming, jugamos Minecraft y charlamos con viewers'.";
+    elements.hintPrompt.textContent = t(newLang === 'en' ? 'hint_prompt_en' : 'hint_prompt_es');
   }
 
   if (elements.inputBlacklist) {
     elements.inputBlacklist.value = drafts.blacklists[newLang] || '';
   }
   if (elements.hintBlacklist) {
-    elements.hintBlacklist.textContent = newLang === 'en'
-      ? "Palabras en inglés que se omitirán si Whisper las genera en silencio."
-      : "Palabras separadas por comas que se omitirán si Whisper las genera en silencio.";
+    elements.hintBlacklist.textContent = t('hint_blacklist');
   }
 }
 
@@ -2153,15 +2190,19 @@ function collectFormData() {
   cfg.device = elements.selectComputeDevice
     ? elements.selectComputeDevice.value
     : (elements.deviceRadioCuda && elements.deviceRadioCuda.checked ? 'cuda' : 'cpu');
-  cfg.cpu_threads = parseInt(elements.sliderCpuThreads.value, 10);
+  cfg.cpu_threads = clampCpuThreads(manualCpuThreads);
+  cfg.cpu_threads_auto = elements.checkCpuThreadsAuto.checked;
   cfg.silence_timeout = parseFloat(elements.sliderSilenceTimeout.value);
   cfg.max_chunk_duration = parseFloat(elements.sliderMaxChunk.value);
   if (cfg.max_chunk_duration > 15.0) {
     cfg.transcription_purpose = 'transcription';
+  } else if (cfg.transcription_purpose === 'transcription') {
+    cfg.transcription_purpose = 'subtitles';
   }
 
   cfg.model_size = elements.selectModelSize.value;
   cfg.asr_language = currentAsrLang;
+  cfg.follow_opencohost_language = elements.checkFollowOpencohostLanguage.checked;
   cfg.whisper_context_prompt_es = drafts.prompts.es.trim();
   cfg.whisper_context_prompt_en = drafts.prompts.en.trim();
   cfg.blacklist = drafts.blacklists[currentAsrLang].trim();
@@ -2179,13 +2220,16 @@ function collectFormData() {
   cfg.subtitle_max_live_delay_sec = parseFloat(elements.sliderMaxLiveDelay.value);
   cfg.subtitle_catchup_interval_sec = parseFloat(elements.sliderCatchupInterval.value);
 
-  cfg.ws_port = parseInt(elements.inputWsPort.value, 10) || 8765;
+  const rawWsPort = parseInt(elements.inputWsPort.value, 10);
+  cfg.ws_port = Number.isFinite(rawWsPort) ? Math.min(65535, Math.max(1024, rawWsPort)) : 8765;
   cfg.vad_speech_pad_ms = parseInt(elements.sliderVadPad.value, 10);
   cfg.vad_threshold = parseFloat(elements.sliderVadThreshold.value);
   cfg.continuous_session = elements.checkContinuous.checked;
   cfg.save_transcript_enabled = elements.checkSaveTranscript.checked;
   cfg.save_vtt_enabled = elements.checkSaveVtt.checked;
   cfg.rnnoise_enabled = elements.checkRnnoiseEnabled.checked;
+  cfg.context_prompt_enabled = elements.checkContextPromptEnabled.checked;
+  cfg.blacklist_enabled = elements.checkBlacklistEnabled.checked;
   if (elements.checkMcpStyleEnabled) cfg.mcp_style_enabled = elements.checkMcpStyleEnabled.checked;
   if (elements.checkMcpSystemEnabled) cfg.mcp_system_enabled = elements.checkMcpSystemEnabled.checked;
   if (elements.checkUpdatesEnabled) cfg.check_updates_enabled = elements.checkUpdatesEnabled.checked;
@@ -2226,8 +2270,13 @@ async function loadAudioDevices() {
     devices.forEach((dev) => {
       const opt = document.createElement('option');
       opt.value = dev.id;
+      const displayName = dev.id === 'default_microphone'
+        ? t('opt_default_mic')
+        : dev.id === 'default_loopback'
+          ? t('opt_loopback')
+          : dev.name;
       const defaultSuffix = dev.is_default ? ` (${getLanguage() === 'es' ? 'Predeterminado' : 'Default'})` : '';
-      opt.textContent = `${dev.name}${defaultSuffix}`;
+      opt.textContent = `${displayName}${defaultSuffix}`;
       if (currentConfig && currentConfig.audio_device && currentConfig.audio_device.id === dev.id) {
         opt.selected = true;
       }
@@ -2300,7 +2349,7 @@ function renderAllowedConnections(data) {
 
         const portSpan = document.createElement('span');
         portSpan.className = 'conn-origin';
-        portSpan.textContent = `Port ${port}`;
+        portSpan.textContent = t('lbl_port_n').replace('{port}', port);
         info.appendChild(portSpan);
 
         if (port === 1420) {
@@ -2314,7 +2363,7 @@ function renderAllowedConnections(data) {
         revokeBtn.type = 'button';
         revokeBtn.className = 'btn-secondary btn-sm';
         revokeBtn.textContent = t('btn_revoke_port');
-        revokeBtn.setAttribute('aria-label', `${t('btn_revoke_port')} port ${port}`);
+        revokeBtn.setAttribute('aria-label', `${t('btn_revoke_port')} ${t('lbl_port_n').replace('{port}', port)}`);
         revokeBtn.addEventListener('click', async () => {
           revokeBtn.disabled = true;
           try {
@@ -2369,7 +2418,7 @@ function renderAllowedConnections(data) {
           allowBtn.type = 'button';
           allowBtn.className = 'btn-secondary btn-sm';
           allowBtn.textContent = t('btn_allow_origin');
-          allowBtn.setAttribute('aria-label', `${t('btn_allow_origin')} port ${entry.port}`);
+          allowBtn.setAttribute('aria-label', `${t('btn_allow_origin')} ${t('lbl_port_n').replace('{port}', entry.port)}`);
           allowBtn.addEventListener('click', async () => {
             allowBtn.disabled = true;
             try {
@@ -2386,6 +2435,19 @@ function renderAllowedConnections(data) {
         elements.recentBlockedList.appendChild(row);
       }
     }
+  }
+}
+
+// Status line under the OpenCohost slider: visible only while it is on; any failure just hides it.
+async function refreshOpencohostStatus() {
+  const el = elements.statusOpencohostLanguage;
+  el.hidden = true;
+  if (!elements.checkFollowOpencohostLanguage.checked) return;
+  try {
+    el.textContent = opencohostStatusText(await invoke('opencohost_language_status'), t);
+    el.hidden = !el.textContent;
+  } catch (err) {
+    console.error('Error reading the OpenCohost language status:', err);
   }
 }
 
@@ -2472,17 +2534,27 @@ async function initApp() {
       updateProfileDescription();
       updateStatusUI(currentStatus);
       applyTranslations(newLang);
+      // applyTranslations resets the vocabulary hints; keep typed text and re-localize them for the selected vocabulary language.
+      if (elements.promptEs) drafts.prompts[currentAsrLang] = elements.promptEs.value;
+      if (elements.inputBlacklist) drafts.blacklists[currentAsrLang] = elements.inputBlacklist.value;
+      syncAsrLanguageUi(currentAsrLang);
       updateComputeDeviceReactivity();
+      renderEngineSummary();
+      refreshOpencohostStatus();
     });
   }
 
+  elements.selectModelSize.addEventListener('change', syncEngineControls);
+  elements.checkFollowOpencohostLanguage.addEventListener('change', refreshOpencohostStatus);
   if (elements.selectComputeDevice) {
     elements.selectComputeDevice.addEventListener('change', (e) => {
       updateComputeDeviceReactivity(e.target.value);
+      renderEngineSummary();
     });
   }
 
   // Advanced controls: the chip follows every edit; Reset asks first and only edits the form.
+  for (const el of [elements.checkContextPromptEnabled, elements.checkBlacklistEnabled]) el.addEventListener('change', dimVocabularyEditors);
   for (const id of ADVANCED_FIELD_IDS) {
     for (const type of ['input', 'change']) document.getElementById(id)?.addEventListener(type, syncAdvancedUnsaved);
   }
@@ -2490,6 +2562,7 @@ async function initApp() {
     : from?.id === 'tab-advanced-tab' ? confirmLeaveAdvancedTab() : true), onActivate: (tab) => {
     setActiveTab(tab.dataset.tab);
     if (tab.dataset.tab === 'tab-advanced') refreshAllowedConnections();
+    if (tab.dataset.tab === 'tab-setup') refreshOpencohostStatus();
   } });
   // Installed fonts for the Style tab; any failure keeps the curated list.
   invoke('list_system_fonts').then((names) => {
@@ -2532,8 +2605,10 @@ async function initApp() {
   elements.btnAboutSponsor.addEventListener('click', () => openSupportLink('sponsor'));
 
   // Slider bindings
+  elements.checkCpuThreadsAuto.addEventListener('change', () => updateComputeDeviceReactivity());
   elements.sliderCpuThreads.addEventListener('input', (e) => {
-    elements.valCpuThreads.textContent = e.target.value;
+    manualCpuThreads = parseInt(e.target.value, 10);
+    renderCpuThreads();
   });
   elements.sliderSilenceTimeout.addEventListener('input', (e) => {
     elements.valSilenceTimeout.textContent = `${e.target.value}s`;
@@ -2695,18 +2770,18 @@ async function initApp() {
 
     try {
       if (targetAction === 'stopping') {
-        appendLogEntry('info', 'Deteniendo servicio de transcripción...', 'SERVICE');
+        appendLogEntry('info', t('log_service_stopping'), 'SERVICE');
         const newStatus = await invoke('stop_service');
         currentStatus = newStatus;
-        appendLogEntry('info', 'Servicio detenido.', 'SERVICE');
+        appendLogEntry('info', t('log_service_stopped'), 'SERVICE');
       } else {
-        appendLogEntry('info', 'Iniciando servicio de transcripción...', 'SERVICE');
+        appendLogEntry('info', t('log_service_starting'), 'SERVICE');
         const newStatus = await invoke('start_service');
         currentStatus = newStatus;
-        appendLogEntry('info', 'Servicio iniciado correctamente.', 'SERVICE');
+        appendLogEntry('info', t('log_service_started'), 'SERVICE');
       }
     } catch (err) {
-      appendLogEntry('error', `Error en servicio: ${err}`, 'ERROR');
+      appendLogEntry('error', t('log_service_error').replace('{error}', err), 'ERROR');
       showToast(`${t('status_error')}: ${err}`, true);
     } finally {
       isServiceActionPending = false;
@@ -2722,13 +2797,13 @@ async function initApp() {
 
   elements.btnRuntimeRepair.addEventListener('click', async () => {
     try {
-      appendLogEntry('info', 'Iniciando verificación/reparación de entorno ASR...', 'SETUP');
+      appendLogEntry('info', t('log_setup_repair_start'), 'SETUP');
       setRuntimeSetupProgress({ phase: 'starting', text: t('runtime_setup_starting'), percent: null });
       await invoke('prepare_asr_runtime');
       setRuntimeSetupProgress({ phase: 'ready', text: t('runtime_setup_ready'), percent: 100 });
-      appendLogEntry('info', 'Entorno ASR preparado con éxito.', 'SETUP');
+      appendLogEntry('info', t('log_setup_repair_done'), 'SETUP');
     } catch (error) {
-      appendLogEntry('error', `Error al preparar entorno ASR: ${error}`, 'SETUP');
+      appendLogEntry('error', t('log_setup_repair_error').replace('{error}', error), 'SETUP');
       setRuntimeSetupProgress({ phase: 'error', text: String(error), percent: null });
       showToast(`${t('status_error')}: ${error}`, true);
     }
@@ -2922,7 +2997,7 @@ async function initApp() {
   try {
     const recentLogs = await invoke('get_recent_logs', { maxLines: 40 });
     if (elements.loggerConsole) elements.loggerConsole.innerHTML = '';
-    appendLogEntry('info', t('log_events_ready') || 'Sistema listo.', 'SYSTEM');
+    appendLogEntry('info', t('log_events_ready'), 'SYSTEM');
     if (Array.isArray(recentLogs)) {
       for (const line of recentLogs) {
         const clean = line.replace(/\x1b\[[0-9;]*m/g, '').trim();
@@ -2935,7 +3010,7 @@ async function initApp() {
       }
     }
   } catch (_) {
-    appendLogEntry('info', t('log_events_ready') || 'Sistema listo.', 'SYSTEM');
+    appendLogEntry('info', t('log_events_ready'), 'SYSTEM');
   }
 
   // Subscribe to Tauri events safely
@@ -2966,14 +3041,12 @@ async function initApp() {
 
           if (phaseChanged || textChanged || milestoneCrossed) {
             lastLoggedSetup = { phase, text: cleanText, milestone };
-            const pctStr = percent != null ? ` (${Math.round(percent)}%)` : '';
-            appendLogEntry(isErr ? 'error' : 'info', `[${phase}] ${cleanText}${pctStr}`, 'SETUP');
+            appendLogEntry(isErr ? 'error' : 'info', setupLogLine(phase, cleanText, percent, t), 'SETUP');
           }
         } else {
           if (phase !== lastLoggedSetup.phase || cleanText !== lastLoggedSetup.text) {
             lastLoggedSetup = { phase, text: cleanText, milestone: null };
-            const pctStr = percent != null ? ` (${Math.round(percent)}%)` : '';
-            appendLogEntry(isErr ? 'error' : 'info', `[${phase}] ${cleanText}${pctStr}`, 'SETUP');
+            appendLogEntry(isErr ? 'error' : 'info', setupLogLine(phase, cleanText, percent, t), 'SETUP');
           }
         }
       }
@@ -2991,11 +3064,7 @@ async function initApp() {
           audio_state !== lastLoggedStatus.audio_state
         ) {
           lastLoggedStatus = { is_running, asr_state, audio_state };
-          const runningLabel = is_running ? 'En ejecución' : 'Detenido';
-          let logMsg = `Estado: ${runningLabel} | ASR: ${asr_state}`;
-          if (is_running && (audio_state === 'standby' || audio_state === 'reconnecting')) {
-            logMsg += ` | Audio: ${audio_state}`;
-          }
+          const logMsg = statusLogLine(event.payload, t);
           appendLogEntry('info', logMsg, 'STATUS');
         }
       }
@@ -3155,12 +3224,13 @@ function renderGpuStatus() {
 function renderEngineSummary() {
   const live = currentStatus;
   const running = Boolean(live?.is_running);
-  const kind = engineKind(gpuStatus, live);
+  const parakeet = isParakeetModel(elements.selectModelSize.value);
+  const kind = !running && elements.selectComputeDevice?.value === 'cpu' ? 'cpu' : engineKind(gpuStatus, live);
   const reason = running && live.backend_reason ? live.backend_reason : gpuStatus?.reason;
   elements.enginePill.className = running ? 'pill state-listening' : 'pill state-stopped';
   elements.engineStatusText.textContent = kind ? `${t(running ? 'engine_using' : 'engine_will_use')}${t(`engine_name_${kind}`)}` : '';
-  elements.engineStatusReason.textContent = reason ? t(gpuReasonKey(reason)) : '';
-  elements.btnNvidiaAdvanced.hidden = !nvidiaOfferVisible(gpuStatus, false);
+  elements.engineStatusReason.textContent = reason && !parakeet ? t(gpuReasonKey(reason)) : '';
+  elements.btnNvidiaAdvanced.hidden = parakeet || !nvidiaOfferVisible(gpuStatus, false);
 }
 
 function renderEngineDetails() {
@@ -3204,7 +3274,7 @@ function renderNvidiaCard() {
 function nvidiaResultText(state, running) {
   if (state === 'success') return t(running ? 'nvidia_card_success_restart' : 'nvidia_card_success_next');
   if (state !== 'error') return '';
-  return t(/HTTP status 404/.test(nvidiaErrorMessage) ? 'nvidia_card_unavailable' : 'nvidia_card_error_hint');
+  return t(nvidiaErrorMessage.includes('worker_not_published') ? 'nvidia_card_unavailable' : 'nvidia_card_error_hint');
 }
 
 function nvidiaProgressText(p) {
@@ -3219,6 +3289,10 @@ function nvidiaProgressText(p) {
 async function refreshGpuStatus() {
   try {
     gpuStatus = await invoke('get_gpu_backend_status');
+    autoCpuThreads = gpuStatus?.default_cpu_threads || null;
+    maxCpuThreads = gpuStatus?.max_cpu_threads || null;
+    syncHardwareOptions();
+    updateComputeDeviceReactivity();
   } catch (_) {
     gpuStatus = null;
   }

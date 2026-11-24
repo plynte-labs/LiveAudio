@@ -4,7 +4,7 @@ by Plynte Labs / FranGuh
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) [![Rust 2021](https://img.shields.io/badge/Rust-2021%20Edition-orange.svg)](https://www.rust-lang.org/) [![Tauri v2](https://img.shields.io/badge/Tauri-v2-blue.svg)](https://tauri.app/) [![DirectML](https://img.shields.io/badge/DirectML-DX12%20GPU-purple.svg)](https://learn.microsoft.com/en-us/windows/ai/directml/dml) [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux-lightgrey.svg)](#system-requirements)
 
-**Real-time, 100% local subtitles for streamers.** LiveAudio captures your mic or system audio, transcribes it locally on your GPU or CPU using native Whisper on ONNX Runtime DirectML or CPU (plus an optional NVIDIA CUDA engine), and streams live subtitles to OBS Studio with zero cloud reliance. Audio and transcripts never leave your machine; the application only queries GitHub Releases for updates every 24 hours (can be toggled off in Settings > Advanced).
+**Real-time, 100% local subtitles for streamers.** LiveAudio captures your mic or system audio, transcribes it locally on your GPU or CPU with NVIDIA Parakeet (recommended) or Whisper on ONNX Runtime DirectML or CPU (plus an optional NVIDIA CUDA engine for Whisper), and streams live subtitles to OBS Studio with zero cloud reliance. Audio and transcripts never leave your machine; the application only queries GitHub Releases for updates every 24 hours (can be toggled off in Settings > Advanced).
 
 <img width="1917" height="1020" alt="LiveAudio v1.6.0" src="https://github.com/user-attachments/assets/7b4c167c-9473-4009-836a-c5cb3592b29f" />
 
@@ -23,8 +23,9 @@ Mic / Loopback ──► Rust (CPAL Capture) ──► Rust (Silero VAD, ONNX) �
 ```
 
 - **100% Native Rust Core & Pipeline:** Audio capture (CPAL), Voice Activity Detection (Silero VAD in ONNX Runtime), Whisper ASR engine (in native Rust with ONNX Runtime DirectML for DirectX 12 hardware acceleration on NVIDIA, AMD, and Intel GPUs, plus CPU multi-thread fallback on Windows and Linux, and an optional NVIDIA CUDA engine on CTranslate2), WebSocket broadcast, and configuration management.
+- **Parakeet recommended over Whisper:** NVIDIA Parakeet-TDT 0.6B v3 (CC-BY-4.0) runs on the same ONNX Runtime stack (int8 on CPU, DirectML on GPU, downloaded on demand). It covers 25 European languages including Spanish and English, rarely hallucinates text on silence or noise, and in our benchmark it was about twice as fast as Whisper `small` on CPU. Choose Whisper for other languages, for translation to English, or when you need a context prompt.
 - **Zero Python Requirement:** No Python installation, virtual environments (`.venv`), or CUDA toolkit installation required. Windows distributions bundle `DirectML.dll` and `onnxruntime.dll` (`1.24.4-directml`) for plug-and-play DirectX 12 GPU acceleration.
-- **Process Supervision & Safety:** Win32 Job Objects guarantee clean shutdown with 0 orphan or zombie processes.
+- **Process Supervision & Safety:** Win32 Job Objects on Windows and `PR_SET_PDEATHSIG` on Linux guarantee clean shutdown with 0 orphan or zombie processes.
 - **High-Speed Architecture:** Audio frames, VAD triggers, ASR chunks, and WebSocket broadcasts flow through lock-free channels with minimal latency.
 
 ## Results (Native Rust ORT vs Legacy Python)
@@ -44,14 +45,14 @@ Measured on: Windows 11, RTX 3060, AMD Ryzen 7 3700G, 32 GB RAM.
 ## Quick Start (Streamers & End Users)
 
 ### 1. Download & Launch
-1. Download **`LiveAudio-Setup-1.6.0.exe`** from [GitHub Releases](https://github.com/plynte-labs/LiveAudio/releases/latest). The portable `.zip` (`liveaudio-cli-*-windows-x64.zip`) contains only the CLI and ASR worker, not the desktop app.
-2. Launch the application. LiveAudio runs out of the box with its embedded ONNX Runtime DirectML engine and Silero VAD. No external Python or CUDA drivers are required.
+1. Download **`LiveAudio-Setup-1.6.5.exe`** (Windows) or the **`.AppImage` / `.deb`** bundle (Linux) from [GitHub Releases](https://github.com/plynte-labs/LiveAudio/releases/latest). The portable archives (`liveaudio-cli-*-windows-x64.zip` / `liveaudio-cli-*-linux-x64.tar.gz`) contain only the CLI and ASR worker, not the desktop app.
+2. Launch the application. LiveAudio runs out of the box with its embedded ONNX Runtime engine (DirectML on Windows, CPU on Linux) and Silero VAD. No external Python or CUDA drivers are required.
 
-> **Updating from v1.5.1 or older:** Users on v1.5.1 or older must install v1.6.0 manually once. Versions 1.5.1 and earlier do not include the in-app updater engine or public signing keys. Subsequent updates from 1.6.0 onward update seamlessly in-app. The in-app updater is Windows-only; Linux users download new releases manually.
+> **Updating from v1.5.1 or older:** Users on v1.5.1 or older must install v1.6.0 manually once. Versions 1.5.1 and earlier do not include the in-app updater engine or public signing keys. Subsequent updates from 1.6.0 onward update seamlessly in-app on Windows (NSIS) and Linux (`.AppImage`); Linux `.deb` users update via GitHub Releases.
 
 ### 2. Configure in 3 Clicks
 In the **Setup (Inicio)** tab:
-1. **Audio Device:** Select your physical microphone or **WASAPI Loopback** (to transcribe desktop / game audio).
+1. **Audio Device:** Select your physical microphone or **System Audio (Loopback)** (WASAPI on Windows; PipeWire/PulseAudio monitor with ALSA fallback on Linux) to transcribe desktop / game audio.
 2. **Spoken Language:** Choose `es` (Spanish) or `en` (English).
 3. **Hardware Profile:** Select `Balanced` (default) or any profile that fits your hardware.
 4. Click **Start Transcription (Iniciar Transcripción)**.
@@ -104,8 +105,8 @@ Choose your style on the **Subtitles** tab without restarting the app:
 - Fully bilingual UI with an instant switch between **Spanish (🇪🇸)** and **English (🇺🇸)**.
 - Settings organized into **Setup**, **Subtitles**, **Advanced**, and **Files**.
 
-### 3. Native Audio Capture & WASAPI Loopback
-- Low-latency physical microphone capture and Windows WASAPI Loopback via CPAL.
+### 3. Native Audio Capture & System Loopback
+- Low-latency physical microphone capture and system audio loopback via CPAL (WASAPI Loopback on Windows; PipeWire/PulseAudio monitor capture with ALSA fallback on Linux).
 - Dynamic resampler handling sample rates from 8 kHz to 192 kHz down to Whisper's native 16 kHz mono.
 
 ### 4. Silero VAD v6 Voice Activity Detection
@@ -176,10 +177,13 @@ node --test tests-js/test_updater_manifest.mjs
 ### Production Release Build
 
 ```bash
-# 1. Build the release CLI sidecar binary
+# 1. Fetch pinned ONNX Runtime 1.24.4 binaries from official NuGet packages (verified by SHA-256)
+node packaging/fetch_onnxruntime.mjs
+
+# 2. Build the release CLI sidecar binary
 cargo build --release -p liveaudio-cli
 
-# 2. Build the Tauri 2 desktop package (installer & updater bundle)
+# 3. Build the Tauri 2 desktop package (NSIS on Windows; .AppImage + .deb on Linux)
 cd desktop
 npx @tauri-apps/cli@2.12.1 build --config src-tauri/tauri.release.conf.json
 ```
@@ -217,7 +221,8 @@ LiveAudio/
 | Issue | Likely Cause | Solution |
 |---|---|---|
 | **No audio captured / blank subtitles** | Incorrect audio device selected | Check the **Setup** tab and confirm your mic or WASAPI loopback is selected. Verify permissions. |
-| **High latency (>3s) on CPU** | Model size too large for CPU | Switch to `tiny` or `base`, or select the `Fast` profile. |
+| **High latency (>3s) on CPU** | Model size too large for CPU | Switch to `parakeet` (CPU int8), or to Whisper `tiny` / `base`, or select the `Fast` profile. |
+| **Invented phrases on silence ("Thanks for watching")** | Whisper hallucination | Switch to `parakeet` for Spanish or English; otherwise keep the blacklist filter on. |
 | **OBS overlay shows disconnected** | LiveAudio not running or wrong port | Verify LiveAudio is started (**Start Transcription**). Check status pill for effective port (e.g., `8765`). If changed, use `?port=XXXX` in the OBS browser URL or use `http://127.0.0.1:<port>/overlay`. |
 | **DirectML / GPU initialization failure** | Outdated graphics drivers | Update your GPU drivers (NVIDIA, AMD, or Intel) or switch to CPU mode in settings. |
 | **Model download stalled** | Network timeout or TLS interruption | Click **Retry**. LiveAudio resumes downloads without restarting from scratch. |

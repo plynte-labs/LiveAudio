@@ -65,6 +65,7 @@ export interface LiveAudioConfig {
   output_dir: string;
   device: 'cuda' | 'cpu';
   cpu_threads: number;
+  cpu_threads_auto: boolean;
   model_size: string;
   blacklist: string;
   continuous_session: boolean;
@@ -86,6 +87,9 @@ export interface LiveAudioConfig {
   ws_port: number;
   obs_enabled: boolean;
   rnnoise_enabled: boolean;
+  context_prompt_enabled: boolean;
+  blacklist_enabled: boolean;
+  follow_opencohost_language: boolean;
   mcp_style_enabled: boolean;
   mcp_system_enabled: boolean;
   check_updates_enabled: boolean;
@@ -153,7 +157,10 @@ interface GpuBackendStatus {
   adapters: { vendor: string; name: string; dedicated_vram_mb: number }[];
   cuda_driver_version: number | null;
   nvidia_runtime: { installed: boolean; missing: string[] };
+  worker_published: boolean;
   license_urls: string[];
   selected_backend: string;
   reason: string;
+  default_cpu_threads: number;
+  max_cpu_threads: number;
 }

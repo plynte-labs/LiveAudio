@@ -1,10 +1,13 @@
 // Runtime-affecting settings require a confirmed service restart to take effect.
 const RUNTIME_SETTINGS = [
   'device',
+  'cpu_threads',
+  'cpu_threads_auto',
   'model_size',
   'audio_device',
   'ws_port',
   'asr_language',
+  'follow_opencohost_language',
   'language',
   'whisper_context_prompt_es',
   'whisper_context_prompt_en',
@@ -20,6 +23,7 @@ const RUNTIME_SETTINGS = [
   'save_transcript_enabled',
   'save_vtt_enabled',
   'rnnoise_enabled',
+  'context_prompt_enabled',
   'acoustic_events_enabled',
   'live_partial_subtitles_enabled',
   'asr_backend',
@@ -214,6 +218,14 @@ export function monitorBannerText(status, translate) {
   return translate('monitor_banner').replace('{pid}', owner);
 }
 
+// Status line under the OpenCohost slider, from the backend's { state, language?, path? } (path is the file checked).
+export function opencohostStatusText(status, translate) {
+  if (!status) return '';
+  if (status.state === 'detected') return `${translate('opencohost_detected')}${translate(`opt_asr_${status.language}`)} — ${status.path}`;
+  if (status.state === 'unsupported') return `${translate('opencohost_unsupported')} ${status.path}`;
+  return status.path ? `${translate('opencohost_not_found')} — ${status.path}` : translate('opencohost_not_found');
+}
+
 export function sessionFailureLabel(status) {
   return status.session_error || '';
 }
@@ -263,6 +275,11 @@ export const NVIDIA_MIN_DRIVER = 12080;
  * Engine a status points to, as 'cuda', 'directml' or 'cpu': the live engine while the service runs,
  * otherwise the selected one (ONNX uses DirectML when a GPU is present). Null when nothing is known.
  */
+// Parakeet always runs in the ORT worker (never ct2); its encoder follows the selected device.
+export function isParakeetModel(modelSize) {
+  return String(modelSize ?? '').trim().toLowerCase().startsWith('parakeet');
+}
+
 export function engineKind(gpu, live) {
   if (live?.is_running && live.active_backend) {
     const device = String(live.effective_device || '').toLowerCase();
@@ -296,7 +313,7 @@ export function nvidiaInstallConfig(config) {
 
 /** True when the opt-in NVIDIA runtime offer should be shown. */
 export function nvidiaOfferVisible(status, dismissed) {
-  return Boolean(status && !dismissed
+  return Boolean(status && !dismissed && status.worker_published
     && status.adapters?.some((adapter) => adapter.vendor === 'nvidia')
     && status.cuda_driver_version >= NVIDIA_MIN_DRIVER
     && status.nvidia_runtime && !status.nvidia_runtime.installed);
@@ -305,7 +322,7 @@ export function nvidiaOfferVisible(status, dismissed) {
 // The Advanced tab's own settings. Styles, saved styles, vocabulary (prompts, blacklist), audio device,
 // language and session files belong to other tabs and are never part of an Advanced reset.
 export const ADVANCED_KEYS = Object.freeze([
-  'model_size', 'device', 'cpu_threads', 'asr_backend', 'silence_timeout', 'max_chunk_duration', 'vad_speech_pad_ms',
+  'model_size', 'device', 'cpu_threads', 'cpu_threads_auto', 'asr_backend', 'silence_timeout', 'max_chunk_duration', 'vad_speech_pad_ms',
   'vad_threshold', 'rnnoise_enabled', 'live_partial_subtitles_enabled', 'subtitle_backlog_policy',
   'subtitle_max_live_delay_sec', 'subtitle_catchup_interval_sec', 'ws_port', 'acoustic_events_enabled',
   'mcp_style_enabled', 'mcp_system_enabled', 'check_updates_enabled',
@@ -314,8 +331,8 @@ export const ADVANCED_KEYS = Object.freeze([
 // Defaults of the Advanced keys, same as LiveAudioConfig::default (cpu_threads is half the cores).
 export function advancedDefaults(cores = 4) {
   return {
-    model_size: 'small (Balance CPU)', device: 'cpu', cpu_threads: Math.min(16, Math.max(1, Math.floor(cores / 2))), asr_backend: 'auto',
-    silence_timeout: 0.5, max_chunk_duration: 3.0, vad_speech_pad_ms: 200, vad_threshold: 0.5, rnnoise_enabled: false,
+    model_size: 'small (Balance CPU)', device: 'cpu', cpu_threads: Math.max(1, Math.floor(cores / 2)), cpu_threads_auto: true, asr_backend: 'auto',
+    silence_timeout: 0.5, max_chunk_duration: 3.0, transcription_purpose: 'subtitles', vad_speech_pad_ms: 200, vad_threshold: 0.5, rnnoise_enabled: false,
     live_partial_subtitles_enabled: false, subtitle_backlog_policy: 'auto', subtitle_max_live_delay_sec: 10.0,
     subtitle_catchup_interval_sec: 1.5, ws_port: 8765, acoustic_events_enabled: false, mcp_style_enabled: false, mcp_system_enabled: false, check_updates_enabled: true,
   };
@@ -332,7 +349,7 @@ export const TAB_RESETS = Object.freeze({
   },
   'tab-advanced': {
     title: 'tab_advanced',
-    labels: ['lbl_model_size', 'lbl_compute_device', 'lbl_cpu_threads', 'lbl_asr_backend', 'lbl_silence_timeout', 'lbl_max_chunk', 'lbl_vad_pad',
+    labels: ['lbl_model_size', 'lbl_compute_device', 'lbl_cpu_threads', 'lbl_cpu_threads_auto', 'lbl_asr_backend', 'lbl_silence_timeout', 'lbl_max_chunk', 'lbl_vad_pad',
       'lbl_vad_threshold', 'lbl_rnnoise_enabled', 'lbl_live_partial_subtitles', 'lbl_backlog_policy', 'lbl_max_live_delay', 'lbl_catchup_interval',
       'lbl_ws_port', 'lbl_acoustic_events_enabled', 'lbl_mcp_style_enabled', 'lbl_mcp_system_enabled', 'lbl_check_updates_auto'],
     defaults: advancedDefaults,
@@ -348,8 +365,39 @@ export const TAB_RESETS = Object.freeze({
 export function advancedView(config) {
   const view = Object.fromEntries(ADVANCED_KEYS.map((key) => [key, config?.[key]]));
   view.model_size = String(view.model_size ?? '').split(' ')[0];
+  view.context_prompt_enabled = config?.context_prompt_enabled !== false;
+  view.blacklist_enabled = config?.blacklist_enabled !== false;
   view.blacklist = String(config?.blacklist ?? '').trim();
   view.prompt_es = String(config?.whisper_context_prompt_es ?? '').trim();
   view.prompt_en = String(config?.whisper_context_prompt_en ?? '').trim();
   return view;
+}
+
+// Event-log lines. Known setup phases are translated by their stable code; any other phase and every
+// error detail keeps the backend text as a raw diagnostic.
+// A key's `{text}` placeholder receives the backend text (file label or raw error detail).
+export const SETUP_PHASE_KEYS = Object.freeze({
+  starting: 'runtime_setup_starting',
+  starting_worker: 'runtime_setup_worker_starting',
+  ready: 'runtime_setup_ready',
+  downloading: 'log_phase_downloading',
+  error: 'log_phase_error',
+});
+
+export function setupLogLine(phase, text, percent, t) {
+  const shown = SETUP_PHASE_KEYS[phase] ? t(SETUP_PHASE_KEYS[phase]).replace('{text}', text) : text;
+  const pct = percent != null && Number.isFinite(percent) ? ` (${Math.round(percent)}%)` : '';
+  return `[${phase}] ${shown}${pct}`;
+}
+
+export function statusLogLine(status, t) {
+  const asrKey = status.asr_state === 'stopping' ? 'log_asr_stopping' : `status_${status.asr_state}`;
+  const asr = t(asrKey) === asrKey ? status.asr_state : t(asrKey);
+  let line = t('log_status_line')
+    .replace('{running}', status.is_running ? t('log_status_running') : t('status_stopped'))
+    .replace('{asr}', asr);
+  if (status.is_running && (status.audio_state === 'standby' || status.audio_state === 'reconnecting')) {
+    line += ` | ${t('log_audio_label')}: ${status.audio_state}`;
+  }
+  return line;
 }
