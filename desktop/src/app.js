@@ -603,8 +603,8 @@ function renderCpuThreads() {
 
 function updateComputeDeviceReactivity(device) {
   const currentDevice = device || (elements.selectComputeDevice ? elements.selectComputeDevice.value : 'cpu');
-  const parakeet = isParakeetModel(elements.selectModelSize?.value);
-  const disableCpuThreads = currentDevice === 'cuda' && !parakeet;
+  // On a GPU the threads control is off for every model; Parakeet's small CPU-side sessions keep the saved value.
+  const disableCpuThreads = currentDevice === 'cuda';
   const group = elements.groupCpuThreads || elements.sliderCpuThreads?.closest('.form-group');
 
   if (elements.sliderCpuThreads) {

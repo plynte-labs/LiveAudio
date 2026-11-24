@@ -2877,12 +2877,12 @@ return { sanitizeThemeTokens, applyTheme };`)(fakeDocument);
     pk.el('select-compute-device').value = 'cuda';
     pk.el('select-compute-device').dispatch('change');
     await pk.settle();
-    assert(pk.el('check-cpu-threads-auto').disabled === false,
-      'Parakeet on a GPU keeps the CPU threads Automatic switch enabled (preprocessor/decoder run on CPU)');
+    assert(pk.el('check-cpu-threads-auto').disabled === true,
+      'Parakeet on a GPU disables the CPU threads Automatic switch (threads only apply on CPU)');
     pk.el('check-cpu-threads-auto').checked = false;
     pk.el('check-cpu-threads-auto').dispatch('change');
-    assert(pk.el('slider-cpu-threads').disabled === false,
-      'Parakeet on a GPU with Automatic off keeps the CPU threads slider enabled');
+    assert(pk.el('slider-cpu-threads').disabled === true,
+      'Parakeet on a GPU disables the CPU threads slider even with Automatic off');
     pk.el('check-cpu-threads-auto').checked = true;
     pk.el('check-cpu-threads-auto').dispatch('change');
     pk.el('select-compute-device').value = 'cpu';
