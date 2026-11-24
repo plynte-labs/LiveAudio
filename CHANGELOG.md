@@ -26,6 +26,7 @@ Todos los cambios notables de LiveAudio se documentan aquí.
 - **Instalador de Windows** publicado de nuevo como `LiveAudio-Setup-<versión>.exe`.
 - **Resolución de `pactl`** movida fuera del runtime asíncrono.
 - **Advertencias de Rust 1.100** (`try_update`, `homepage` redundante).
+- **Registro de eventos traducido** — Las líneas de servicio, estado, preparación del entorno y las fases del worker siguen el idioma de la interfaz.
 
 ### Agregado (Linux)
 

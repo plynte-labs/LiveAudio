@@ -2113,6 +2113,29 @@ return { sanitizeThemeTokens, applyTheme };`)(fakeDocument);
     'advancedDefaults holds only Advanced keys (no styles, no vocabulary)');
   }
   {
+    // T1: the event log follows the UI language; unknown phases keep the backend text.
+    const { t, setLanguage } = i18nModule;
+    for (const lang of ['es', 'en']) {
+      setLanguage(lang);
+      const sameLang = (key) => i18nModule.TRANSLATIONS[lang][key];
+      assert(runtimeSettings.setupLogLine('starting_worker', 'Starting the ASR worker', null, t) === `[starting_worker] ${sameLang('runtime_setup_worker_starting')}`,
+        `starting_worker log line is translated (${lang})`);
+      assert(runtimeSettings.setupLogLine('ready', 'ASR runtime is ready.', 100, t) === `[ready] ${sameLang('runtime_setup_ready')} (100%)`,
+        `ready log line is translated with percent (${lang})`);
+      assert(runtimeSettings.setupLogLine('downloading', 'Downloading small', 40.4, t) === '[downloading] Downloading small (40%)',
+        `unknown phase keeps the backend text (${lang})`);
+      assert(runtimeSettings.setupLogLine('error', 'boom', null, t) === '[error] boom', `error detail stays raw (${lang})`);
+      const status = runtimeSettings.statusLogLine({ is_running: true, asr_state: 'listening', audio_state: 'standby' }, t);
+      assert(status.includes(sameLang('log_status_running')) && status.includes(sameLang('status_listening')) && !status.includes('Estado') === (lang === 'en'),
+        `status log line is translated (${lang})`);
+      const keys = ['log_service_stopping', 'log_service_stopped', 'log_service_starting', 'log_service_started', 'log_service_error', 'log_setup_repair_start',
+        'log_setup_repair_done', 'log_setup_repair_error', 'log_hw_fallback', 'log_blacklist_added', 'log_blacklist_error', 'log_prompt_added', 'log_prompt_error',
+        'log_status_line', 'log_status_running', 'log_asr_stopping', 'log_audio_label'];
+      assert(keys.every((k) => sameLang(k)), `log keys exist (${lang})`);
+    }
+    setLanguage('es');
+  }
+  {
     const base = { ...styleBaseConfig, rnnoise_enabled: true, ws_port: 9000, silence_timeout: 1.5, mcp_style_enabled: true, mcp_system_enabled: true, subtitle_style: 'neon', subtitle_theme: { '--sub-color': '#123456' } };
     const h = await loadAppHarness(base);
     h.el('modal-container').hidden = true;

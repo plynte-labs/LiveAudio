@@ -4,7 +4,7 @@
  * LiveAudio Tauri Desktop Frontend Application Logic
  */
 
-import { adoptSavedStyle, audioStateKey, bindProfileSelection, bindTabNavigation, externalConfigUpdate, generalFields, hardwareStatusLabel, mergeSavedConfigIntoForm, monitorBannerText, opencohostStatusText, monitorFeedAction, monitorFeedText, persistAndApplyRuntimeConfig, sessionFailureLabel, STYLE_CONFIG_KEYS, styleFields, engineKind, isParakeetModel, gpuReasonKey, nvidiaOfferVisible, nvidiaCardView, nvidiaInstallConfig, advancedView, TAB_RESETS } from './runtime-settings.js';
+import { setupLogLine, statusLogLine, adoptSavedStyle, audioStateKey, bindProfileSelection, bindTabNavigation, externalConfigUpdate, generalFields, hardwareStatusLabel, mergeSavedConfigIntoForm, monitorBannerText, opencohostStatusText, monitorFeedAction, monitorFeedText, persistAndApplyRuntimeConfig, sessionFailureLabel, STYLE_CONFIG_KEYS, styleFields, engineKind, isParakeetModel, gpuReasonKey, nvidiaOfferVisible, nvidiaCardView, nvidiaInstallConfig, advancedView, TAB_RESETS } from './runtime-settings.js';
 import { initLanguage, setLanguage, getLanguage, t, applyTranslations, getProfilePresetData, PROFILE_I18N } from './i18n.js';
 import { controlsFromTheme, deletePreset, fontChoices, fontFamiliesForPlatform, loadPresetTheme, presetNameFromOption, presetOptionValue, previewHoldMs, previewProperties, previewWordDelays, savePreset, themeFromControls } from './subtitle-style.js';
 
@@ -979,7 +979,7 @@ function updateStatusUI(status) {
   } else if (status.fallback_occurred && !hasNotifiedHardwareFallback) {
     hasNotifiedHardwareFallback = true;
     const reason = status.fallback_reason || t('hw_fallback_warning') || 'GPU no disponible; usando CPU como respaldo';
-    appendLogEntry('warn', `Fallback de hardware: ${reason}`, 'ASR');
+    appendLogEntry('warn', t('log_hw_fallback').replace('{reason}', reason), 'ASR');
     showToast(reason, 'warning');
   }
 
@@ -1274,10 +1274,10 @@ async function addPhraseToBlacklist(text, itemElement) {
     try {
       const saved = await invoke('save_config', { config: newConfig, base: savedConfig });
       adoptSavedConfig(newConfig, saved);
-      appendLogEntry('info', `Frase añadida a lista negra: "${trimmed}"`, 'BLACKLIST');
+      appendLogEntry('info', t('log_blacklist_added').replace('{text}', trimmed), 'BLACKLIST');
       showToast(t('toast_added_to_blacklist'));
     } catch (err) {
-      appendLogEntry('error', `Error guardando lista negra: ${err}`, 'BLACKLIST');
+      appendLogEntry('error', t('log_blacklist_error').replace('{error}', err), 'BLACKLIST');
       showToast(`${t('status_error')}: ${err}`, true);
     }
   });
@@ -1310,10 +1310,10 @@ async function addTermToInitialPrompt(text) {
     try {
       const saved = await invoke('save_config', { config: newConfig, base: savedConfig });
       adoptSavedConfig(newConfig, saved);
-      appendLogEntry('info', `Término añadido a vocabulario/prompt: "${trimmed}"`, 'PROMPT');
+      appendLogEntry('info', t('log_prompt_added').replace('{text}', trimmed), 'PROMPT');
       showToast(t('toast_added_to_prompt'));
     } catch (err) {
-      appendLogEntry('error', `Error guardando vocabulario/prompt: ${err}`, 'PROMPT');
+      appendLogEntry('error', t('log_prompt_error').replace('{error}', err), 'PROMPT');
       showToast(`${t('status_error')}: ${err}`, true);
     }
   });
@@ -2696,18 +2696,18 @@ async function initApp() {
 
     try {
       if (targetAction === 'stopping') {
-        appendLogEntry('info', 'Deteniendo servicio de transcripción...', 'SERVICE');
+        appendLogEntry('info', t('log_service_stopping'), 'SERVICE');
         const newStatus = await invoke('stop_service');
         currentStatus = newStatus;
-        appendLogEntry('info', 'Servicio detenido.', 'SERVICE');
+        appendLogEntry('info', t('log_service_stopped'), 'SERVICE');
       } else {
-        appendLogEntry('info', 'Iniciando servicio de transcripción...', 'SERVICE');
+        appendLogEntry('info', t('log_service_starting'), 'SERVICE');
         const newStatus = await invoke('start_service');
         currentStatus = newStatus;
-        appendLogEntry('info', 'Servicio iniciado correctamente.', 'SERVICE');
+        appendLogEntry('info', t('log_service_started'), 'SERVICE');
       }
     } catch (err) {
-      appendLogEntry('error', `Error en servicio: ${err}`, 'ERROR');
+      appendLogEntry('error', t('log_service_error').replace('{error}', err), 'ERROR');
       showToast(`${t('status_error')}: ${err}`, true);
     } finally {
       isServiceActionPending = false;
@@ -2723,13 +2723,13 @@ async function initApp() {
 
   elements.btnRuntimeRepair.addEventListener('click', async () => {
     try {
-      appendLogEntry('info', 'Iniciando verificación/reparación de entorno ASR...', 'SETUP');
+      appendLogEntry('info', t('log_setup_repair_start'), 'SETUP');
       setRuntimeSetupProgress({ phase: 'starting', text: t('runtime_setup_starting'), percent: null });
       await invoke('prepare_asr_runtime');
       setRuntimeSetupProgress({ phase: 'ready', text: t('runtime_setup_ready'), percent: 100 });
-      appendLogEntry('info', 'Entorno ASR preparado con éxito.', 'SETUP');
+      appendLogEntry('info', t('log_setup_repair_done'), 'SETUP');
     } catch (error) {
-      appendLogEntry('error', `Error al preparar entorno ASR: ${error}`, 'SETUP');
+      appendLogEntry('error', t('log_setup_repair_error').replace('{error}', error), 'SETUP');
       setRuntimeSetupProgress({ phase: 'error', text: String(error), percent: null });
       showToast(`${t('status_error')}: ${error}`, true);
     }
@@ -2967,14 +2967,12 @@ async function initApp() {
 
           if (phaseChanged || textChanged || milestoneCrossed) {
             lastLoggedSetup = { phase, text: cleanText, milestone };
-            const pctStr = percent != null ? ` (${Math.round(percent)}%)` : '';
-            appendLogEntry(isErr ? 'error' : 'info', `[${phase}] ${cleanText}${pctStr}`, 'SETUP');
+            appendLogEntry(isErr ? 'error' : 'info', setupLogLine(phase, cleanText, percent, t), 'SETUP');
           }
         } else {
           if (phase !== lastLoggedSetup.phase || cleanText !== lastLoggedSetup.text) {
             lastLoggedSetup = { phase, text: cleanText, milestone: null };
-            const pctStr = percent != null ? ` (${Math.round(percent)}%)` : '';
-            appendLogEntry(isErr ? 'error' : 'info', `[${phase}] ${cleanText}${pctStr}`, 'SETUP');
+            appendLogEntry(isErr ? 'error' : 'info', setupLogLine(phase, cleanText, percent, t), 'SETUP');
           }
         }
       }
@@ -2992,11 +2990,7 @@ async function initApp() {
           audio_state !== lastLoggedStatus.audio_state
         ) {
           lastLoggedStatus = { is_running, asr_state, audio_state };
-          const runningLabel = is_running ? 'En ejecución' : 'Detenido';
-          let logMsg = `Estado: ${runningLabel} | ASR: ${asr_state}`;
-          if (is_running && (audio_state === 'standby' || audio_state === 'reconnecting')) {
-            logMsg += ` | Audio: ${audio_state}`;
-          }
+          const logMsg = statusLogLine(event.payload, t);
           appendLogEntry('info', logMsg, 'STATUS');
         }
       }

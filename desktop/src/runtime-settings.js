@@ -367,3 +367,29 @@ export function advancedView(config) {
   view.prompt_en = String(config?.whisper_context_prompt_en ?? '').trim();
   return view;
 }
+
+// Event-log lines. Known setup phases are translated by their stable code; any other phase and every
+// error detail keeps the backend text as a raw diagnostic.
+const SETUP_PHASE_KEYS = Object.freeze({
+  starting: 'runtime_setup_starting',
+  starting_worker: 'runtime_setup_worker_starting',
+  ready: 'runtime_setup_ready',
+});
+
+export function setupLogLine(phase, text, percent, t) {
+  const shown = SETUP_PHASE_KEYS[phase] ? t(SETUP_PHASE_KEYS[phase]) : text;
+  const pct = percent != null && Number.isFinite(percent) ? ` (${Math.round(percent)}%)` : '';
+  return `[${phase}] ${shown}${pct}`;
+}
+
+export function statusLogLine(status, t) {
+  const asrKey = status.asr_state === 'stopping' ? 'log_asr_stopping' : `status_${status.asr_state}`;
+  const asr = t(asrKey) === asrKey ? status.asr_state : t(asrKey);
+  let line = t('log_status_line')
+    .replace('{running}', status.is_running ? t('log_status_running') : t('status_stopped'))
+    .replace('{asr}', asr);
+  if (status.is_running && (status.audio_state === 'standby' || status.audio_state === 'reconnecting')) {
+    line += ` | ${t('log_audio_label')}: ${status.audio_state}`;
+  }
+  return line;
+}
