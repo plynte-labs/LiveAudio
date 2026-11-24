@@ -3,6 +3,7 @@
 pub mod acoustic_events;
 pub mod asr;
 pub mod backend;
+pub mod blacklist;
 pub mod config;
 pub mod download;
 pub mod event;

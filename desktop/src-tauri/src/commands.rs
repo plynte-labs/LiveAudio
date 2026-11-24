@@ -13,6 +13,7 @@ use liveaudio_core::asr::worker::{
     presentation_text, transcript_text_from_result, worker_init_payload,
 };
 use liveaudio_core::asr::AsrTranscriptionResponse;
+use liveaudio_core::blacklist::{filter_blacklisted, fold_diacritics, BlacklistVerdict};
 use liveaudio_core::config::{
     get_data_home, save_config as save_config_core, LiveAudioConfig, SubtitlePreset,
 };
@@ -1601,9 +1602,14 @@ async fn start_pipeline_locked(
                                             let text = text.trim();
                                             if !text.is_empty() {
                                                 let blacklist = state_events.config.read().await.blacklist.clone();
-                                                if !is_text_blacklisted(text, &blacklist) {
+                                                let shown = match filter_blacklisted(text, &blacklist) {
+                                                    BlacklistVerdict::Keep => Some(text.to_string()),
+                                                    BlacklistVerdict::Trim(rest) => Some(rest),
+                                                    BlacklistVerdict::Drop => None,
+                                                };
+                                                if let Some(shown) = shown {
                                                     partial_gate_events.mark_shown(seq);
-                                                    publish_partial(&app_events, &ws_events, utt_id, &presentation_text(text));
+                                                    publish_partial(&app_events, &ws_events, utt_id, &presentation_text(&shown));
                                                 }
                                             }
                                         }
@@ -1625,9 +1631,19 @@ async fn start_pipeline_locked(
 
                                             if !text.is_empty() {
                                                 let blacklist = state_events.config.read().await.blacklist.clone();
-                                                if is_text_blacklisted(text, &blacklist) {
-                                                    tracing::info!("[Blacklist Filter] Descartando transcripción alucinada [{}] ({} caracteres)", utt_id, text.chars().count());
+                                                let verdict = filter_blacklisted(text, &blacklist);
+                                                if verdict == BlacklistVerdict::Drop {
+                                                    tracing::info!("[Blacklist Filter] Dropped hallucinated transcription [{}] ({} characters)", utt_id, text.chars().count());
                                                 } else {
+                                                    let trimmed_by_filter;
+                                                    let text = match verdict {
+                                                        BlacklistVerdict::Trim(rest) => {
+                                                            tracing::info!("[Blacklist Filter] Trimmed blacklisted phrases at the edges [{}] ({} -> {} characters)", utt_id, text.chars().count(), rest.chars().count());
+                                                            trimmed_by_filter = rest;
+                                                            trimmed_by_filter.as_str()
+                                                        }
+                                                        _ => text,
+                                                    };
                                                     let trimmed_text = {
                                                         let prev_guard = state_events.previous_transcript.read().await;
                                                         if let Some(ref prev) = *prev_guard {
@@ -3039,53 +3055,6 @@ pub async fn get_recent_logs(max_lines: Option<usize>) -> Result<Vec<String>, St
     let mut reversed = result_lines;
     reversed.reverse();
     Ok(reversed)
-}
-
-fn fold_diacritics(s: &str) -> String {
-    s.chars()
-        .flat_map(|c| c.to_lowercase())
-        .map(|c| match c {
-            'á' | 'à' | 'ä' | 'â' | 'ã' | 'ā' => 'a',
-            'é' | 'è' | 'ë' | 'ê' | 'ē' => 'e',
-            'í' | 'ì' | 'ï' | 'î' | 'ī' => 'i',
-            'ó' | 'ò' | 'ö' | 'ô' | 'õ' | 'ō' => 'o',
-            'ú' | 'ù' | 'ü' | 'û' | 'ū' => 'u',
-            other => other,
-        })
-        .collect()
-}
-
-/// Checks whether a transcribed text matches any phrase in the blacklist.
-/// Matches case-insensitively, folds diacritics/accents, splits on commas/semicolons/newlines,
-/// trims whitespace, and strips standard and typographical quotes.
-pub fn is_text_blacklisted(text: &str, blacklist_csv: &str) -> bool {
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return false;
-    }
-    let text_folded = fold_diacritics(trimmed);
-    blacklist_csv
-        .split([',', ';', '\n', '\r'])
-        .map(|entry| {
-            entry
-                .trim()
-                .trim_matches(|c| {
-                    c == '"'
-                        || c == '\''
-                        || c == '“'
-                        || c == '”'
-                        || c == '‘'
-                        || c == '’'
-                        || c == '«'
-                        || c == '»'
-                })
-                .trim()
-        })
-        .filter(|entry| !entry.is_empty())
-        .any(|phrase| {
-            let phrase_folded = fold_diacritics(phrase);
-            !phrase_folded.is_empty() && text_folded.contains(&phrase_folded)
-        })
 }
 
 #[derive(Debug, Clone)]

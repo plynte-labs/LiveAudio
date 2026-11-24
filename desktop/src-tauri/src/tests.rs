@@ -5,7 +5,7 @@
 use crate::commands::{
     acquire_service_lock, admit_worker_event_generation, asr_progress_from_worker_event,
     asr_progress_update_for_worker_event, desktop_runtime_preflight_error,
-    ensure_startup_websocket, get_service_status_internal, is_text_blacklisted,
+    ensure_startup_websocket, get_service_status_internal,
     persist_config_and_apply, poll_foreign_service, profile_presets, refresh_foreign_service,
     retry_once_if_already_running, shutdown_service_resources, stop_active_websocket,
     partial_due, trim_boundary_overlap, trim_boundary_overlap_with_max, with_subtitle_style,
@@ -1330,66 +1330,6 @@ fn test_encode_f32_le_base64_codec() {
     let b64 = crate::commands::encode_f32_le_base64(&samples);
     assert!(!b64.is_empty());
     assert_eq!(b64.len() % 4, 0);
-}
-
-#[test]
-fn test_is_text_blacklisted_cases() {
-    let blacklist = "amara.org, subtítulos por, suscríbete, dale like, \"gracias por ver\"";
-
-    // Matches exact and substring
-    assert!(is_text_blacklisted(
-        "Subtítulos realizados por la comunidad de amara.org",
-        blacklist
-    ));
-    assert!(is_text_blacklisted("subtítulos por favor", blacklist));
-    assert!(is_text_blacklisted("SUSCRÍBETE a mi canal", blacklist));
-    assert!(is_text_blacklisted(
-        "No olvides dale like y comentar",
-        blacklist
-    ));
-    assert!(is_text_blacklisted(
-        "Muchas gracias por ver este video",
-        blacklist
-    ));
-
-    // Accent and diacritic folding: matches even if transcript has no accent or blacklist has no accent
-    assert!(is_text_blacklisted("Suscribete a mi canal", blacklist)); // unaccented text matches accented blacklist
-    assert!(is_text_blacklisted("¡SUSCRIBETE!", blacklist));
-    let unaccented_bl = "suscribete, subtitulos por";
-    assert!(is_text_blacklisted(
-        "¡Suscríbete a mi canal!",
-        unaccented_bl
-    )); // accented text matches unaccented blacklist
-    assert!(is_text_blacklisted("Subtítulos por favor", unaccented_bl));
-
-    // Multiline and semicolon delimiters
-    let multiline_bl = "amara.org\nsuscribete;gracias por ver";
-    assert!(is_text_blacklisted("amara.org", multiline_bl));
-    assert!(is_text_blacklisted("suscríbete ya", multiline_bl));
-    assert!(is_text_blacklisted("muchas gracias por ver", multiline_bl));
-
-    // Smart and typographical quotes
-    let smart_quotes_bl = "“amara.org”, ‘suscríbete’, «dale like»";
-    assert!(is_text_blacklisted("amara.org", smart_quotes_bl));
-    assert!(is_text_blacklisted("suscribete", smart_quotes_bl));
-    assert!(is_text_blacklisted("dale like", smart_quotes_bl));
-
-    // Clean text does not match
-    assert!(!is_text_blacklisted(
-        "Hola a todos, hoy vamos a programar en Rust",
-        blacklist
-    ));
-    assert!(!is_text_blacklisted(
-        "Este es un audio completamente normal",
-        blacklist
-    ));
-
-    // Empty blacklist passes everything
-    assert!(!is_text_blacklisted("amara.org", ""));
-    assert!(!is_text_blacklisted("amara.org", "   ,   "));
-
-    // Empty text returns false
-    assert!(!is_text_blacklisted("", blacklist));
 }
 
 #[test]

@@ -274,8 +274,8 @@ let drafts = {
     en: '',
   },
   blacklists: {
-    es: 'amara.org, subtítulos por, suscríbete, dale like, gracias por ver, memos, gracias, activar la campanita',
-    en: 'amara.org, subtitles by, subscribe, like, thank you for watching, thanks for watching, please subscribe',
+    es: 'amara.org, subtítulos por, suscríbete, dale like, gracias por ver, activar la campanita',
+    en: 'amara.org, subtitles by, subscribe, thank you for watching, thanks for watching, please subscribe',
   },
 };
 let currentAsrLang = 'es';

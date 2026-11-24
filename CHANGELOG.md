@@ -24,6 +24,7 @@ Todos los cambios notables de LiveAudio se documentan aquí.
 
 ### Corregido
 
+- **Blacklist por palabras completas y solo en los bordes** — Antes cualquier coincidencia, incluso dentro de otra palabra ("comemos" por "memos", "unlikely" por "like"), descartaba la frase completa. Ahora solo se comparan palabras completas: si la frase es solo texto vetado se descarta, si la frase vetada está al inicio o al final se recorta y se conserva el resto, y en medio del texto no se toca. Se quitaron `like`, `gracias` y `memos` de las listas predeterminadas (las listas guardadas por el usuario no se modifican).
 - **Instalador de Windows** publicado de nuevo como `LiveAudio-Setup-<versión>.exe`.
 - **Resolución de `pactl`** movida fuera del runtime asíncrono.
 - **Advertencias de Rust 1.100** (`try_update`, `homepage` redundante).

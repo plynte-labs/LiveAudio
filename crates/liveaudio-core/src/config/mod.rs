@@ -43,7 +43,7 @@ pub static VALID_DIAGNOSTICS_LEVELS: &[&str] = &["off", "minimal", "deep"];
 pub static VALID_TRANSCRIPTION_PURPOSES: &[&str] = &["subtitles", "transcription", "combined"];
 
 pub const DEFAULT_BLACKLIST: &str =
-    "amara.org, subtítulos por, suscríbete, dale like, gracias por ver, memos, gracias, activar la campanita";
+    "amara.org, subtítulos por, suscríbete, dale like, gracias por ver, activar la campanita";
 
 pub const MAX_ALLOWED_LOOPBACK_PORTS: usize = 32;
 

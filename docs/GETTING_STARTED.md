@@ -137,11 +137,11 @@ En el cuadro de texto puedes editar las palabras que Whisper suele inventar cuan
 
 ```
 amara.org, subtitulos por, suscribete, dale like, gracias por ver,
-aplausos, victoria, gracias, memos, flupco, cuanos, kibon,
+aplausos, victoria, flupco, cuanos, kibon,
 skip, quita, plechitin, pae
 ```
 
-Separa cada palabra o frase con comas. Puedes personalizarla a tu gusto.
+Separa cada palabra o frase con comas. Solo se compara por palabras completas y únicamente al inicio o al final de la frase transcrita: se recorta la frase vetada y se conserva el resto; una frase vetada en medio del texto no se toca. Evita palabras sueltas muy comunes ("like", "gracias"). Puedes personalizarla a tu gusto.
 
 ---
 
