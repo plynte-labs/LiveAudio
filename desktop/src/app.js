@@ -155,6 +155,7 @@ function mockInvoke(cmd, args) {
         license_urls: ['https://developer.download.nvidia.com/compute/cudnn/redist/cudnn/LICENSE.txt'],
         selected_backend: 'ort',
         reason: 'nvidia_runtime_not_installed',
+        default_cpu_threads: 4,
       });
 
     case 'install_nvidia_runtime':
@@ -555,6 +556,16 @@ function syncEngineControls() {
   renderEngineSummary();
 }
 
+// Manual CPU threads (the saved value) and the backend's automatic count. The slider shows the automatic
+// count while Automatic is on; collectFormData always saves the manual one.
+let manualCpuThreads = 1;
+let autoCpuThreads = null;
+function renderCpuThreads() {
+  const shown = elements.checkCpuThreadsAuto.checked && autoCpuThreads ? autoCpuThreads : manualCpuThreads;
+  elements.sliderCpuThreads.value = shown;
+  elements.valCpuThreads.textContent = shown;
+}
+
 function updateComputeDeviceReactivity(device) {
   const currentDevice = device || (elements.selectComputeDevice ? elements.selectComputeDevice.value : 'cpu');
   const isCuda = currentDevice === 'cuda';
@@ -564,6 +575,7 @@ function updateComputeDeviceReactivity(device) {
     elements.sliderCpuThreads.disabled = isCuda || elements.checkCpuThreadsAuto.checked;
   }
   elements.checkCpuThreadsAuto.disabled = isCuda;
+  renderCpuThreads();
 
   if (group) {
     group.classList.toggle('device-dimmed', isCuda);
@@ -1990,10 +2002,9 @@ function populateAdvancedControls(config) {
     if (elements.deviceRadioCpu) elements.deviceRadioCpu.checked = true;
   }
   elements.checkCpuThreadsAuto.checked = config.cpu_threads_auto !== false;
+  manualCpuThreads = config.cpu_threads;
   updateComputeDeviceReactivity(config.device || 'cpu');
 
-  elements.sliderCpuThreads.value = config.cpu_threads;
-  elements.valCpuThreads.textContent = config.cpu_threads;
 
   elements.sliderSilenceTimeout.value = config.silence_timeout;
   elements.valSilenceTimeout.textContent = `${config.silence_timeout}s`;
@@ -2133,7 +2144,7 @@ function collectFormData() {
   cfg.device = elements.selectComputeDevice
     ? elements.selectComputeDevice.value
     : (elements.deviceRadioCuda && elements.deviceRadioCuda.checked ? 'cuda' : 'cpu');
-  cfg.cpu_threads = parseInt(elements.sliderCpuThreads.value, 10);
+  cfg.cpu_threads = manualCpuThreads;
   cfg.cpu_threads_auto = elements.checkCpuThreadsAuto.checked;
   cfg.silence_timeout = parseFloat(elements.sliderSilenceTimeout.value);
   cfg.max_chunk_duration = parseFloat(elements.sliderMaxChunk.value);
@@ -2539,7 +2550,8 @@ async function initApp() {
   // Slider bindings
   elements.checkCpuThreadsAuto.addEventListener('change', () => updateComputeDeviceReactivity());
   elements.sliderCpuThreads.addEventListener('input', (e) => {
-    elements.valCpuThreads.textContent = e.target.value;
+    manualCpuThreads = parseInt(e.target.value, 10);
+    renderCpuThreads();
   });
   elements.sliderSilenceTimeout.addEventListener('input', (e) => {
     elements.valSilenceTimeout.textContent = `${e.target.value}s`;
@@ -3221,6 +3233,8 @@ function nvidiaProgressText(p) {
 async function refreshGpuStatus() {
   try {
     gpuStatus = await invoke('get_gpu_backend_status');
+    autoCpuThreads = gpuStatus?.default_cpu_threads || null;
+    updateComputeDeviceReactivity();
   } catch (_) {
     gpuStatus = null;
   }

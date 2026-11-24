@@ -38,6 +38,7 @@ Branch: `feat/i18n-log-auto-threads`, stacked on `feat/ct2-worker-release-cycle`
 
 - [x] T1 Translate the event log through i18n keys and backend phase codes. Route: delegated writer.
 - [x] T2 Add the automatic CPU threads switch (config, worker resolution, UI, i18n). Route: delegated writer.
+- [x] T3 Translate every setup/worker phase (downloading, error prefix) with a phase-coverage test, and show the real automatic thread count in the disabled slider. Route: delegated writer.
 
 ## Acceptance
 
@@ -61,3 +62,8 @@ Branch: `feat/i18n-log-auto-threads`, stacked on `feat/ct2-worker-release-cycle`
 - Route: delegated writer (single writer). `cpu_threads_auto` in `config/mod.rs` (serde default true, legacy fixup in `load_from_path`, `effective_cpu_threads()`), used by `worker_init_payload`; patch key added (schema derived); UI switch in Advanced; `ADVANCED_KEYS`, `advancedDefaults`, reset label, types, es/en keys, MCP doc, changelog.
 - RED: Rust tests `cpu_threads_auto_defaults_on_and_legacy_configs_migrate_by_value`, `effective_cpu_threads_follows_the_auto_switch` and the extended init payload test failed to compile (no field or method); JS asserts failed (`check-cpu-threads-auto` missing, key and labels missing).
 - GREEN: `cargo test --workspace --locked` 560 passed, 0 failed; `node desktop/test_frontend.js` 936 passed, 0 failed; `node --test tests-js/*.mjs` 170 passed; clippy warning set identical to base.
+
+### T3 plan
+- Phases emitted anywhere: `starting` (frontend), `starting_worker`, `ready`, `error` (commands.rs), `downloading` (worker download progress; text is the file label). Each maps to an i18n key; error is a translated prefix plus the raw detail. A test scans the sources for emitted phases and fails if one has no mapping. Extra asr_state values `fallback_cpu` and `stalled` get status keys.
+- Automatic value: new field `default_cpu_threads` on `GpuBackendStatusDto` (get_gpu_backend_status), taken from the core's `default_cpu_threads()`. The slider shows it while Automatic is on. Save decision: the saved manual `cpu_threads` is kept in a variable, so saving with Automatic on never overwrites it with the automatic value.
+- RED: JS `TypeError: Cannot read properties of undefined (reading 'replace')` (no `log_phase_error` key); Rust `no field default_cpu_threads on GpuBackendStatusDto`. GREEN: `desktop/test_frontend.js`, `cargo test --workspace --locked`, `node --test tests-js/*.mjs`; clippy warning set equal to base.

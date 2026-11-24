@@ -2189,6 +2189,7 @@ fn test_gpu_backend_status_dto() {
     assert_eq!(dto.selected_backend, "ort");
     assert_eq!(dto.adapters[0].vendor, "nvidia");
     assert_eq!(dto.license_urls.len(), 2);
+    assert_eq!(dto.default_cpu_threads, LiveAudioConfig::default().effective_cpu_threads());
     let json = serde_json::to_string(&dto).unwrap();
     assert!(json.contains("\"cuda_driver_version\":13040"));
     assert!(json.contains("\"installed\":false"));

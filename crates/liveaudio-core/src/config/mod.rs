@@ -121,7 +121,8 @@ pub fn get_hf_home() -> PathBuf {
     get_models_home().join("hf")
 }
 
-fn default_cpu_threads() -> usize {
+/// Half the logical cores: the thread count the worker uses while `cpu_threads_auto` is on.
+pub fn default_cpu_threads() -> usize {
     std::thread::available_parallelism()
         .map(|n| (n.get() / 2).max(1))
         .unwrap_or(2)

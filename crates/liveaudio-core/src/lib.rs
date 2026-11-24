@@ -23,7 +23,7 @@ pub use asr::{
     AsrTranscriptionResponse, TranscriptionSegment,
 };
 pub use config::{
-    audio_queue_capacity, get_data_home, get_hf_home, get_models_home, load_config,
+    audio_queue_capacity, default_cpu_threads, get_data_home, get_hf_home, get_models_home, load_config,
     load_config_readonly, load_from_path, save_config, save_to_path, ConfigReadonlyInfo,
     LiveAudioConfig,
 };

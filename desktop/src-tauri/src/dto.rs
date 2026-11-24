@@ -155,4 +155,6 @@ pub struct GpuBackendStatusDto {
     /// "ort" or "ct2_cuda".
     pub selected_backend: String,
     pub reason: String,
+    /// Thread count the worker uses while CPU threads is automatic.
+    pub default_cpu_threads: usize,
 }

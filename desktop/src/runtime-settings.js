@@ -370,14 +370,17 @@ export function advancedView(config) {
 
 // Event-log lines. Known setup phases are translated by their stable code; any other phase and every
 // error detail keeps the backend text as a raw diagnostic.
-const SETUP_PHASE_KEYS = Object.freeze({
+// A key's `{text}` placeholder receives the backend text (file label or raw error detail).
+export const SETUP_PHASE_KEYS = Object.freeze({
   starting: 'runtime_setup_starting',
   starting_worker: 'runtime_setup_worker_starting',
   ready: 'runtime_setup_ready',
+  downloading: 'log_phase_downloading',
+  error: 'log_phase_error',
 });
 
 export function setupLogLine(phase, text, percent, t) {
-  const shown = SETUP_PHASE_KEYS[phase] ? t(SETUP_PHASE_KEYS[phase]) : text;
+  const shown = SETUP_PHASE_KEYS[phase] ? t(SETUP_PHASE_KEYS[phase]).replace('{text}', text) : text;
   const pct = percent != null && Number.isFinite(percent) ? ` (${Math.round(percent)}%)` : '';
   return `[${phase}] ${shown}${pct}`;
 }

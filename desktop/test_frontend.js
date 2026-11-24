@@ -2122,9 +2122,12 @@ return { sanitizeThemeTokens, applyTheme };`)(fakeDocument);
         `starting_worker log line is translated (${lang})`);
       assert(runtimeSettings.setupLogLine('ready', 'ASR runtime is ready.', 100, t) === `[ready] ${sameLang('runtime_setup_ready')} (100%)`,
         `ready log line is translated with percent (${lang})`);
-      assert(runtimeSettings.setupLogLine('downloading', 'Downloading small', 40.4, t) === '[downloading] Downloading small (40%)',
-        `unknown phase keeps the backend text (${lang})`);
-      assert(runtimeSettings.setupLogLine('error', 'boom', null, t) === '[error] boom', `error detail stays raw (${lang})`);
+      assert(runtimeSettings.setupLogLine('error', 'boom', null, t) === `[error] ${sameLang('log_phase_error').replace('{text}', 'boom')}` && sameLang('log_phase_error').includes('{text}'),
+        `error has a translated prefix and a raw detail (${lang})`);
+      assert(runtimeSettings.setupLogLine('downloading', '(1/3) encoder.onnx', 40.4, t) === `[downloading] ${sameLang('log_phase_downloading').replace('{text}', '(1/3) encoder.onnx')} (40%)`
+        && sameLang('log_phase_downloading').includes('{text}'), `downloading is translated with the file label and percent (${lang})`);
+      assert(runtimeSettings.setupLogLine('future_phase', 'raw text', null, t) === '[future_phase] raw text', `unknown phase falls back to the backend text (${lang})`);
+      assert(t('status_fallback_cpu') !== 'status_fallback_cpu' && t('status_stalled') !== 'status_stalled', `extra asr states are translated (${lang})`);
       const status = runtimeSettings.statusLogLine({ is_running: true, asr_state: 'listening', audio_state: 'standby' }, t);
       assert(status.includes(sameLang('log_status_running')) && status.includes(sameLang('status_listening')) && !status.includes('Estado') === (lang === 'en'),
         `status log line is translated (${lang})`);
@@ -2133,6 +2136,35 @@ return { sanitizeThemeTokens, applyTheme };`)(fakeDocument);
         'log_status_line', 'log_status_running', 'log_asr_stopping', 'log_audio_label'];
       assert(keys.every((k) => sameLang(k)), `log keys exist (${lang})`);
     }
+  {
+    // Every phase emitted by the backend, the worker or the frontend has a translation key.
+    const src = (...parts) => fs.readFileSync(path.join(__dirname, ...parts), 'utf8');
+    const emitted = new Set([
+      ...[...src('src-tauri', 'src', 'commands.rs').matchAll(/phase: "([a-z_]+)"\.to_string\(\)/g)].map((m) => m[1]),
+      ...[...src('..', 'crates', 'liveaudio-asr-worker', 'src', 'download.rs').matchAll(/progress_cb\(\s*"([a-z_]+)"/g)].map((m) => m[1]),
+      ...[...src('src', 'app.js').matchAll(/setRuntimeSetupProgress\(\{ phase: '([a-z_]+)'/g)].map((m) => m[1]),
+    ]);
+    const missing = [...emitted].filter((phase) => !runtimeSettings.SETUP_PHASE_KEYS[phase]);
+    assert(emitted.size >= 5 && missing.length === 0, `every emitted setup phase is mapped (emitted: ${[...emitted].join(', ')}; missing: ${missing.join(', ') || 'none'})`);
+    for (const lang of ['es', 'en']) {
+      assert(Object.values(runtimeSettings.SETUP_PHASE_KEYS).every((key) => i18nModule.TRANSLATIONS[lang][key]), `phase keys exist (${lang})`);
+    }
+  }
+  {
+    // T3: Automatic shows the backend's real thread count and never overwrites the saved manual value.
+    const gpuStatus = { adapters: [], cuda_driver_version: null, nvidia_runtime: { installed: false, missing: [] }, worker_published: true, license_urls: [],
+      selected_backend: 'ort', reason: 'no_gpu', default_cpu_threads: 3 };
+    setLanguage('es');
+    const h = await loadAppHarness(styleBaseConfig, { gpuStatus });
+    await h.settle();
+    assert(h.el('slider-cpu-threads').value == 3 && h.el('val-cpu-threads').textContent == 3 && h.el('slider-cpu-threads').disabled === true,
+      'Automatic shows the backend automatic thread count in the disabled slider');
+    assert(h.app.advancedChangesUnsaved() === false, 'Automatic does not turn the displayed value into an unsaved change');
+    h.el('check-cpu-threads-auto').checked = false;
+    h.el('check-cpu-threads-auto').dispatch('change');
+    assert(h.el('slider-cpu-threads').value == 4 && h.el('val-cpu-threads').textContent == 4 && h.el('slider-cpu-threads').disabled === false,
+      'Automatic off restores the saved manual value');
+  }
     setLanguage('es');
   }
   {
