@@ -201,6 +201,7 @@ async function loadAppHarness(initialConfig, options = {}) {
     advancedChangesUnsaved() { return advancedChangesUnsaved(); },
     confirmLeaveAdvancedTab() { return confirmLeaveAdvancedTab(); },
     setActiveTab(id) { return setActiveTab(id); },
+    collectFormData() { return collectFormData(); },
     isFormDirty() { return JSON.stringify(collectFormData()) !== JSON.stringify(savedConfig); },
     formDiffKeys() { const now = collectFormData(); return Object.keys({ ...now, ...savedConfig }).filter((key) => JSON.stringify(now[key]) !== JSON.stringify(savedConfig[key])).map((key) => key + "=" + JSON.stringify(now[key]) + " vs " + JSON.stringify(savedConfig[key])); },
   };`;
@@ -2565,9 +2566,9 @@ return { sanitizeThemeTokens, applyTheme };`)(fakeDocument);
   // Home card and Advanced summary through the real app.js (vm harness)
   const rtxStatus = { adapters: [{ vendor: 'nvidia', name: 'NVIDIA GeForce RTX 3060', dedicated_vram_mb: 12115 }], cuda_driver_version: 13040,
     nvidia_runtime: { installed: false, missing: ['cublas64_12.dll'] }, worker_published: true, license_urls: [], selected_backend: 'ort', reason: 'nvidia_runtime_not_installed' };
-  const loadNvidiaHarness = (options) => { setLanguage('es'); return loadAppHarness(styleBaseConfig, options); };
+  const loadNvidiaHarness = (options, config = styleBaseConfig) => { setLanguage('es'); return loadAppHarness(config, options); };
   {
-    const h = await loadNvidiaHarness({ gpuStatus: rtxStatus, deriveSelected: true });
+    const h = await loadNvidiaHarness({ gpuStatus: rtxStatus, deriveSelected: true }, { ...styleBaseConfig, device: 'cuda' });
     assert(h.el('card-nvidia-runtime').hidden === false && h.el('nvidia-offer').hidden === false
       && h.el('nvidia-install-progress').hidden === true && h.el('nvidia-result').hidden === true
       && h.el('nvidia-gpu-name').textContent === 'NVIDIA GeForce RTX 3060',
@@ -2576,6 +2577,12 @@ return { sanitizeThemeTokens, applyTheme };`)(fakeDocument);
       && h.el('engine-status-reason').textContent === t('gpu_reason_nvidia_runtime_not_installed')
       && h.el('btn-nvidia-advanced').hidden === false,
     'Advanced summary names the engine that will be used, the plain reason and the activation link');
+    h.el('select-compute-device').value = 'cpu';
+    h.el('select-compute-device').dispatch('change');
+    assert(h.el('engine-status-text').textContent === `${t('engine_will_use')}${t('engine_name_cpu')}`,
+      'Switching compute device to CPU updates the engine summary pill immediately for Whisper models');
+    h.el('select-compute-device').value = 'cuda';
+    h.el('select-compute-device').dispatch('change');
 
     h.el('btn-nvidia-enable').click();
     await h.settle();
@@ -2870,9 +2877,14 @@ return { sanitizeThemeTokens, applyTheme };`)(fakeDocument);
     pk.el('select-compute-device').value = 'cuda';
     pk.el('select-compute-device').dispatch('change');
     await pk.settle();
-    assert(pk.el('slider-cpu-threads').disabled === true,
-      'Parakeet on a GPU disables the CPU threads slider');
-    assert(pk.el('check-cpu-threads-auto').disabled === true, 'A GPU device disables the CPU threads Automatic switch');
+    assert(pk.el('check-cpu-threads-auto').disabled === false,
+      'Parakeet on a GPU keeps the CPU threads Automatic switch enabled (preprocessor/decoder run on CPU)');
+    pk.el('check-cpu-threads-auto').checked = false;
+    pk.el('check-cpu-threads-auto').dispatch('change');
+    assert(pk.el('slider-cpu-threads').disabled === false,
+      'Parakeet on a GPU with Automatic off keeps the CPU threads slider enabled');
+    pk.el('check-cpu-threads-auto').checked = true;
+    pk.el('check-cpu-threads-auto').dispatch('change');
     pk.el('select-compute-device').value = 'cpu';
     pk.el('select-compute-device').dispatch('change');
     await pk.settle();
@@ -2897,6 +2909,10 @@ return { sanitizeThemeTokens, applyTheme };`)(fakeDocument);
     assert(pk.el('select-compute-device').disabled === false && pk.el('select-asr-backend').disabled === false
       && pk.el('hint-parakeet-engine').hidden === true,
     'Selecting a Whisper model re-enables the selectors and the usual engine status');
+    pk.el('select-compute-device').value = 'cuda';
+    pk.el('select-compute-device').dispatch('change');
+    assert(pk.el('check-cpu-threads-auto').disabled === true && pk.el('slider-cpu-threads').disabled === true,
+      'Whisper on a GPU disables both the CPU threads Automatic switch and slider');
   }
 
   // T5: OpenCohost slider copy and detected-language status line.
@@ -2982,6 +2998,104 @@ return { sanitizeThemeTokens, applyTheme };`)(fakeDocument);
       assert(new RegExp(`<svg class="lucide lucide-${icon} title-icon"[^>]*aria-hidden="true"`).test(title),
         `Card title of ${card} starts with a decorative ${icon} icon`);
     }
+  }
+
+  // T8: UI bounds, hardware reactivity, restart tracking, and frontend-backend alignment.
+  console.log('\n--- Verifying UI Bounds, Hardware Reactivity & Mismatch Fixes ---');
+  {
+    assert(runtimeSettingsChanged(baseline, { ...baseline, cpu_threads: 6 })
+      && runtimeSettingsChanged(baseline, { ...baseline, cpu_threads_auto: false }),
+    'cpu_threads and cpu_threads_auto changes require a confirmed service restart');
+
+    assert(runtimeSettings.advancedDefaults(64).cpu_threads === 32
+      && runtimeSettings.advancedDefaults(8).transcription_purpose === 'subtitles',
+    'advancedDefaults supports >16 CPU threads without artificial cap and resets transcription_purpose to subtitles');
+
+    assert(htmlContent.includes('id="slider-max-live-delay" min="1.0" max="120.0"')
+      && htmlContent.includes('id="slider-catchup-interval" min="0" max="10"'),
+    'Live delay and catchup interval sliders match Rust normalize bounds');
+    assert(htmlContent.includes('parakeet (Multilingüe ES/EN, CPU o GPU)')
+      && htmlContent.includes('Parakeet usa la GPU si la seleccionas'),
+    'Parakeet HTML fallback copy matches i18n and no longer claims CPU-only');
+
+    // Dynamic max_cpu_threads and clamping
+    const manyCoreGpu = {
+      adapters: [{ vendor: 'nvidia', name: 'RTX 4090', dedicated_vram_mb: 24576 }],
+      cuda_driver_version: 13040,
+      nvidia_runtime: { installed: true, missing: [] },
+      worker_published: true,
+      license_urls: [],
+      selected_backend: 'ct2_cuda',
+      reason: 'nvidia_cuda_ready',
+      default_cpu_threads: 12,
+      max_cpu_threads: 24,
+    };
+    const manyCore = await loadAppHarness({ ...styleBaseConfig, cpu_threads: 30, cpu_threads_auto: false }, { gpuStatus: manyCoreGpu });
+    assert(manyCore.el('slider-cpu-threads').max === '24'
+      && Number(manyCore.el('slider-cpu-threads').value) === 24
+      && manyCore.app.collectFormData().cpu_threads === 24,
+    'slider-cpu-threads adopts backend max_cpu_threads and clamps values to 1..=max_cpu_threads');
+    assert(manyCore.el('device-cuda').disabled === false && manyCore.el('asr-backend-ct2').disabled === false,
+      'NVIDIA GPU with published worker keeps GPU and CUDA options enabled');
+
+    // Valid 0 values preserved in populateAdvancedControls
+    const zeroCfg = { ...styleBaseConfig, vad_speech_pad_ms: 0, subtitle_catchup_interval_sec: 0 };
+    const zeroH = await loadAppHarness(zeroCfg);
+    assert(String(zeroH.el('slider-vad-pad').value) === '0'
+      && zeroH.el('val-vad-pad').textContent === '0ms'
+      && String(zeroH.el('slider-catchup-interval').value) === '0'
+      && zeroH.el('val-catchup-interval').textContent === '0s',
+    'populateAdvancedControls preserves valid 0 values for vad_speech_pad_ms and subtitle_catchup_interval_sec');
+
+    // ws_port clamping in collectFormData
+    zeroH.el('input-ws-port').value = '-5';
+    assert(zeroH.app.collectFormData().ws_port === 1024, 'Negative ws_port clamps to 1024');
+    zeroH.el('input-ws-port').value = '80';
+    assert(zeroH.app.collectFormData().ws_port === 1024, 'Low ws_port below 1024 clamps to 1024');
+    zeroH.el('input-ws-port').value = '70000';
+    assert(zeroH.app.collectFormData().ws_port === 65535, 'Overflow ws_port clamps to 65535');
+    zeroH.el('input-ws-port').value = 'not-a-number';
+    assert(zeroH.app.collectFormData().ws_port === 8765, 'Non-numeric ws_port falls back to 8765');
+    zeroH.el('input-ws-port').value = '9123';
+    assert(zeroH.app.collectFormData().ws_port === 9123, 'Valid ws_port is preserved');
+
+    // transcription_purpose ratchet fix
+    zeroH.el('slider-max-chunk').value = '20';
+    const longCfg = zeroH.app.collectFormData();
+    assert(longCfg.transcription_purpose === 'transcription', 'max_chunk_duration > 15 sets transcription_purpose to transcription');
+    const ratchetH = await loadAppHarness({ ...styleBaseConfig, max_chunk_duration: 20, transcription_purpose: 'transcription' });
+    ratchetH.el('slider-max-chunk').value = '10';
+    assert(ratchetH.app.collectFormData().transcription_purpose === 'subtitles',
+      'Lowering max_chunk_duration to <= 15 restores transcription_purpose from transcription to subtitles');
+
+    // CPU-only machine disables GPU and CUDA options and forces safe values
+    const cpuOnlyGpu = {
+      adapters: [],
+      cuda_driver_version: null,
+      nvidia_runtime: { installed: false, missing: [] },
+      worker_published: true,
+      license_urls: [],
+      selected_backend: 'ort',
+      reason: 'no_nvidia_gpu',
+      default_cpu_threads: 4,
+      max_cpu_threads: 8,
+    };
+    const cpuOnly = await loadAppHarness({ ...styleBaseConfig, device: 'cuda', asr_backend: 'ct2_cuda', cpu_threads_auto: false }, { gpuStatus: cpuOnlyGpu });
+    assert(cpuOnly.el('device-cuda').disabled === true
+      && cpuOnly.el('select-compute-device').value === 'cpu'
+      && cpuOnly.el('asr-backend-ct2').disabled === true
+      && cpuOnly.el('select-asr-backend').value === 'auto'
+      && cpuOnly.el('slider-cpu-threads').disabled === false,
+    'CPU-only machines disable GPU and NVIDIA CUDA options, fall back to CPU/auto, and keep CPU threads active');
+
+    // Non-NVIDIA GPU (AMD) keeps GPU enabled but disables NVIDIA CUDA backend option
+    const amdGpu = { ...cpuOnlyGpu, adapters: [{ vendor: 'amd', name: 'Radeon RX 7800 XT', dedicated_vram_mb: 16384 }] };
+    const amdH = await loadAppHarness({ ...styleBaseConfig, device: 'cuda', asr_backend: 'ct2_cuda' }, { gpuStatus: amdGpu });
+    assert(amdH.el('device-cuda').disabled === false
+      && amdH.el('select-compute-device').value === 'cuda'
+      && amdH.el('asr-backend-ct2').disabled === true
+      && amdH.el('select-asr-backend').value === 'auto',
+    'Non-NVIDIA GPU keeps GPU compute enabled while disabling the NVIDIA CUDA backend option');
   }
 
   // Restore Spanish as default

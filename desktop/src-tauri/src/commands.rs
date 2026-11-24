@@ -2196,6 +2196,7 @@ pub(crate) fn build_gpu_backend_status(
         selected_backend: backend_name(backend).to_string(),
         reason: reason.to_string(),
         default_cpu_threads: liveaudio_core::default_cpu_threads(),
+        max_cpu_threads: liveaudio_core::max_cpu_threads(),
     }
 }
 

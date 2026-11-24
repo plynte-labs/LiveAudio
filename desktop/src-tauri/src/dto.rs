@@ -157,4 +157,6 @@ pub struct GpuBackendStatusDto {
     pub reason: String,
     /// Thread count the worker uses while CPU threads is automatic.
     pub default_cpu_threads: usize,
+    /// Maximum logical CPU threads supported on this machine.
+    pub max_cpu_threads: usize,
 }

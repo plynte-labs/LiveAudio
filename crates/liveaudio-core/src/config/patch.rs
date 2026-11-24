@@ -86,6 +86,8 @@ pub fn is_key_enabled(key: &str, style_enabled: bool, system_enabled: bool) -> b
 pub const RESTART_REQUIRED_KEYS: &[&str] = &[
     "device",
     "asr_backend",
+    "cpu_threads",
+    "cpu_threads_auto",
     "model_size",
     "ws_port",
     "asr_language",
@@ -495,6 +497,14 @@ mod tests {
         assert!(MCP_PATCHABLE_KEYS.contains(&"asr_backend"));
         assert!(RESTART_REQUIRED_KEYS.contains(&"asr_backend"));
         assert_eq!(enum_values("asr_backend"), Some(VALID_ASR_BACKENDS));
+    }
+
+    #[test]
+    fn cpu_threads_keys_are_patchable_and_restart_required() {
+        assert!(MCP_PATCHABLE_KEYS.contains(&"cpu_threads"));
+        assert!(MCP_PATCHABLE_KEYS.contains(&"cpu_threads_auto"));
+        assert!(RESTART_REQUIRED_KEYS.contains(&"cpu_threads"));
+        assert!(RESTART_REQUIRED_KEYS.contains(&"cpu_threads_auto"));
     }
 
     #[test]

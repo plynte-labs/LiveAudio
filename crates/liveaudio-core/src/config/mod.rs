@@ -128,7 +128,7 @@ pub fn default_cpu_threads() -> usize {
         .unwrap_or(2)
 }
 
-fn max_cpu_threads() -> usize {
+pub fn max_cpu_threads() -> usize {
     std::thread::available_parallelism()
         .map(|n| n.get().max(1))
         .unwrap_or(4)
@@ -1261,7 +1261,7 @@ mod tests {
             "max_chunk_duration should be clamped to max 15.0 for default subtitles purpose"
         );
         assert!(
-            config.cpu_threads <= 16,
+            config.cpu_threads <= max_cpu_threads(),
             "cpu_threads should be clamped to max parallelism"
         );
 

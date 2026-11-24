@@ -157,7 +157,10 @@ interface GpuBackendStatus {
   adapters: { vendor: string; name: string; dedicated_vram_mb: number }[];
   cuda_driver_version: number | null;
   nvidia_runtime: { installed: boolean; missing: string[] };
+  worker_published: boolean;
   license_urls: string[];
   selected_backend: string;
   reason: string;
+  default_cpu_threads: number;
+  max_cpu_threads: number;
 }

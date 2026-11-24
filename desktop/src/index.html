@@ -349,11 +349,11 @@
                         <option value="turbo (Máxima precisión GPU)" data-i18n="opt_model_turbo">turbo (Máxima precisión GPU)</option>
                       </optgroup>
                       <optgroup label="Parakeet">
-                        <option value="parakeet (Multilingüe ES/EN, CPU)" data-i18n="opt_model_parakeet">parakeet (Multilingüe ES/EN, CPU)</option>
+                        <option value="parakeet (Multilingüe ES/EN, CPU)" data-i18n="opt_model_parakeet">parakeet (Multilingüe ES/EN, CPU o GPU)</option>
                       </optgroup>
                     </select>
                     <span class="form-hint" data-i18n="hint_model_size">Los modelos grandes pueden consumir más memoria de GPU.</span>
-                    <span id="hint-parakeet-engine" class="form-hint" data-i18n="hint_parakeet_engine" hidden>Parakeet se ejecuta en la CPU y detecta el idioma automáticamente.</span>
+                    <span id="hint-parakeet-engine" class="form-hint" data-i18n="hint_parakeet_engine" hidden>Parakeet usa la GPU si la seleccionas (descarga inicial más grande, de unos 2,5 GB) y int8 en la CPU (unos 0,7 GB). Detecta el idioma automáticamente.</span>
                   </div>
                   <div class="form-group">
                     <label for="select-compute-device" data-i18n="lbl_compute_device">Dispositivo de cómputo</label>
@@ -392,7 +392,7 @@
                   <select id="select-asr-backend" class="form-control">
                     <option value="auto" selected data-i18n="opt_asr_backend_auto">Automático (recomendado)</option>
                     <option value="ort" data-i18n="opt_asr_backend_ort">Compatible (GPU / CPU)</option>
-                    <option value="ct2_cuda" data-i18n="opt_asr_backend_ct2">NVIDIA CUDA</option>
+                    <option value="ct2_cuda" id="asr-backend-ct2" data-i18n="opt_asr_backend_ct2">NVIDIA CUDA</option>
                   </select>
                   <span class="form-hint" data-i18n="hint_asr_backend">Automático usa NVIDIA CUDA cuando está disponible; si no, el modo compatible.</span>
                 </div>
@@ -473,12 +473,12 @@
                   <div class="form-row">
                     <div class="form-group">
                       <label for="slider-max-live-delay" data-i18n="lbl_max_live_delay">Retraso máximo</label>
-                      <div class="slider-container"><input type="range" id="slider-max-live-delay" min="1.0" max="60.0" step="1.0" value="10.0"><span id="val-max-live-delay" class="slider-value">10.0s</span></div>
+                      <div class="slider-container"><input type="range" id="slider-max-live-delay" min="1.0" max="120.0" step="1.0" value="10.0"><span id="val-max-live-delay" class="slider-value">10.0s</span></div>
                       <span class="form-hint" data-i18n="hint_max_live_delay">Retraso permitido antes de descartar subtítulos acumulados.</span>
                     </div>
                     <div class="form-group">
                       <label for="slider-catchup-interval" data-i18n="lbl_catchup_interval">Pausa entre subtítulos atrasados</label>
-                      <div class="slider-container"><input type="range" id="slider-catchup-interval" min="0.1" max="5.0" step="0.1" value="1.5"><span id="val-catchup-interval" class="slider-value">1.5s</span></div>
+                      <div class="slider-container"><input type="range" id="slider-catchup-interval" min="0" max="10" step="0.1" value="1.5"><span id="val-catchup-interval" class="slider-value">1.5s</span></div>
                       <span class="form-hint" data-i18n="hint_catchup_interval">Pausa entre elementos históricos enviados a OBS.</span>
                     </div>
                   </div>

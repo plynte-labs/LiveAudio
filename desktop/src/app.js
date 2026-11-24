@@ -157,6 +157,7 @@ function mockInvoke(cmd, args) {
         selected_backend: 'ort',
         reason: 'nvidia_runtime_not_installed',
         default_cpu_threads: 4,
+        max_cpu_threads: 8,
       });
 
     case 'install_nvidia_runtime':
@@ -374,6 +375,7 @@ const elements = {
   valRibbonLines: document.getElementById('val-ribbon-lines'),
   selectBacklogPolicy: document.getElementById('select-backlog-policy'),
   selectAsrBackend: document.getElementById('select-asr-backend'),
+  optAsrBackendCt2: document.getElementById('asr-backend-ct2'),
   tabSetupTab: document.getElementById('tab-setup-tab'),
   enginePill: document.getElementById('engine-status-pill'),
   engineStatusText: document.getElementById('engine-status-text'),
@@ -556,6 +558,7 @@ function syncEngineControls() {
   const parakeet = isParakeetModel(elements.selectModelSize.value);
   elements.selectAsrBackend.disabled = parakeet;
   elements.hintParakeetEngine.hidden = !parakeet;
+  syncHardwareOptions();
   updateComputeDeviceReactivity();
   renderEngineSummary();
 }
@@ -564,28 +567,57 @@ function syncEngineControls() {
 // count while Automatic is on; collectFormData always saves the manual one.
 let manualCpuThreads = 1;
 let autoCpuThreads = null;
+let maxCpuThreads = null;
+function clampCpuThreads(value) {
+  const num = Number.isFinite(value) ? Math.trunc(value) : 1;
+  return maxCpuThreads ? Math.min(maxCpuThreads, Math.max(1, num)) : Math.max(1, num);
+}
+function syncHardwareOptions() {
+  if (!gpuStatus) return;
+  const adapters = Array.isArray(gpuStatus.adapters) ? gpuStatus.adapters : [];
+  const hasGpu = adapters.length > 0;
+  const hasNvidia = adapters.some((a) => a.vendor === 'nvidia');
+  const ct2Available = hasNvidia && (gpuStatus.worker_published !== false || Boolean(gpuStatus.nvidia_runtime?.installed));
+
+  if (elements.deviceRadioCuda) {
+    elements.deviceRadioCuda.disabled = !hasGpu;
+  }
+  if (!hasGpu && elements.selectComputeDevice && elements.selectComputeDevice.value === 'cuda') {
+    elements.selectComputeDevice.value = 'cpu';
+  }
+  if (elements.optAsrBackendCt2) {
+    elements.optAsrBackendCt2.disabled = !ct2Available;
+  }
+  if (!ct2Available && elements.selectAsrBackend && elements.selectAsrBackend.value === 'ct2_cuda') {
+    elements.selectAsrBackend.value = 'auto';
+  }
+}
 function renderCpuThreads() {
-  const shown = elements.checkCpuThreadsAuto.checked && autoCpuThreads ? autoCpuThreads : manualCpuThreads;
+  if (maxCpuThreads && elements.sliderCpuThreads) {
+    elements.sliderCpuThreads.max = String(maxCpuThreads);
+  }
+  const shown = clampCpuThreads(elements.checkCpuThreadsAuto.checked && autoCpuThreads ? autoCpuThreads : manualCpuThreads);
   elements.sliderCpuThreads.value = shown;
   elements.valCpuThreads.textContent = shown;
 }
 
 function updateComputeDeviceReactivity(device) {
   const currentDevice = device || (elements.selectComputeDevice ? elements.selectComputeDevice.value : 'cpu');
-  const isCuda = currentDevice === 'cuda';
+  const parakeet = isParakeetModel(elements.selectModelSize?.value);
+  const disableCpuThreads = currentDevice === 'cuda' && !parakeet;
   const group = elements.groupCpuThreads || elements.sliderCpuThreads?.closest('.form-group');
 
   if (elements.sliderCpuThreads) {
-    elements.sliderCpuThreads.disabled = isCuda || elements.checkCpuThreadsAuto.checked;
+    elements.sliderCpuThreads.disabled = disableCpuThreads || elements.checkCpuThreadsAuto.checked;
   }
-  elements.checkCpuThreadsAuto.disabled = isCuda;
+  elements.checkCpuThreadsAuto.disabled = disableCpuThreads;
   renderCpuThreads();
 
   if (group) {
-    group.classList.toggle('device-dimmed', isCuda);
+    group.classList.toggle('device-dimmed', disableCpuThreads);
     const hint = group.querySelector('.form-hint');
     if (hint) {
-      const hintKey = isCuda ? 'hint_cpu_threads_cuda' : 'hint_cpu_threads';
+      const hintKey = disableCpuThreads ? 'hint_cpu_threads_cuda' : 'hint_cpu_threads';
       hint.setAttribute('data-i18n', hintKey);
       hint.textContent = t(hintKey);
     }
@@ -1869,7 +1901,10 @@ async function resetActiveTab() {
     icon: 'refresh',
   });
   if (!ok) return;
-  const d = tab.defaults(navigator.hardwareConcurrency || 8);
+  const d = tab.defaults(maxCpuThreads || navigator.hardwareConcurrency || 8);
+  if (activeTabId === 'tab-advanced' && autoCpuThreads) {
+    d.cpu_threads = autoCpuThreads;
+  }
   if (activeTabId === 'tab-advanced') {
     populateAdvancedControls({ ...currentConfig, ...d });
     syncAdvancedUnsaved();
@@ -2028,15 +2063,18 @@ function populateAdvancedControls(config) {
   elements.selectAsrBackend.value = config.asr_backend || 'auto';
   syncEngineControls();
 
-  elements.sliderMaxLiveDelay.value = config.subtitle_max_live_delay_sec || 10.0;
-  elements.valMaxLiveDelay.textContent = `${config.subtitle_max_live_delay_sec || 10.0}s`;
+  const maxLiveDelay = config.subtitle_max_live_delay_sec ?? 10.0;
+  elements.sliderMaxLiveDelay.value = maxLiveDelay;
+  elements.valMaxLiveDelay.textContent = `${maxLiveDelay}s`;
 
   elements.inputWsPort.value = config.ws_port || 8765;
-  elements.sliderVadPad.value = config.vad_speech_pad_ms || 200;
-  elements.valVadPad.textContent = `${config.vad_speech_pad_ms || 200}ms`;
+  const vadPad = config.vad_speech_pad_ms ?? 200;
+  elements.sliderVadPad.value = vadPad;
+  elements.valVadPad.textContent = `${vadPad}ms`;
 
-  elements.sliderVadThreshold.value = config.vad_threshold || 0.5;
-  elements.valVadThreshold.textContent = `${config.vad_threshold || 0.5}`;
+  const vadThreshold = config.vad_threshold ?? 0.5;
+  elements.sliderVadThreshold.value = vadThreshold;
+  elements.valVadThreshold.textContent = `${vadThreshold}`;
 
   elements.checkRnnoiseEnabled.checked = Boolean(config.rnnoise_enabled);
   elements.checkContextPromptEnabled.checked = config.context_prompt_enabled !== false;
@@ -2049,8 +2087,9 @@ function populateAdvancedControls(config) {
   if (elements.checkUpdatesEnabled) elements.checkUpdatesEnabled.checked = config.check_updates_enabled !== false;
   elements.checkAcousticEventsEnabled.checked = Boolean(config.acoustic_events_enabled);
   if (elements.checkLivePartialSubtitles) elements.checkLivePartialSubtitles.checked = Boolean(config.live_partial_subtitles_enabled);
-  elements.sliderCatchupInterval.value = config.subtitle_catchup_interval_sec || 1.5;
-  elements.valCatchupInterval.textContent = `${config.subtitle_catchup_interval_sec || 1.5}s`;
+  const catchupInterval = config.subtitle_catchup_interval_sec ?? 1.5;
+  elements.sliderCatchupInterval.value = catchupInterval;
+  elements.valCatchupInterval.textContent = `${catchupInterval}s`;
 }
 
 // Populate Settings Form from Config
@@ -2151,12 +2190,14 @@ function collectFormData() {
   cfg.device = elements.selectComputeDevice
     ? elements.selectComputeDevice.value
     : (elements.deviceRadioCuda && elements.deviceRadioCuda.checked ? 'cuda' : 'cpu');
-  cfg.cpu_threads = manualCpuThreads;
+  cfg.cpu_threads = clampCpuThreads(manualCpuThreads);
   cfg.cpu_threads_auto = elements.checkCpuThreadsAuto.checked;
   cfg.silence_timeout = parseFloat(elements.sliderSilenceTimeout.value);
   cfg.max_chunk_duration = parseFloat(elements.sliderMaxChunk.value);
   if (cfg.max_chunk_duration > 15.0) {
     cfg.transcription_purpose = 'transcription';
+  } else if (cfg.transcription_purpose === 'transcription') {
+    cfg.transcription_purpose = 'subtitles';
   }
 
   cfg.model_size = elements.selectModelSize.value;
@@ -2179,7 +2220,8 @@ function collectFormData() {
   cfg.subtitle_max_live_delay_sec = parseFloat(elements.sliderMaxLiveDelay.value);
   cfg.subtitle_catchup_interval_sec = parseFloat(elements.sliderCatchupInterval.value);
 
-  cfg.ws_port = parseInt(elements.inputWsPort.value, 10) || 8765;
+  const rawWsPort = parseInt(elements.inputWsPort.value, 10);
+  cfg.ws_port = Number.isFinite(rawWsPort) ? Math.min(65535, Math.max(1024, rawWsPort)) : 8765;
   cfg.vad_speech_pad_ms = parseInt(elements.sliderVadPad.value, 10);
   cfg.vad_threshold = parseFloat(elements.sliderVadThreshold.value);
   cfg.continuous_session = elements.checkContinuous.checked;
@@ -2507,6 +2549,7 @@ async function initApp() {
   if (elements.selectComputeDevice) {
     elements.selectComputeDevice.addEventListener('change', (e) => {
       updateComputeDeviceReactivity(e.target.value);
+      renderEngineSummary();
     });
   }
 
@@ -3182,8 +3225,7 @@ function renderEngineSummary() {
   const live = currentStatus;
   const running = Boolean(live?.is_running);
   const parakeet = isParakeetModel(elements.selectModelSize.value);
-  // Parakeet is never ct2: an idle pill follows the selected device, a running one the live engine.
-  const kind = parakeet && !running && elements.selectComputeDevice.value === 'cpu' ? 'cpu' : engineKind(gpuStatus, live);
+  const kind = !running && elements.selectComputeDevice?.value === 'cpu' ? 'cpu' : engineKind(gpuStatus, live);
   const reason = running && live.backend_reason ? live.backend_reason : gpuStatus?.reason;
   elements.enginePill.className = running ? 'pill state-listening' : 'pill state-stopped';
   elements.engineStatusText.textContent = kind ? `${t(running ? 'engine_using' : 'engine_will_use')}${t(`engine_name_${kind}`)}` : '';
@@ -3248,6 +3290,8 @@ async function refreshGpuStatus() {
   try {
     gpuStatus = await invoke('get_gpu_backend_status');
     autoCpuThreads = gpuStatus?.default_cpu_threads || null;
+    maxCpuThreads = gpuStatus?.max_cpu_threads || null;
+    syncHardwareOptions();
     updateComputeDeviceReactivity();
   } catch (_) {
     gpuStatus = null;

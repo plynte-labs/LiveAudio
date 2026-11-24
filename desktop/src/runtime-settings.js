@@ -1,6 +1,8 @@
 // Runtime-affecting settings require a confirmed service restart to take effect.
 const RUNTIME_SETTINGS = [
   'device',
+  'cpu_threads',
+  'cpu_threads_auto',
   'model_size',
   'audio_device',
   'ws_port',
@@ -329,8 +331,8 @@ export const ADVANCED_KEYS = Object.freeze([
 // Defaults of the Advanced keys, same as LiveAudioConfig::default (cpu_threads is half the cores).
 export function advancedDefaults(cores = 4) {
   return {
-    model_size: 'small (Balance CPU)', device: 'cpu', cpu_threads: Math.min(16, Math.max(1, Math.floor(cores / 2))), cpu_threads_auto: true, asr_backend: 'auto',
-    silence_timeout: 0.5, max_chunk_duration: 3.0, vad_speech_pad_ms: 200, vad_threshold: 0.5, rnnoise_enabled: false,
+    model_size: 'small (Balance CPU)', device: 'cpu', cpu_threads: Math.max(1, Math.floor(cores / 2)), cpu_threads_auto: true, asr_backend: 'auto',
+    silence_timeout: 0.5, max_chunk_duration: 3.0, transcription_purpose: 'subtitles', vad_speech_pad_ms: 200, vad_threshold: 0.5, rnnoise_enabled: false,
     live_partial_subtitles_enabled: false, subtitle_backlog_policy: 'auto', subtitle_max_live_delay_sec: 10.0,
     subtitle_catchup_interval_sec: 1.5, ws_port: 8765, acoustic_events_enabled: false, mcp_style_enabled: false, mcp_system_enabled: false, check_updates_enabled: true,
   };
