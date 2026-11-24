@@ -328,6 +328,7 @@ const elements = {
   sliderCpuThreads: document.getElementById('slider-cpu-threads'),
   groupCpuThreads: document.getElementById('group-cpu-threads'),
   valCpuThreads: document.getElementById('val-cpu-threads'),
+  checkCpuThreadsAuto: document.getElementById('check-cpu-threads-auto'),
   sliderSilenceTimeout: document.getElementById('slider-silence-timeout'),
   valSilenceTimeout: document.getElementById('val-silence-timeout'),
   sliderMaxChunk: document.getElementById('slider-max-chunk'),
@@ -560,8 +561,9 @@ function updateComputeDeviceReactivity(device) {
   const group = elements.groupCpuThreads || elements.sliderCpuThreads?.closest('.form-group');
 
   if (elements.sliderCpuThreads) {
-    elements.sliderCpuThreads.disabled = isCuda;
+    elements.sliderCpuThreads.disabled = isCuda || elements.checkCpuThreadsAuto.checked;
   }
+  elements.checkCpuThreadsAuto.disabled = isCuda;
 
   if (group) {
     group.classList.toggle('device-dimmed', isCuda);
@@ -579,7 +581,7 @@ function updateComputeDeviceReactivity(device) {
 let closeConfirmed = false;
 let closePromptOpen = false;
 let saveGeneralConfig = async () => {};
-const ADVANCED_FIELD_IDS = ['select-model-size', 'select-compute-device', 'slider-cpu-threads', 'select-asr-backend', 'slider-silence-timeout', 'slider-max-chunk',
+const ADVANCED_FIELD_IDS = ['select-model-size', 'select-compute-device', 'slider-cpu-threads', 'check-cpu-threads-auto', 'select-asr-backend', 'slider-silence-timeout', 'slider-max-chunk',
   'slider-vad-pad', 'slider-vad-threshold', 'check-rnnoise-enabled', 'check-live-partial-subtitles-enabled', 'select-backlog-policy', 'slider-max-live-delay',
   'slider-catchup-interval', 'prompt-es', 'input-blacklist', 'input-ws-port', 'check-acoustic-events-enabled', 'check-mcp-style-enabled', 'check-mcp-system-enabled', 'check-updates-enabled'];
 function setupCloseGuard(appWindow) {
@@ -1987,6 +1989,7 @@ function populateAdvancedControls(config) {
   } else {
     if (elements.deviceRadioCpu) elements.deviceRadioCpu.checked = true;
   }
+  elements.checkCpuThreadsAuto.checked = config.cpu_threads_auto !== false;
   updateComputeDeviceReactivity(config.device || 'cpu');
 
   elements.sliderCpuThreads.value = config.cpu_threads;
@@ -2131,6 +2134,7 @@ function collectFormData() {
     ? elements.selectComputeDevice.value
     : (elements.deviceRadioCuda && elements.deviceRadioCuda.checked ? 'cuda' : 'cpu');
   cfg.cpu_threads = parseInt(elements.sliderCpuThreads.value, 10);
+  cfg.cpu_threads_auto = elements.checkCpuThreadsAuto.checked;
   cfg.silence_timeout = parseFloat(elements.sliderSilenceTimeout.value);
   cfg.max_chunk_duration = parseFloat(elements.sliderMaxChunk.value);
   if (cfg.max_chunk_duration > 15.0) {
@@ -2533,6 +2537,7 @@ async function initApp() {
   elements.btnAboutSponsor.addEventListener('click', () => openSupportLink('sponsor'));
 
   // Slider bindings
+  elements.checkCpuThreadsAuto.addEventListener('change', () => updateComputeDeviceReactivity());
   elements.sliderCpuThreads.addEventListener('input', (e) => {
     elements.valCpuThreads.textContent = e.target.value;
   });

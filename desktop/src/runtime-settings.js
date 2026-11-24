@@ -319,7 +319,7 @@ export function nvidiaOfferVisible(status, dismissed) {
 // The Advanced tab's own settings. Styles, saved styles, vocabulary (prompts, blacklist), audio device,
 // language and session files belong to other tabs and are never part of an Advanced reset.
 export const ADVANCED_KEYS = Object.freeze([
-  'model_size', 'device', 'cpu_threads', 'asr_backend', 'silence_timeout', 'max_chunk_duration', 'vad_speech_pad_ms',
+  'model_size', 'device', 'cpu_threads', 'cpu_threads_auto', 'asr_backend', 'silence_timeout', 'max_chunk_duration', 'vad_speech_pad_ms',
   'vad_threshold', 'rnnoise_enabled', 'live_partial_subtitles_enabled', 'subtitle_backlog_policy',
   'subtitle_max_live_delay_sec', 'subtitle_catchup_interval_sec', 'ws_port', 'acoustic_events_enabled',
   'mcp_style_enabled', 'mcp_system_enabled', 'check_updates_enabled',
@@ -328,7 +328,7 @@ export const ADVANCED_KEYS = Object.freeze([
 // Defaults of the Advanced keys, same as LiveAudioConfig::default (cpu_threads is half the cores).
 export function advancedDefaults(cores = 4) {
   return {
-    model_size: 'small (Balance CPU)', device: 'cpu', cpu_threads: Math.min(16, Math.max(1, Math.floor(cores / 2))), asr_backend: 'auto',
+    model_size: 'small (Balance CPU)', device: 'cpu', cpu_threads: Math.min(16, Math.max(1, Math.floor(cores / 2))), cpu_threads_auto: true, asr_backend: 'auto',
     silence_timeout: 0.5, max_chunk_duration: 3.0, vad_speech_pad_ms: 200, vad_threshold: 0.5, rnnoise_enabled: false,
     live_partial_subtitles_enabled: false, subtitle_backlog_policy: 'auto', subtitle_max_live_delay_sec: 10.0,
     subtitle_catchup_interval_sec: 1.5, ws_port: 8765, acoustic_events_enabled: false, mcp_style_enabled: false, mcp_system_enabled: false, check_updates_enabled: true,
@@ -346,7 +346,7 @@ export const TAB_RESETS = Object.freeze({
   },
   'tab-advanced': {
     title: 'tab_advanced',
-    labels: ['lbl_model_size', 'lbl_compute_device', 'lbl_cpu_threads', 'lbl_asr_backend', 'lbl_silence_timeout', 'lbl_max_chunk', 'lbl_vad_pad',
+    labels: ['lbl_model_size', 'lbl_compute_device', 'lbl_cpu_threads', 'lbl_cpu_threads_auto', 'lbl_asr_backend', 'lbl_silence_timeout', 'lbl_max_chunk', 'lbl_vad_pad',
       'lbl_vad_threshold', 'lbl_rnnoise_enabled', 'lbl_live_partial_subtitles', 'lbl_backlog_policy', 'lbl_max_live_delay', 'lbl_catchup_interval',
       'lbl_ws_port', 'lbl_acoustic_events_enabled', 'lbl_mcp_style_enabled', 'lbl_mcp_system_enabled', 'lbl_check_updates_auto'],
     defaults: advancedDefaults,

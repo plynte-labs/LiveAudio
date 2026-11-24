@@ -159,6 +159,11 @@ pub struct LiveAudioConfig {
     #[serde(default = "default_cpu_threads")]
     pub cpu_threads: usize,
 
+    /// When true the worker uses `default_cpu_threads()` and ignores `cpu_threads`.
+    /// A config file without this key is migrated at load time (see `load_from_path`).
+    #[serde(default = "default_true")]
+    pub cpu_threads_auto: bool,
+
     #[serde(default = "default_model_size")]
     pub model_size: String,
 
@@ -402,6 +407,7 @@ impl Default for LiveAudioConfig {
             device: default_device(),
             asr_backend: default_asr_backend(),
             cpu_threads: default_cpu_threads(),
+            cpu_threads_auto: true,
             model_size: default_model_size(),
             blacklist: default_blacklist(),
             continuous_session: true,
@@ -452,6 +458,15 @@ impl Default for LiveAudioConfig {
 }
 
 impl LiveAudioConfig {
+    /// Thread count handed to the worker: half the cores while automatic, else the saved value.
+    pub fn effective_cpu_threads(&self) -> usize {
+        if self.cpu_threads_auto {
+            default_cpu_threads()
+        } else {
+            self.cpu_threads
+        }
+    }
+
     /// Capture device id for the persisted `audio_device` selection.
     ///
     /// `None` means the OS default microphone; the legacy `wasapi_loopback` id
@@ -901,6 +916,16 @@ pub fn load_from_path(path: &Path) -> io::Result<LiveAudioConfig> {
             "max_chunk_duration".to_string(),
             serde_json::json!(max_chunk_bounds(purpose).1),
         );
+    }
+    // A pre-existing choice of threads stays manual; only a default-valued one becomes automatic.
+    if !fields.contains_key("cpu_threads_auto") {
+        let custom = fields
+            .get("cpu_threads")
+            .and_then(serde_json::Value::as_u64)
+            .is_some_and(|n| n != default_cpu_threads() as u64);
+        if custom {
+            fields.insert("cpu_threads_auto".to_string(), serde_json::json!(false));
+        }
     }
     serde_json::from_value(fields.into()).map_err(invalid)
 }
@@ -1375,6 +1400,35 @@ mod tests {
         assert_eq!(cfg.cpu_threads, default_cpu_threads());
         assert_eq!(cfg.device, "cuda");
         assert!(!cfg.obs_enabled);
+    }
+
+    #[test]
+    fn cpu_threads_auto_defaults_on_and_legacy_configs_migrate_by_value() {
+        assert!(LiveAudioConfig::default().cpu_threads_auto);
+        let same = format!(r#"{{"cpu_threads": {}}}"#, default_cpu_threads());
+        assert!(load_json("auto-legacy-default", &same).unwrap().cpu_threads_auto);
+        assert!(load_json("auto-legacy-empty", "{}").unwrap().cpu_threads_auto);
+        let custom = format!(r#"{{"cpu_threads": {}}}"#, default_cpu_threads() + 1);
+        let cfg = load_json("auto-legacy-custom", &custom).unwrap();
+        assert!(!cfg.cpu_threads_auto);
+        assert_eq!(cfg.cpu_threads, default_cpu_threads() + 1);
+        let explicit = format!(
+            r#"{{"cpu_threads": {}, "cpu_threads_auto": true}}"#,
+            default_cpu_threads() + 1
+        );
+        assert!(load_json("auto-explicit", &explicit).unwrap().cpu_threads_auto);
+    }
+
+    #[test]
+    fn effective_cpu_threads_follows_the_auto_switch() {
+        let mut cfg = LiveAudioConfig {
+            cpu_threads: 1,
+            cpu_threads_auto: true,
+            ..LiveAudioConfig::default()
+        };
+        assert_eq!(cfg.effective_cpu_threads(), default_cpu_threads());
+        cfg.cpu_threads_auto = false;
+        assert_eq!(cfg.effective_cpu_threads(), 1);
     }
 
     #[test]

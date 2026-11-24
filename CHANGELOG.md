@@ -18,6 +18,7 @@ Todos los cambios notables de LiveAudio se documentan aquí.
 - **Pestaña Avanzado reorganizada** en secciones con iconos.
 - **Selector "Modelo" agrupado** por Whisper/Parakeet.
 - **El control de hilos de CPU** solo está activo cuando se usa CPU.
+- **Hilos de CPU automáticos** — Nuevo interruptor "Automático" (activado por defecto): usa la mitad de los núcleos y deshabilita el control manual. Una configuración anterior con un número de hilos personalizado se conserva en modo manual.
 - **Iconos de sección** en la pantalla principal.
 - **Indicadores "Detenido" e "Inactivo" eliminados.**
 

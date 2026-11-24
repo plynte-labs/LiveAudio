@@ -37,7 +37,7 @@ Branch: `feat/i18n-log-auto-threads`, stacked on `feat/ct2-worker-release-cycle`
 ## Tasks
 
 - [x] T1 Translate the event log through i18n keys and backend phase codes. Route: delegated writer.
-- [ ] T2 Add the automatic CPU threads switch (config, worker resolution, UI, i18n). Route: delegated writer.
+- [x] T2 Add the automatic CPU threads switch (config, worker resolution, UI, i18n). Route: delegated writer.
 
 ## Acceptance
 
@@ -56,3 +56,8 @@ Branch: `feat/i18n-log-auto-threads`, stacked on `feat/ct2-worker-release-cycle`
 - Phases mapped by code: `starting`, `starting_worker`, `ready`. Others (`downloading`, `error`, worker phases) keep the backend text.
 - RED: `desktop/test_frontend.js` T1 block failed with `runtimeSettings.setupLogLine is not a function`. GREEN: 932 passed, 0 failed.
 
+
+### T2 (done, see git log)
+- Route: delegated writer (single writer). `cpu_threads_auto` in `config/mod.rs` (serde default true, legacy fixup in `load_from_path`, `effective_cpu_threads()`), used by `worker_init_payload`; patch key added (schema derived); UI switch in Advanced; `ADVANCED_KEYS`, `advancedDefaults`, reset label, types, es/en keys, MCP doc, changelog.
+- RED: Rust tests `cpu_threads_auto_defaults_on_and_legacy_configs_migrate_by_value`, `effective_cpu_threads_follows_the_auto_switch` and the extended init payload test failed to compile (no field or method); JS asserts failed (`check-cpu-threads-auto` missing, key and labels missing).
+- GREEN: `cargo test --workspace --locked` 560 passed, 0 failed; `node desktop/test_frontend.js` 936 passed, 0 failed; `node --test tests-js/*.mjs` 170 passed; clippy warning set identical to base.

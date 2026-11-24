@@ -21,6 +21,7 @@ pub const MCP_PATCHABLE_KEYS: &[&str] = &[
     "device",
     "asr_backend",
     "cpu_threads",
+    "cpu_threads_auto",
     "model_size",
     "blacklist",
     "continuous_session",

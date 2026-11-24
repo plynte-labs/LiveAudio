@@ -1631,7 +1631,7 @@ return { sanitizeThemeTokens, applyTheme };`)(fakeDocument);
   // 15. Style tab through the real app.js (vm harness): save -> adopt, edits during a save, external changes
   // The stub has no <option> elements, so the model select keeps ''; the blacklists and flags are set so the form round-trips.
   const styleBaseConfig = {
-    language: 'es', asr_language: 'es', follow_opencohost_language: false, model_size: '', device: 'cpu', cpu_threads: 4, silence_timeout: 1.5,
+    language: 'es', asr_language: 'es', follow_opencohost_language: false, model_size: '', device: 'cpu', cpu_threads: 4, cpu_threads_auto: true, silence_timeout: 1.5,
     max_chunk_duration: 10, ws_port: 8765, blacklist: 'x', whisper_context_prompt_es: '', whisper_context_prompt_en: '',
     extra: { blacklist_es: 'x', blacklist_en: 'x' }, continuous_session: false, save_transcript_enabled: false,
     save_vtt_enabled: false, rnnoise_enabled: false, mcp_style_enabled: false, mcp_system_enabled: false, acoustic_events_enabled: false, live_partial_subtitles_enabled: false, asr_backend: 'auto',
@@ -2094,7 +2094,7 @@ return { sanitizeThemeTokens, applyTheme };`)(fakeDocument);
         `Advanced card #${card} is a titled card holding its controls`);
     }
     const boxes = [...advHtml.matchAll(/<input type="checkbox"[^>]*>/g)].map((m) => m[0]);
-    assert(boxes.length === 6 && boxes.every((tag) => tag.includes('class="switch-input"')) && !advHtml.includes('checkbox-label'),
+    assert(boxes.length === 7 && boxes.every((tag) => tag.includes('class="switch-input"')) && !advHtml.includes('checkbox-label'),
       'Every Advanced checkbox is a real checkbox styled as the toggle switch');
     assert((advHtml.match(/class="badge-restart"/g) || []).length >= 4 && advHtml.includes('data-i18n="badge_restart"'), 'Restart-required settings carry the restart badge');
     assert(/id="chip-adv-unsaved"[^>]*\bhidden\b/.test(advHtml) && /id="chip-adv-unsaved"[^>]*role="status"/.test(advHtml) && !advHtml.includes('id="btn-adv-reset"'),
@@ -2791,6 +2791,20 @@ return { sanitizeThemeTokens, applyTheme };`)(fakeDocument);
     await pk.settle();
     assert(pk.el('slider-cpu-threads').disabled === true,
       'Parakeet on a GPU disables the CPU threads slider');
+    assert(pk.el('check-cpu-threads-auto').disabled === true, 'A GPU device disables the CPU threads Automatic switch');
+    pk.el('select-compute-device').value = 'cpu';
+    pk.el('select-compute-device').dispatch('change');
+    await pk.settle();
+    pk.el('check-cpu-threads-auto').checked = true;
+    pk.el('check-cpu-threads-auto').dispatch('change');
+    assert(pk.el('check-cpu-threads-auto').disabled === false && pk.el('slider-cpu-threads').disabled === true,
+      'Automatic on CPU disables the slider and keeps the switch enabled');
+    pk.el('check-cpu-threads-auto').checked = false;
+    pk.el('check-cpu-threads-auto').dispatch('change');
+    assert(pk.el('slider-cpu-threads').disabled === false, 'Automatic off enables the CPU threads slider');
+    assert(runtimeSettings.ADVANCED_KEYS.includes('cpu_threads_auto') && runtimeSettings.advancedDefaults(8).cpu_threads_auto === true
+      && i18nModule.TRANSLATIONS.es.lbl_cpu_threads_auto && i18nModule.TRANSLATIONS.en.lbl_cpu_threads_auto,
+    'cpu_threads_auto is an Advanced key, defaults on and has es/en labels');
     pk.el('select-compute-device').value = 'cpu';
     pk.el('select-compute-device').dispatch('change');
     await pk.settle();

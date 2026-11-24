@@ -25,7 +25,7 @@ pub fn worker_init_payload(
         "device": config.device,
         "language": language,
         "initial_prompt": initial_prompt,
-        "cpu_threads": config.cpu_threads,
+        "cpu_threads": config.effective_cpu_threads(),
         "auto_cpu_fallback": true,
     })
 }
@@ -118,6 +118,7 @@ mod tests {
     fn init_payload_forwards_cpu_threads_and_only_declared_fields() {
         let mut config = LiveAudioConfig::default();
         config.cpu_threads = 3;
+        config.cpu_threads_auto = false;
         let payload = worker_init_payload(&config, "small", "es", None);
         let object = payload.as_object().expect("init payload is an object");
         for key in object.keys() {
@@ -127,6 +128,10 @@ mod tests {
             );
         }
         assert_eq!(payload["cpu_threads"], json!(3));
+
+        config.cpu_threads_auto = true;
+        let auto = worker_init_payload(&config, "small", "es", None);
+        assert_eq!(auto["cpu_threads"], json!(config.effective_cpu_threads()));
     }
 
     #[test]

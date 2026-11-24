@@ -65,6 +65,7 @@ export interface LiveAudioConfig {
   output_dir: string;
   device: 'cuda' | 'cpu';
   cpu_threads: number;
+  cpu_threads_auto: boolean;
   model_size: string;
   blacklist: string;
   continuous_session: boolean;
