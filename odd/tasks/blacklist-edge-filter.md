@@ -27,6 +27,7 @@ Branch: `feat/blacklist-edge-filter`, stacked on `feat/i18n-log-auto-threads` (a
 
 - [x] T1 Edge-strip blacklist filter: whole-word matching, whole-utterance drop, edge strip, middle untouched, and the preset cleanup. Apply it in the desktop path AND in the CLI path (`crates/liveaudio-cli/src/main.rs`) if the CLI filters too. Put the pure logic in one shared place (prefer `liveaudio-core`) instead of duplicating it. Route: delegated writer.
 - [x] T2 The `context_prompt_enabled` and `blacklist_enabled` config fields, wiring (`asr_language_and_prompt`, the filter call sites, the CLI, the patch keys, MCP docs), the UI switches, and i18n for es and en. Route: delegated writer.
+- [x] T3 Translate the Advanced vocabulary hints and the remaining hardcoded UI strings, update the blacklist hint to the edge behavior, and add a guard test against Spanish literals in `app.js` and `runtime-settings.js`. Route: delegated writer.
 
 ## Constraints
 
@@ -62,4 +63,11 @@ Branch: `feat/blacklist-edge-filter`, stacked on `feat/i18n-log-auto-threads` (a
 - Config fields `context_prompt_enabled` / `blacklist_enabled` (default true) with `context_prompt()` and `filter_blacklist()` helpers; desktop (init payload, per-utterance prompt, filter sites) and CLI use them. Patch keys, restart-required key, `docs/MCP.md`, Advanced-tab switches (the prompt and blacklist editors live in the Advanced tab), i18n es/en, dirty-state view, types.
 - RED: core test `prompt_and_blacklist_switches_default_on_and_gate_their_features` failed to compile (missing fields and methods); frontend asserts failed (6 FAIL) before the UI existed.
 - GREEN: `cargo test --workspace --locked` ok, `node desktop/test_frontend.js` 952 passed, `node --test tests-js/*.mjs` 170 passed, clippy warnings 118 (same as base).
+- Commit: see git log.
+
+### T3 (route: delegated writer, single)
+
+- Cause: `syncAsrLanguageUi` hardcoded Spanish hints and placeholders; the vocabulary hints are now per-vocabulary-language i18n keys in both locales (the `en` locale had no Spanish text; `hint_prompt_en` at the Spanish block is Spanish by design). The UI-language change re-runs the sync so hints follow the UI language.
+- RED: new asserts in `desktop/test_frontend.js` failed 10 checks (missing keys, old blacklist hint, 20 Spanish literals in `app.js`, accented HTML attributes).
+- GREEN: `node desktop/test_frontend.js` 969 passed, 0 failed; `node --test tests-js/*.mjs` 170 pass; `cargo test --workspace --locked` ok (no Rust changed).
 - Commit: see git log.

@@ -27,6 +27,7 @@ async function listen(eventName, callback) {
 }
 
 // In-browser mock handler for isolated preview & testing
+// i18n-allow-begin: browser-only mock backend returns Spanish sample data
 function mockInvoke(cmd, args) {
   console.log(`[Mock Tauri IPC] ${cmd}`, args);
   switch (cmd) {
@@ -255,6 +256,7 @@ function mockInvoke(cmd, args) {
       return Promise.reject(`Command not found: ${cmd}`);
   }
 }
+// i18n-allow-end
 
 // Global App State
 let currentConfig = null;
@@ -274,7 +276,7 @@ let drafts = {
     en: '',
   },
   blacklists: {
-    es: 'amara.org, subtítulos por, suscríbete, dale like, gracias por ver, activar la campanita',
+    es: 'amara.org, subtítulos por, suscríbete, dale like, gracias por ver, activar la campanita', // i18n-allow: blacklist preset data
     en: 'amara.org, subtitles by, subscribe, thank you for watching, thanks for watching, please subscribe',
   },
 };
@@ -525,9 +527,9 @@ async function copyLogs() {
   });
   try {
     await navigator.clipboard.writeText(lines.join('\n'));
-    showToast(t('toast_logs_copied') || 'Registro copiado');
+    showToast(t('toast_logs_copied'));
   } catch (err) {
-    showToast(`Error: ${err}`, true);
+    showToast(`${t('status_error')}: ${err}`, true);
   }
 }
 
@@ -773,7 +775,7 @@ function renderReleaseNotes(update) {
 
   if (elements.updateReleaseNotes) {
     const notes = (update.notes || '').trim();
-    elements.updateReleaseNotes.textContent = notes || (getLanguage() === 'es' ? 'Sin notas de la versión.' : 'No release notes provided.');
+    elements.updateReleaseNotes.textContent = notes || t('update_no_release_notes');
   }
 
   syncUpdaterUI();
@@ -976,13 +978,13 @@ function updateStatusUI(status) {
   elements.pillHw.classList.toggle('hw-fallback', isFallback);
 
   if (isFallback) {
-    elements.pillHw.title = status.fallback_reason || t('hw_fallback_warning') || 'GPU fallback occurred';
+    elements.pillHw.title = status.fallback_reason || t('hw_fallback_warning');
   } else if (status.is_running && status.effective_device) {
     const eff = String(status.effective_device).toLowerCase();
     if (eff === 'cuda') {
-      elements.pillHw.title = t('hw_active_cuda') || 'GPU activa (CUDA)';
+      elements.pillHw.title = t('hw_active_cuda');
     } else if (eff === 'directml' || eff === 'dml') {
-      elements.pillHw.title = t('hw_active_directml') || 'GPU activa (DirectML)';
+      elements.pillHw.title = t('hw_active_directml');
     } else {
       elements.pillHw.title = hwLabel;
     }
@@ -994,7 +996,7 @@ function updateStatusUI(status) {
     hasNotifiedHardwareFallback = false;
   } else if (status.fallback_occurred && !hasNotifiedHardwareFallback) {
     hasNotifiedHardwareFallback = true;
-    const reason = status.fallback_reason || t('hw_fallback_warning') || 'GPU no disponible; usando CPU como respaldo';
+    const reason = status.fallback_reason || t('hw_fallback_warning');
     appendLogEntry('warn', t('log_hw_fallback').replace('{reason}', reason), 'ASR');
     showToast(reason, 'warning');
   }
@@ -1019,7 +1021,7 @@ function updateStatusUI(status) {
   }
   if (elements.feedEmptyState && elements.subtitlesFeedContainer && !elements.subtitlesFeedContainer.querySelector('.feed-item')) {
     elements.feedEmptyState.textContent = isFeedLive
-      ? (t('feed_listening_live') || 'Escuchando audio en vivo — habla para ver los subtítulos en tiempo real...')
+      ? (t('feed_listening_live'))
       : t('feed_empty_hint');
     elements.feedEmptyState.hidden = false;
   }
@@ -1116,7 +1118,7 @@ function addSubtitleToFeed(text, cue = null) {
   menuBtn.type = 'button';
   menuBtn.setAttribute('aria-haspopup', 'true');
   menuBtn.setAttribute('aria-expanded', 'false');
-  const menuLabel = t('feed_item_menu_title') || 'Opciones de subtítulo';
+  const menuLabel = t('feed_item_menu_title');
   menuBtn.setAttribute('aria-label', menuLabel);
   menuBtn.title = menuLabel;
   menuBtn.setAttribute('data-i18n-aria-label', 'feed_item_menu_title');
@@ -1251,7 +1253,7 @@ function markFeedItemsBlocked(phrase) {
         const badge = document.createElement('span');
         badge.className = 'feed-item-badge-blocked';
         badge.setAttribute('data-i18n', 'badge_blocked');
-        badge.textContent = t('badge_blocked') || 'Baneado';
+        badge.textContent = t('badge_blocked');
         body.appendChild(badge);
       }
     }
@@ -1364,7 +1366,7 @@ async function copyTextToClipboard(text, toastKey = 'toast_text_copied') {
       copyTextFallback(trimmed);
       showToast(t(toastKey));
     } catch (fallbackErr) {
-      showToast(`Error al copiar: ${err}`, true);
+      showToast(`${t('err_copy_failed')}: ${err}`, true);
     }
   }
 }
@@ -1377,7 +1379,7 @@ function clearSubtitleFeed() {
   if (elements.feedEmptyState) {
     const isLive = Boolean(currentStatus?.is_running || currentStatus?.monitor_mode || (monitorFeed && monitorFeed.socket));
     elements.feedEmptyState.textContent = isLive
-      ? (t('feed_listening_live') || 'Escuchando audio en vivo — habla para ver los subtítulos en tiempo real...')
+      ? (t('feed_listening_live'))
       : t('feed_empty_hint');
     elements.feedEmptyState.hidden = false;
   }
@@ -1911,7 +1913,7 @@ function renderSubtitlePreview() {
   elements.subStylePreview.dataset.font = font;
 
   const style = baseStyle();
-  const rawText = t('sub_style_preview_text') || 'Así se verán tus subtítulos';
+  const rawText = t('sub_style_preview_text');
   const cleanText = String(rawText).replace(/\s+/g, ' ').trim();
   if (style === 'karaoke' || style === 'rgb' || style === 'typewriter') {
     elements.subStylePreviewText.textContent = '';
@@ -2119,23 +2121,17 @@ function syncAsrLanguageUi(newLang) {
 
   if (elements.promptEs) {
     elements.promptEs.value = drafts.prompts[newLang] || '';
-    elements.promptEs.placeholder = newLang === 'en'
-      ? 'Custom gaming terms, names, slang...'
-      : 'Términos técnicos, jerga de juego, nombres propios...';
+    elements.promptEs.placeholder = t(newLang === 'en' ? 'ph_prompt_en' : 'ph_prompt_es');
   }
   if (elements.hintPrompt) {
-    elements.hintPrompt.textContent = newLang === 'en'
-      ? "Ayuda a reducir alucinaciones en inglés. Ej: 'Coding stream, Python tutorials, backend development'."
-      : "Ayuda a reducir alucinaciones en español. Ej: 'Stream de gaming, jugamos Minecraft y charlamos con viewers'.";
+    elements.hintPrompt.textContent = t(newLang === 'en' ? 'hint_prompt_en' : 'hint_prompt_es');
   }
 
   if (elements.inputBlacklist) {
     elements.inputBlacklist.value = drafts.blacklists[newLang] || '';
   }
   if (elements.hintBlacklist) {
-    elements.hintBlacklist.textContent = newLang === 'en'
-      ? "Palabras en inglés que se omitirán si Whisper las genera en silencio."
-      : "Palabras separadas por comas que se omitirán si Whisper las genera en silencio.";
+    elements.hintBlacklist.textContent = t('hint_blacklist');
   }
 }
 
@@ -2311,7 +2307,7 @@ function renderAllowedConnections(data) {
 
         const portSpan = document.createElement('span');
         portSpan.className = 'conn-origin';
-        portSpan.textContent = `Port ${port}`;
+        portSpan.textContent = t('lbl_port_n').replace('{port}', port);
         info.appendChild(portSpan);
 
         if (port === 1420) {
@@ -2325,7 +2321,7 @@ function renderAllowedConnections(data) {
         revokeBtn.type = 'button';
         revokeBtn.className = 'btn-secondary btn-sm';
         revokeBtn.textContent = t('btn_revoke_port');
-        revokeBtn.setAttribute('aria-label', `${t('btn_revoke_port')} port ${port}`);
+        revokeBtn.setAttribute('aria-label', `${t('btn_revoke_port')} ${t('lbl_port_n').replace('{port}', port)}`);
         revokeBtn.addEventListener('click', async () => {
           revokeBtn.disabled = true;
           try {
@@ -2380,7 +2376,7 @@ function renderAllowedConnections(data) {
           allowBtn.type = 'button';
           allowBtn.className = 'btn-secondary btn-sm';
           allowBtn.textContent = t('btn_allow_origin');
-          allowBtn.setAttribute('aria-label', `${t('btn_allow_origin')} port ${entry.port}`);
+          allowBtn.setAttribute('aria-label', `${t('btn_allow_origin')} ${t('lbl_port_n').replace('{port}', entry.port)}`);
           allowBtn.addEventListener('click', async () => {
             allowBtn.disabled = true;
             try {
@@ -2496,6 +2492,10 @@ async function initApp() {
       updateProfileDescription();
       updateStatusUI(currentStatus);
       applyTranslations(newLang);
+      // applyTranslations resets the vocabulary hints; keep typed text and re-localize them for the selected vocabulary language.
+      if (elements.promptEs) drafts.prompts[currentAsrLang] = elements.promptEs.value;
+      if (elements.inputBlacklist) drafts.blacklists[currentAsrLang] = elements.inputBlacklist.value;
+      syncAsrLanguageUi(currentAsrLang);
       updateComputeDeviceReactivity();
       renderEngineSummary();
       refreshOpencohostStatus();
@@ -2954,7 +2954,7 @@ async function initApp() {
   try {
     const recentLogs = await invoke('get_recent_logs', { maxLines: 40 });
     if (elements.loggerConsole) elements.loggerConsole.innerHTML = '';
-    appendLogEntry('info', t('log_events_ready') || 'Sistema listo.', 'SYSTEM');
+    appendLogEntry('info', t('log_events_ready'), 'SYSTEM');
     if (Array.isArray(recentLogs)) {
       for (const line of recentLogs) {
         const clean = line.replace(/\x1b\[[0-9;]*m/g, '').trim();
@@ -2967,7 +2967,7 @@ async function initApp() {
       }
     }
   } catch (_) {
-    appendLogEntry('info', t('log_events_ready') || 'Sistema listo.', 'SYSTEM');
+    appendLogEntry('info', t('log_events_ready'), 'SYSTEM');
   }
 
   // Subscribe to Tauri events safely

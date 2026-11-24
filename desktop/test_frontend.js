@@ -392,6 +392,39 @@ async function runTests() {
   }
   assert(/hint_prompt_whisper_only:[\s\S]*?Parakeet/.test(i18nContent),
     'the prompt hint says Parakeet ignores the prompt');
+  // The vocabulary hints and placeholders follow the UI language, per vocabulary language.
+  for (const key of ['hint_prompt_es', 'hint_prompt_en', 'ph_prompt_es', 'ph_prompt_en', 'hint_blacklist', 'ph_blacklist',
+    'update_no_release_notes', 'title_pill_hw', 'title_ui_language', 'aria_modal_close', 'lbl_port_n', 'err_copy_failed']) {
+    assert((i18nContent.match(new RegExp(`^    ${key}:`, 'gm')) || []).length === 2, `${key} is localized in Spanish and English`);
+  }
+  {
+    const enStart = i18nContent.indexOf('\n  en: {');
+    const enBlock = i18nContent.slice(enStart, i18nContent.indexOf('PROFILE_I18N', enStart));
+    const spanishInEn = enBlock.split('\n').filter((line) => /[áéíóúñ¿¡]/.test(line.replace(/'[^']*·[^']*'/g, '')));
+    assert(spanishInEn.length === 0, `The English locale has no Spanish-only characters${spanishInEn.length ? `: ${spanishInEn[0].trim().slice(0, 60)}` : ''}`);
+    assert(/hint_blacklist:[^\n]*start or end/.test(enBlock) && /hint_prompt_es:[^\n]*Spanish/.test(enBlock),
+      'English blacklist and Spanish-vocabulary hints are English and describe the new behavior');
+  }
+  {
+    // Guard: user-facing text goes through i18n. String literals with Spanish-only characters are allowed only on
+    // lines tagged `i18n-allow` (locale data such as blacklist presets) and inside the browser-only mock backend
+    // delimited by `i18n-allow-begin` / `i18n-allow-end`.
+    for (const file of ['app.js', 'runtime-settings.js']) {
+      let inMock = false;
+      const offenders = [];
+      fs.readFileSync(path.join(__dirname, 'src', file), 'utf8').split('\n').forEach((line, i) => {
+        if (line.includes('i18n-allow-begin')) inMock = true;
+        if (line.includes('i18n-allow-end')) inMock = false;
+        if (inMock || line.includes('i18n-allow') || /^\s*(\/\/|\*|\/\*)/.test(line)) return;
+        if (/(['"`])(?:(?!\1).)*[áéíóúñ¿¡](?:(?!\1).)*\1/.test(line)) offenders.push(`${file}:${i + 1}`);
+      });
+      assert(offenders.length === 0, `${file} has no hardcoded Spanish UI literals${offenders.length ? `: ${offenders.join(', ')}` : ''}`);
+    }
+    const html = fs.readFileSync(path.join(__dirname, 'src', 'index.html'), 'utf8');
+    const bareAttrs = [...html.matchAll(/<[^>]*\b(?:title|aria-label|placeholder)="[^"]*[áéíóúñ¿¡][^"]*"[^>]*>/g)]
+      .map((m) => m[0]).filter((tag) => !/data-i18n-(title|aria-label|placeholder)/.test(tag));
+    assert(bareAttrs.length === 0, `Accented title/aria-label/placeholder attributes in index.html are translated${bareAttrs.length ? `: ${bareAttrs[0].slice(0, 70)}` : ''}`);
+  }
   assert(jsContent.includes('checkFollowOpencohostLanguage.checked = Boolean(config.follow_opencohost_language)')
     && jsContent.includes('cfg.follow_opencohost_language = elements.checkFollowOpencohostLanguage.checked'),
     'follow OpenCohost language toggle round-trips through the desktop draft and saved config');

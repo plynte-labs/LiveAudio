@@ -26,6 +26,7 @@ Todos los cambios notables de LiveAudio se documentan aquí.
 ### Corregido
 
 - **Blacklist por palabras completas y solo en los bordes** — Antes cualquier coincidencia, incluso dentro de otra palabra ("comemos" por "memos", "unlikely" por "like"), descartaba la frase completa. Ahora solo se comparan palabras completas: si la frase es solo texto vetado se descarta, si la frase vetada está al inicio o al final se recorta y se conserva el resto, y en medio del texto no se toca. Se quitaron `like`, `gracias` y `memos` de las listas predeterminadas (las listas guardadas por el usuario no se modifican).
+- **Textos de Vocabulario y filtros traducidos** — Las ayudas y ejemplos del prompt y de la blacklist, el título del indicador de hardware, el selector de idioma, el botón de cerrar, los puertos y varios avisos seguían el idioma español aunque la interfaz estuviera en inglés. La ayuda de la blacklist describe ahora el recorte en los bordes.
 - **Instalador de Windows** publicado de nuevo como `LiveAudio-Setup-<versión>.exe`.
 - **Resolución de `pactl`** movida fuera del runtime asíncrono.
 - **Advertencias de Rust 1.100** (`try_update`, `homepage` redundante).
